@@ -3,6 +3,15 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Security / Certs
+*.pem
+*.key
+*.csr
+
+# Logs
+*.log
+server.log
+
 # C extensions
 *.so
 

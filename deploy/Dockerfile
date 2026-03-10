@@ -7,8 +7,11 @@ RUN pip3 install grpcio grpcio-tools
 WORKDIR /app
 
 # Copy all files (proto, wrapper, generated code)
-COPY . .
-
+COPY interop_pb2.py interop_pb2_grpc.py ./
+# Copy the specific wrapper from its folder
+COPY src/wrappers/openssl/wrapper_openssl.py ./
+# Copy certs from root (assuming they are there)
+COPY cert.pem key.pem ./
 # Generate certificates inside the image for the PoC
 RUN openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes -subj "/CN=server_node"
 

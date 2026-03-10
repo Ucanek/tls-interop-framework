@@ -1,9 +1,13 @@
+import sys
+import os
 import grpc
 from concurrent import futures
 import subprocess
 import time
-import os
 import fcntl
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+
 import interop_pb2
 import interop_pb2_grpc
 
