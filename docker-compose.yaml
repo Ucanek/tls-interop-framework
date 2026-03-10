@@ -1,0 +1,13 @@
+version: '3.8'
+services:
+  server_node:
+    build: .
+    image: tls-interop-wrapper
+    ports:
+      - "50051:50051"
+
+  client_node:
+    build: .
+    image: tls-interop-wrapper
+    ports:
+      - "50052:50051" # Map different host port to container's 50051
