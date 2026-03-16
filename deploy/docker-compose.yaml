@@ -1,13 +1,28 @@
-version: '3.8'
 services:
   server_node:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     ports:
       - "50051:50051"
+      - "5555:5555"
 
   client_node:
-    build: .
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     ports:
-      - "50052:50051" # Map different host port to container's 50051
+      - "50052:50051"
+
+  driver:
+    image: tls-interop-wrapper
+    depends_on:
+      - server_node
+      - client_node
+    environment:
+      TLS_SERVER_GRPC: "server_node:50051"
+      TLS_CLIENT_GRPC: "client_node:50051"
+      TLS_HOSTNAME: "server_node"
+    command: ["sh", "-c", "sleep 5 && PYTHONPATH=/app python3 driver.py"]

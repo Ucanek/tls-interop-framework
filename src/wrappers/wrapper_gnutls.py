@@ -1,17 +1,19 @@
-import sys
 import os
-import grpc
-from concurrent import futures
+import sys
+import fcntl
 import subprocess
 import time
-import fcntl
+from concurrent import futures
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+import grpc
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import interop_pb2
 import interop_pb2_grpc
 
-class OpenSSLWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
+
+class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
         self.client_proc = None
@@ -20,45 +22,88 @@ class OpenSSLWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)
         fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
-    def ExecuteOperation(self, request):
-        if request.role == interop_pb2.SERVER:
-            # GnuTLS server command
-            cmd = [
-                "gnutls-serv", "-p", str(request.config.port),
-                "--x509certfile", "cert.pem", 
-                "--x509keyfile", "key.pem",
-                "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3", # Force TLS 1.3
-                "--echo" # Simple echo mode for testing transmit
-            ]
-            self.server_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            self._make_non_blocking(self.server_proc.stdout)
-            time.sleep(1)
-            return interop_pb2.OperationResponse(status=0, message="GnuTLS Server started")
-        else:
-            # GnuTLS client command
-            cmd = [
-                "gnutls-cli", "-p", str(request.config.port),
-                request.config.server_hostname,
-                "--x509cafile", "cert.pem",
-                "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3"
-            ]
-            self.client_proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-            self._make_non_blocking(self.client_proc.stdout)
-            time.sleep(1)
-            return interop_pb2.OperationResponse(status=0, message="GnuTLS Client connected")
+    def ExecuteOperation(self, request, context):
+        status = interop_pb2.OperationResponse.SUCCESS
+        msg = ""
+        logs = ""
+        out_data = b""
+
+        try:
+            if request.type == interop_pb2.OperationRequest.ESTABLISH:
+                if request.role == interop_pb2.SERVER:
+                    cmd = [
+                        "gnutls-serv", "-p", str(request.config.port),
+                        "--x509certfile", "cert.pem",
+                        "--x509keyfile", "key.pem",
+                        "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                        "--echo",
+                    ]
+                    self.server_proc = subprocess.Popen(
+                        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    )
+                    self._make_non_blocking(self.server_proc.stdout)
+                    msg = "GnuTLS Server started"
+                else:
+                    cmd = [
+                        "gnutls-cli", "-p", str(request.config.port),
+                        request.config.server_hostname,
+                        "--x509cafile", "cert.pem",
+                        "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                    ]
+                    self.client_proc = subprocess.Popen(
+                        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+                    )
+                    self._make_non_blocking(self.client_proc.stdout)
+                    msg = "GnuTLS Client connected"
+                time.sleep(1)
+
+            elif request.type == interop_pb2.OperationRequest.TRANSMIT:
+                target = self.server_proc if request.role == interop_pb2.SERVER else self.client_proc
+                if target:
+                    if request.payload:
+                        target.stdin.write(request.payload + b"\n")
+                        target.stdin.flush()
+                        time.sleep(0.5)
+                    try:
+                        out_data = target.stdout.read() or b""
+                    except IOError:
+                        out_data = b""
+                else:
+                    status = interop_pb2.OperationResponse.FAILURE
+                    msg = "Process not found"
+
+            elif request.type == interop_pb2.OperationRequest.CLOSE:
+                self._cleanup()
+                msg = "Cleanup successful"
+
+        except Exception as e:
+            status = interop_pb2.OperationResponse.ERROR
+            msg = str(e)
+
+        return interop_pb2.OperationResponse(
+            status=status,
+            message=msg,
+            logs=logs,
+            output_data=out_data,
+        )
 
     def _cleanup(self):
-        if self.server_proc: self.server_proc.terminate()
-        if self.client_proc: self.client_proc.terminate()
+        if self.server_proc:
+            self.server_proc.terminate()
+        if self.client_proc:
+            self.client_proc.terminate()
         self.server_proc = self.client_proc = None
 
-def serve():
+
+def serve(port=None):
+    port = port or int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(OpenSSLWrapper(), server)
-    server.add_insecure_port('[::]:50051')
+    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(GnuTLSWrapper(), server)
+    server.add_insecure_port(f"[::]:{port}")
     server.start()
-    print("Wrapper listening on 50051...")
+    print(f"GnuTLS wrapper listening on {port}...")
     server.wait_for_termination()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     serve()

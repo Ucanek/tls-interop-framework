@@ -1,43 +1,88 @@
-# tls-interop-framework
-Framework for automated interoperability testing between diverse TLS implementations (OpenSSL, GnuTLS, NSS).
-
 # TLS Interoperability Testing Framework
 
+Automated interoperability testing for TLS implementations (OpenSSL, GnuTLS, NSS).
+
 ## Overview
-This project provides a standardized, automated framework for **interoperability testing** of Transport Layer Security (TLS) libraries. 
 
-The core problem in cryptographic development is the potential misinterpretation of feature specifications (RFCs). While an implementation might pass its own internal test suite, it may still fail to communicate with other libraries or introduce security vulnerabilities due to subtle incompatibilities. 
+This project provides a standardized framework for **interoperability testing** of Transport Layer Security (TLS) libraries.
 
-This framework solves the scalability issue of manual interoperability testing by providing a **Common Test Driver** that orchestrates tests across multiple **Library Wrappers**.
-
-
+A common problem in cryptographic development is misinterpretation of specs (RFCs). An implementation may pass its own test suite yet fail to interoperate with other libraries or introduce subtle security issues. This framework addresses that by providing a **common test driver** that orchestrates tests across multiple **library wrappers** via a single contract.
 
 ## Architecture
-The system is split into two main logical planes:
 
-1. **Control Plane (gRPC/Protobuf)**: The central **Driver** sends high-level commands (e.g., `ESTABLISH`, `TRANSMIT`) to isolated nodes via a unified Protocol Buffer contract.
-2. **Data Plane (TLS)**: The **Library Wrappers** translate these commands into specific CLI calls (e.g., `openssl s_server` or `gnutls-cli`), performing the actual TLS handshake and data exchange over a dedicated network.
+Two logical planes:
 
-### Key Components
-- **Common Test Driver**: The "brain" that manages test sessions, synchronizes server/client nodes, and evaluates results.
-- **Wrappers**: Translation layers for specific libraries (OpenSSL, GnuTLS, etc.). Each wrapper acts as a gRPC server.
-- **Capability Filter**: A mechanism that allows the driver to query a wrapper's capabilities (supported ciphers, TLS versions) before executing relevant tests.
+1. **Control plane (gRPC/Protobuf)**  
+   The **driver** sends high-level commands (`ESTABLISH`, `TRANSMIT`, `CLOSE`) to wrapper nodes via a Protocol Buffer contract.
+
+2. **Data plane (TLS)**  
+   **Wrappers** translate those commands into CLI calls (`openssl s_server` / `gnutls-cli`, etc.) and perform the actual TLS handshake and data exchange.
+
+### Components
+
+- **Driver** – Orchestrates test sessions, synchronizes server/client nodes, evaluates results.
+- **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, etc.) that run the TLS tools.
+- **Capability filter** (planned) – Query wrapper capabilities (ciphers, TLS versions) before running tests.
 
 ## Why this approach?
-Instead of writing $2 \cdot (n-1)!$ manual tests for every new library combination, this framework allows test writers to create **one generic test scenario** that runs across all supported wrappers, significantly reducing QE maintenance costs and increasing test coverage.
 
-## Tech Stack
-- **Language**: Python 3.x
-- **Communication**: gRPC & Google Protocol Buffers
-- **Orchestration**: Docker & Docker Compose
-- **Test Management**: Integrated with `tmt` (Test Management Tool) and `fmf` metadata.
+One generic test scenario runs across all supported wrappers instead of maintaining many pairwise manual tests, reducing effort and improving coverage.
 
-## Project Structure
-- `/proto`: Protocol Buffer definitions (`.proto` files).
-- `/src/driver`: Logic for the central orchestrator.
-- `/src/wrappers`: Implementation-specific shims (OpenSSL, GnuTLS).
-- `/scripts`: Helper scripts for certificate generation and environment setup.
-- `/deploy`: Dockerfiles and orchestration configurations.
+## Tech stack
+
+- **Language:** Python 3.x  
+- **Communication:** gRPC & Protocol Buffers  
+- **Orchestration:** Docker Compose  
+- **Libraries under test:** OpenSSL, GnuTLS (CLI)
+
+## Project structure
+
+| Path | Description |
+|------|-------------|
+| `proto/` | Protocol Buffer definitions |
+| `src/driver/` | Central orchestrator (driver) |
+| `src/wrappers/` | Library shims (OpenSSL, GnuTLS) |
+| `scripts/` | Certificate generation, local run script |
+| `deploy/` | Dockerfile and Docker Compose |
 
 ---
-*Note: This project is currently in the Draft/PoC stage.*
+
+## Running the tests
+
+### Option 1: Local (no Docker)
+
+Requirements: Python 3, `openssl` CLI, `grpcio`, `protobuf`.
+
+```bash
+./scripts/gen_certs.sh
+pip install grpcio grpcio-tools 'protobuf>=4.21'
+python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/interop.proto
+./scripts/run_local.sh
+```
+
+This starts two OpenSSL wrappers (gRPC on 50051 and 50052) and the driver; TLS uses localhost:5555.
+
+### Option 2: Docker (all in containers)
+
+Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator).
+
+**One-shot run (output in terminal):**
+
+```bash
+docker compose -f deploy/docker-compose.yaml run --build driver
+```
+
+**Background run, then check driver log:**
+
+```bash
+docker compose -f deploy/docker-compose.yaml up -d --build
+docker compose -f deploy/docker-compose.yaml logs driver
+docker compose -f deploy/docker-compose.yaml down
+```
+
+To use Docker without sudo, add your user to the `docker` group:  
+`sudo usermod -aG docker $USER`, then log out and back in (or run `newgrp docker`).
+
+---
+
+*This project is in Draft/PoC stage.*

@@ -8,11 +8,10 @@ WORKDIR /app
 
 # Copy all files (proto, wrapper, generated code)
 COPY interop_pb2.py interop_pb2_grpc.py ./
-# Copy the specific wrapper from its folder
-COPY src/wrappers/openssl/wrapper_openssl.py ./
-# Copy certs from root (assuming they are there)
-COPY cert.pem key.pem ./
-# Generate certificates inside the image for the PoC
+# Copy wrappers and driver (same image can run as wrapper or as driver)
+COPY src/wrappers/wrapper_openssl.py ./
+COPY src/driver/driver.py ./
+# Generate certificates in the image (no host certs required for build)
 RUN openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes -subj "/CN=server_node"
 
 # Control port for gRPC, Data port for TLS
