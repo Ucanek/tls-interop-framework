@@ -35,3 +35,6 @@ jobs:
 
       - name: Run Docker test (GnuTLS server, OpenSSL client)
         run: ./scripts/run_docker.sh deploy/docker-compose.reversed.yaml
+
+      - name: Run Docker test (OpenSSL server, NSS client)
+        run: ./scripts/run_docker.sh deploy/docker-compose.nss-client.yaml

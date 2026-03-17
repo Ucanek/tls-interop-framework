@@ -70,6 +70,7 @@ Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator). Two 
 |------|------------|------------|
 | `deploy/docker-compose.yaml` | OpenSSL | GnuTLS |
 | `deploy/docker-compose.reversed.yaml` | GnuTLS | OpenSSL |
+| `deploy/docker-compose.nss-client.yaml` | OpenSSL | NSS |
 
 **One-shot run (containers stop automatically when done):**
 
@@ -79,6 +80,9 @@ Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator). Two 
 
 # GnuTLS server ↔ OpenSSL client
 ./scripts/run_docker.sh deploy/docker-compose.reversed.yaml
+
+# OpenSSL server ↔ NSS client
+./scripts/run_docker.sh deploy/docker-compose.nss-client.yaml
 ```
 
 Or manually: `docker compose -f deploy/docker-compose.yaml run --build driver` and then `docker compose -f deploy/docker-compose.yaml down` to stop the wrappers.
@@ -96,7 +100,7 @@ To use Docker without sudo, add your user to the `docker` group:
 
 ### CI (GitHub Actions)
 
-On push/PR to `main` or `master`, the [CI workflow](.github/workflows/ci.yml) runs the local test and both Docker compositions. No extra configuration needed when the repo is on GitHub.
+On push/PR to `main`, the [CI workflow](.github/workflows/ci.yml) runs the local test and both Docker compositions. No extra configuration needed when the repo is on GitHub.
 
 ---
 
