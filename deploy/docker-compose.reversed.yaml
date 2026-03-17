@@ -1,3 +1,4 @@
+# GnuTLS server + OpenSSL client (reverse of default compose)
 services:
   server_node:
     build:
@@ -7,6 +8,7 @@ services:
     ports:
       - "50051:50051"
       - "5555:5555"
+    command: ["python3", "wrapper_gnutls.py"]
 
   client_node:
     build:
@@ -15,7 +17,6 @@ services:
     image: tls-interop-wrapper
     ports:
       - "50052:50051"
-    command: ["python3", "wrapper_gnutls.py"]
 
   driver:
     image: tls-interop-wrapper

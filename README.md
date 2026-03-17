@@ -64,12 +64,21 @@ This starts two OpenSSL wrappers (gRPC on 50051 and 50052) and the driver; TLS u
 
 ### Option 2: Docker (all in containers)
 
-Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator).
+Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator). Two compositions for **real interoperability**:
+
+| File | TLS server | TLS client |
+|------|------------|------------|
+| `deploy/docker-compose.yaml` | OpenSSL | GnuTLS |
+| `deploy/docker-compose.reversed.yaml` | GnuTLS | OpenSSL |
 
 **One-shot run (output in terminal):**
 
 ```bash
+# OpenSSL server ↔ GnuTLS client
 docker compose -f deploy/docker-compose.yaml run --build driver
+
+# GnuTLS server ↔ OpenSSL client
+docker compose -f deploy/docker-compose.reversed.yaml run --build driver
 ```
 
 **Background run, then check driver log:**

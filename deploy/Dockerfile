@@ -8,8 +8,8 @@ WORKDIR /app
 
 # Copy all files (proto, wrapper, generated code)
 COPY interop_pb2.py interop_pb2_grpc.py ./
-# Copy wrappers and driver (same image can run as wrapper or as driver)
-COPY src/wrappers/wrapper_openssl.py ./
+# Copy both wrappers and driver (server_node=OpenSSL, client_node=GnuTLS for interop)
+COPY src/wrappers/wrapper_openssl.py src/wrappers/wrapper_gnutls.py ./
 COPY src/driver/driver.py ./
 # Generate certificates in the image (no host certs required for build)
 RUN openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -sha256 -days 365 -nodes -subj "/CN=server_node"
