@@ -26,6 +26,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Free ports 50051/50052: stop any wrappers left from a previous run
+echo "[run_local] Stopping any existing wrappers..."
+pkill -f "wrapper_openssl|wrapper_gnutls" 2>/dev/null || true
+sleep 2
+
 echo "[run_local] Starting server wrapper (gRPC 50051)..."
 python3 src/wrappers/wrapper_openssl.py &
 PID1=$!

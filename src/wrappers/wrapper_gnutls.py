@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import fcntl
 import subprocess
@@ -11,6 +12,14 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 import interop_pb2
 import interop_pb2_grpc
+
+
+def _parse_version(out):
+    """Extract a short version string (e.g. '3.8.6') from CLI output."""
+    text = (out or "").strip()
+    first_line = text.split("\n")[0].strip() if text else ""
+    match = re.search(r"\d+\.\d+(?:\.\d+)?", first_line)
+    return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
 def _cap(name, *flags):
@@ -32,7 +41,7 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                 timeout=5,
             )
             if r.returncode == 0:
-                version = (r.stdout or r.stderr or "").strip() or "unknown"
+                version = _parse_version(r.stdout or r.stderr)
         except Exception:
             pass
         return interop_pb2.LibraryMetadata(
@@ -91,23 +100,36 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
                     )
                     self._make_non_blocking(self.client_proc.stdout)
-                    msg = "GnuTLS Client connected"
+                    time.sleep(2.5)
+                    if self.client_proc.poll() is not None:
+                        status = interop_pb2.OperationResponse.FAILURE
+                        msg = "Client process exited (connection failed)"
+                    else:
+                        msg = "GnuTLS Client connected"
                 time.sleep(1)
 
             elif request.type == interop_pb2.OperationRequest.TRANSMIT:
                 target = self.server_proc if request.role == interop_pb2.SERVER else self.client_proc
-                if target:
-                    if request.payload:
-                        target.stdin.write(request.payload + b"\n")
-                        target.stdin.flush()
-                        time.sleep(0.5)
-                    try:
-                        out_data = target.stdout.read() or b""
-                    except IOError:
-                        out_data = b""
-                else:
+                if not target:
                     status = interop_pb2.OperationResponse.FAILURE
                     msg = "Process not found"
+                elif target.poll() is not None:
+                    status = interop_pb2.OperationResponse.FAILURE
+                    msg = "Process already exited"
+                else:
+                    if request.payload:
+                        try:
+                            target.stdin.write(request.payload + b"\n")
+                            target.stdin.flush()
+                            time.sleep(0.5)
+                        except BrokenPipeError:
+                            status = interop_pb2.OperationResponse.ERROR
+                            msg = "Broken pipe (process may have exited)"
+                    if status == interop_pb2.OperationResponse.SUCCESS:
+                        try:
+                            out_data = target.stdout.read() or b""
+                        except IOError:
+                            out_data = b""
 
             elif request.type == interop_pb2.OperationRequest.CLOSE:
                 self._cleanup()
@@ -136,7 +158,7 @@ def serve(port=None):
     port = port or int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(GnuTLSWrapper(), server)
-    server.add_insecure_port(f"[::]:{port}")
+    server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
     print(f"GnuTLS wrapper listening on {port}...")
     server.wait_for_termination()

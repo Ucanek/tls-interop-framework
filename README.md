@@ -60,7 +60,7 @@ python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/in
 ./scripts/run_local.sh
 ```
 
-This starts two OpenSSL wrappers (gRPC on 50051 and 50052) and the driver; TLS uses localhost:5555.
+This starts two OpenSSL wrappers (gRPC on 50051 and 50052) and the driver; TLS uses localhost:5555. The driver runs two scenarios by default (`establish_transmit_close` and `expect_failure_wrong_hostname`) and exits with 0 on success, 1 on failure. Use `python3 src/driver/driver.py --scenario establish_transmit_close` to run a single scenario.
 
 ### Option 2: Docker (all in containers)
 
@@ -71,15 +71,17 @@ Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator). Two 
 | `deploy/docker-compose.yaml` | OpenSSL | GnuTLS |
 | `deploy/docker-compose.reversed.yaml` | GnuTLS | OpenSSL |
 
-**One-shot run (output in terminal):**
+**One-shot run (containers stop automatically when done):**
 
 ```bash
-# OpenSSL server ↔ GnuTLS client
-docker compose -f deploy/docker-compose.yaml run --build driver
+# OpenSSL server ↔ GnuTLS client; then all containers are stopped
+./scripts/run_docker.sh
 
 # GnuTLS server ↔ OpenSSL client
-docker compose -f deploy/docker-compose.reversed.yaml run --build driver
+./scripts/run_docker.sh deploy/docker-compose.reversed.yaml
 ```
+
+Or manually: `docker compose -f deploy/docker-compose.yaml run --build driver` and then `docker compose -f deploy/docker-compose.yaml down` to stop the wrappers.
 
 **Background run, then check driver log:**
 
