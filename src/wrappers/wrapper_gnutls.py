@@ -13,10 +13,47 @@ import interop_pb2
 import interop_pb2_grpc
 
 
+def _cap(name, *flags):
+    return interop_pb2.Capability(name=name, flags=list(flags))
+
+
 class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
         self.client_proc = None
+
+    def GetMetadata(self, request, context):
+        version = "unknown"
+        try:
+            r = subprocess.run(
+                ["gnutls-cli", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                version = (r.stdout or r.stderr or "").strip() or "unknown"
+        except Exception:
+            pass
+        return interop_pb2.LibraryMetadata(
+            component_name="GnuTLS",
+            version=version,
+            roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
+            supported_versions=[
+                _cap("TLS1.2", interop_pb2.READ, interop_pb2.NEGOTIATE),
+                _cap("TLS1.3", interop_pb2.READ, interop_pb2.SET, interop_pb2.NEGOTIATE),
+            ],
+            cipher_suites=[
+                _cap("TLS_AES_256_GCM_SHA384", interop_pb2.READ, interop_pb2.NEGOTIATE),
+                _cap("TLS_CHACHA20_POLY1305_SHA256", interop_pb2.READ, interop_pb2.NEGOTIATE),
+                _cap("TLS_AES_128_GCM_SHA256", interop_pb2.READ, interop_pb2.NEGOTIATE),
+            ],
+            groups=[
+                _cap("X25519", interop_pb2.READ, interop_pb2.NEGOTIATE),
+                _cap("P-256", interop_pb2.READ, interop_pb2.NEGOTIATE),
+                _cap("P-384", interop_pb2.READ, interop_pb2.NEGOTIATE),
+            ],
+        )
 
     def _make_non_blocking(self, fd):
         flags = fcntl.fcntl(fd, fcntl.F_GETFL)

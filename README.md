@@ -21,7 +21,7 @@ Two logical planes:
 ### Components
 
 - **Driver** – Orchestrates test sessions, synchronizes server/client nodes, evaluates results.
-- **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, etc.) that run the TLS tools.
+- **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, NSS) that run the TLS tools. The framework is designed so that **NSS** (and any further library) is added by implementing one more wrapper; see [docs/NSS_SUPPORT.md](docs/NSS_SUPPORT.md).
 - **Capability filter** (planned) – Query wrapper capabilities (ciphers, TLS versions) before running tests.
 
 ## Why this approach?
