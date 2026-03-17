@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install grpcio grpcio-tools 'protobuf>=4.21'
+
+      - name: Generate protobuf and certs
+        run: |
+          python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/interop.proto
+          ./scripts/gen_certs.sh
+
+      - name: Run local test
+        run: ./scripts/run_local.sh
+
+      - name: Run Docker test (OpenSSL server, GnuTLS client)
+        run: ./scripts/run_docker.sh
+
+      - name: Run Docker test (GnuTLS server, OpenSSL client)
+        run: ./scripts/run_docker.sh deploy/docker-compose.reversed.yaml

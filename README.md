@@ -94,6 +94,10 @@ docker compose -f deploy/docker-compose.yaml down
 To use Docker without sudo, add your user to the `docker` group:  
 `sudo usermod -aG docker $USER`, then log out and back in (or run `newgrp docker`).
 
+### CI (GitHub Actions)
+
+On push/PR to `main` or `master`, the [CI workflow](.github/workflows/ci.yml) runs the local test and both Docker compositions. No extra configuration needed when the repo is on GitHub.
+
 ---
 
 *This project is in Draft/PoC stage.*
