@@ -77,11 +77,19 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         try:
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
                 if request.role == interop_pb2.SERVER:
+                    # %COMPAT helps some peers; -a = do not request client certificate.
                     cmd = [
-                        "gnutls-serv", "-p", str(request.config.port),
-                        "--x509certfile", "cert.pem",
-                        "--x509keyfile", "key.pem",
-                        "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                        "gnutls-serv",
+                        "-p",
+                        str(request.config.port),
+                        "-a",
+                        "--x509certfile",
+                        "cert.pem",
+                        "--x509keyfile",
+                        "key.pem",
+                        "--priority",
+                        "NORMAL:%COMPAT:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1",
+                        "-q",
                         "--echo",
                     ]
                     self.server_proc = subprocess.Popen(
@@ -90,11 +98,20 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     self._make_non_blocking(self.server_proc.stdout)
                     msg = "GnuTLS Server started"
                 else:
+                    # Docker resolves hostname to IP; GnuTLS 3.8+ rejects SNI vs peer-IP (DISALLOWED_NAME).
+                    host = request.config.server_hostname or "localhost"
                     cmd = [
-                        "gnutls-cli", "-p", str(request.config.port),
-                        request.config.server_hostname,
-                        "--x509cafile", "cert.pem",
-                        "--priority", "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                        "gnutls-cli",
+                        "-p",
+                        str(request.config.port),
+                        "--disable-sni",
+                        "--verify-hostname",
+                        host,
+                        "--x509cafile",
+                        "cert.pem",
+                        "--priority",
+                        "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                        host,
                     ]
                     self.client_proc = subprocess.Popen(
                         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
@@ -118,8 +135,11 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     msg = "Process already exited"
                 else:
                     if request.payload:
+                        data = request.payload + b"\n"
+                        if request.role == interop_pb2.CLIENT:
+                            data = b"POST / HTTP/1.0\r\n\r\n" + data  # NSS selfserv expects HTTP-like POST
                         try:
-                            target.stdin.write(request.payload + b"\n")
+                            target.stdin.write(data)
                             target.stdin.flush()
                             time.sleep(0.5)
                         except BrokenPipeError:

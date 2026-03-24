@@ -45,6 +45,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
         self.client_proc = None
+        self._socat_proc = None  # TCP proxy: selfserv only listens on loopback
         self._nssdb = os.environ.get("NSSDB", "nssdb")
         self._nick = os.environ.get("CERT_NICKNAME", "interop")
         self._selfserv = _nss_tool("selfserv")
@@ -97,34 +98,75 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         try:
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
                 if request.role == interop_pb2.SERVER:
+                    # selfserv binds to loopback only; other containers need 0.0.0.0.
+                    ext_port = int(request.config.port)
+                    inner_port = ext_port + 10000
+                    self._socat_proc = subprocess.Popen(
+                        [
+                            "socat",
+                            f"TCP-LISTEN:{ext_port},bind=0.0.0.0,fork,reuseaddr",
+                            f"TCP:127.0.0.1:{inner_port}",
+                        ],
+                        stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                    time.sleep(0.4)
+                    # stdbuf -o 0: unbuffered stdout so fwrite() in selfserv reaches pipe immediately
                     cmd = [
+                        "stdbuf",
+                        "-o0",
                         self._selfserv,
-                        "-d", db_spec,
-                        "-n", self._nick,
-                        "-p", str(request.config.port),
-                        "-V", "tls1.3:tls1.3",
+                        "-d",
+                        db_spec,
+                        "-n",
+                        self._nick,
+                        "-p",
+                        str(inner_port),
+                        "-V",
+                        "tls1.2:tls1.3",
+                        "-v",
+                        "-v",  # verbose>1 so received app data is written to stdout (driver checks it)
                     ]
                     self.server_proc = subprocess.Popen(
-                        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=os.getcwd()
+                        cmd,
+                        stdin=subprocess.PIPE,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        cwd=os.getcwd(),
                     )
                     self._make_non_blocking(self.server_proc.stdout)
                     msg = "NSS Server started"
                 else:
+                    host = request.config.server_hostname or "localhost"
                     cmd = [
                         self._tstclnt,
-                        "-d", db_spec,
-                        "-h", request.config.server_hostname,
-                        "-p", str(request.config.port),
+                        "-d",
+                        db_spec,
+                        "-h",
+                        host,
+                        "-p",
+                        str(request.config.port),
+                        "-a",
+                        host,  # explicit SNI for gnutls-serv --sni-hostname
+                        "-V",
+                        "tls1.2:tls1.3",
                         "-o",  # override cert validation for testing
                     ]
                     self.client_proc = subprocess.Popen(
                         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=os.getcwd()
                     )
                     self._make_non_blocking(self.client_proc.stdout)
-                    time.sleep(2.5)
+                    time.sleep(3.5)  # NSS↔GnuTLS handshake can be slow
                     if self.client_proc.poll() is not None:
                         status = interop_pb2.OperationResponse.FAILURE
+                        try:
+                            err = (self.client_proc.stdout.read() or b"").decode(errors="replace")[-600:]
+                        except Exception:
+                            err = ""
                         msg = "Client process exited (connection failed)"
+                        if err.strip():
+                            msg += " | " + err.strip().replace("\n", " ")
                     else:
                         msg = "NSS Client connected"
                 time.sleep(1)
@@ -139,8 +181,11 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     msg = "Process already exited"
                 else:
                     if request.payload:
+                        data = request.payload + b"\n"
+                        if request.role == interop_pb2.CLIENT:
+                            data = b"POST / HTTP/1.0\r\n\r\n" + data  # NSS selfserv expects HTTP-like POST
                         try:
-                            target.stdin.write(request.payload + b"\n")
+                            target.stdin.write(data)
                             target.stdin.flush()
                             time.sleep(0.5)
                         except BrokenPipeError:
@@ -148,7 +193,21 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                             msg = "Broken pipe (process may have exited)"
                     if status == interop_pb2.OperationResponse.SUCCESS:
                         try:
-                            out_data = target.stdout.read() or b""
+                            # Server (selfserv) may buffer stdout; non-blocking read can be empty.
+                            # Wait and collect output in small reads so we get the echoed POST body.
+                            out_data = b""
+                            if request.role == interop_pb2.SERVER:
+                                time.sleep(0.8)
+                                for _ in range(25):
+                                    try:
+                                        chunk = target.stdout.read()
+                                        if chunk:
+                                            out_data += chunk
+                                    except (BlockingIOError, OSError):
+                                        pass
+                                    time.sleep(0.1)
+                            else:
+                                out_data = target.stdout.read() or b""
                         except IOError:
                             out_data = b""
 
@@ -172,7 +231,14 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
             self.server_proc.terminate()
         if self.client_proc:
             self.client_proc.terminate()
+        if self._socat_proc:
+            self._socat_proc.terminate()
+            try:
+                self._socat_proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self._socat_proc.kill()
         self.server_proc = self.client_proc = None
+        self._socat_proc = None
 
 
 def serve(port=None):

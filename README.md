@@ -21,19 +21,15 @@ Two logical planes:
 ### Components
 
 - **Driver** – Orchestrates test sessions, synchronizes server/client nodes, evaluates results.
-- **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, NSS) that run the TLS tools. The framework is designed so that **NSS** (and any further library) is added by implementing one more wrapper; see [docs/NSS_SUPPORT.md](docs/NSS_SUPPORT.md).
+- **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, NSS) that run the TLS tools. See [docs/NSS_SUPPORT.md](docs/NSS_SUPPORT.md).
 - **Capability filter** (planned) – Query wrapper capabilities (ciphers, TLS versions) before running tests.
-
-## Why this approach?
-
-One generic test scenario runs across all supported wrappers instead of maintaining many pairwise manual tests, reducing effort and improving coverage.
 
 ## Tech stack
 
 - **Language:** Python 3.x  
 - **Communication:** gRPC & Protocol Buffers  
 - **Orchestration:** Docker Compose  
-- **Libraries under test:** OpenSSL, GnuTLS (CLI)
+- **Libraries under test:** OpenSSL, GnuTLS, NSS (CLI tools)
 
 ## Project structure
 
@@ -41,9 +37,10 @@ One generic test scenario runs across all supported wrappers instead of maintain
 |------|-------------|
 | `proto/` | Protocol Buffer definitions |
 | `src/driver/` | Central orchestrator (driver) |
-| `src/wrappers/` | Library shims (OpenSSL, GnuTLS) |
-| `scripts/` | Certificate generation, local run script |
-| `deploy/` | Dockerfile and Docker Compose |
+| `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
+| `scripts/` | Certificates, local/Docker run scripts |
+| `deploy/` | Dockerfile, compose files |
+| `deploy/combos/` | One compose file per server×client pair |
 
 ---
 
@@ -60,48 +57,55 @@ python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/in
 ./scripts/run_local.sh
 ```
 
-This starts two OpenSSL wrappers (gRPC on 50051 and 50052) and the driver; TLS uses localhost:5555. The driver runs two scenarios by default (`establish_transmit_close` and `expect_failure_wrong_hostname`) and exits with 0 on success, 1 on failure. Use `python3 src/driver/driver.py --scenario establish_transmit_close` to run a single scenario.
+The driver runs two scenarios by default (`establish_transmit_close` and `expect_failure_wrong_hostname`). Use `python3 src/driver/driver.py --scenario establish_transmit_close` for a single scenario.
 
-### Option 2: Docker (all in containers)
+### Option 2: Docker
 
-Services: `server_node`, `client_node` (wrappers), `driver` (orchestrator). Two compositions for **real interoperability**:
+Nine compose files in `deploy/combos/` (one per server×client pair):
 
-| File | TLS server | TLS client |
-|------|------------|------------|
-| `deploy/docker-compose.yaml` | OpenSSL | GnuTLS |
-| `deploy/docker-compose.reversed.yaml` | GnuTLS | OpenSSL |
-| `deploy/docker-compose.nss-client.yaml` | OpenSSL | NSS |
+| Compose file | TLS server | TLS client |
+|--------------|------------|------------|
+| `openssl-openssl.yaml` | OpenSSL | OpenSSL |
+| `openssl-gnutls.yaml` | OpenSSL | GnuTLS |
+| `openssl-nss.yaml` | OpenSSL | NSS |
+| `gnutls-openssl.yaml` | GnuTLS | OpenSSL |
+| `gnutls-gnutls.yaml` | GnuTLS | GnuTLS |
+| `gnutls-nss.yaml` | GnuTLS | NSS |
+| `nss-openssl.yaml` | NSS | OpenSSL |
+| `nss-gnutls.yaml` | NSS | GnuTLS |
+| `nss-nss.yaml` | NSS | NSS |
 
-**One-shot run (containers stop automatically when done):**
+**Default (8 combos, CI):** skips **GnuTLS×NSS** due to a known handshake limitation — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ```bash
-# OpenSSL server ↔ GnuTLS client; then all containers are stopped
+./scripts/run_all_combos.sh
+```
+
+**All 9 combos** (including GnuTLS×NSS, may fail):
+
+```bash
+./scripts/run_all_combos.sh --all
+```
+
+**Single combo:**
+
+```bash
+./scripts/run_all_combos.sh openssl nss
+./scripts/run_docker.sh deploy/combos/gnutls-gnutls.yaml
+```
+
+Legacy single-file compose examples:
+
+```bash
 ./scripts/run_docker.sh
-
-# GnuTLS server ↔ OpenSSL client
 ./scripts/run_docker.sh deploy/docker-compose.reversed.yaml
-
-# OpenSSL server ↔ NSS client
 ./scripts/run_docker.sh deploy/docker-compose.nss-client.yaml
 ```
 
-Or manually: `docker compose -f deploy/docker-compose.yaml run --build driver` and then `docker compose -f deploy/docker-compose.yaml down` to stop the wrappers.
-
-**Background run, then check driver log:**
-
-```bash
-docker compose -f deploy/docker-compose.yaml up -d --build
-docker compose -f deploy/docker-compose.yaml logs driver
-docker compose -f deploy/docker-compose.yaml down
-```
-
-To use Docker without sudo, add your user to the `docker` group:  
-`sudo usermod -aG docker $USER`, then log out and back in (or run `newgrp docker`).
-
 ### CI (GitHub Actions)
 
-On push/PR to `main`, the [CI workflow](.github/workflows/ci.yml) runs the local test and both Docker compositions. No extra configuration needed when the repo is on GitHub.
+On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (8 Docker combos).
 
 ---
 
-*This project is in Draft/PoC stage.*
+*Draft / PoC stage.*

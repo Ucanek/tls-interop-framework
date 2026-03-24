@@ -1,7 +1,7 @@
 FROM fedora:39
 
 # Install dependencies (nss-tools for NSS wrapper)
-RUN dnf install -y python3 python3-pip openssl gnutls-utils nss-tools && dnf clean all
+RUN dnf install -y python3 python3-pip openssl gnutls-utils nss-tools socat coreutils && dnf clean all
 RUN pip3 install grpcio grpcio-tools
 
 WORKDIR /app
