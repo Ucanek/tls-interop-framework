@@ -41,6 +41,9 @@ Two logical planes:
 | `scripts/` | Certificates, local/Docker run scripts |
 | `deploy/` | Dockerfile, compose files |
 | `deploy/combos/` | One compose file per server×client pair |
+| `docs/` | Limitations, NSS notes, roadmap, spec notes |
+
+Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the Docker image build; it is not versioned.
 
 ---
 

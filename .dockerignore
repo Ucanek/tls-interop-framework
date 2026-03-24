@@ -1,0 +1,22 @@
+# Git / editor
+.git
+.github
+
+# Local Python
+.venv
+venv
+**/__pycache__
+*.pyc
+.pytest_cache
+
+# Generated or local-only artifacts (image creates its own under /app)
+nssdb
+*.pem
+*.key
+
+# Not copied into the wrapper image (Dockerfile uses selective COPY)
+docs
+proto
+*.md
+deploy/combos
+deploy/docker-compose*.yaml
