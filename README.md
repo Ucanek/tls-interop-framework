@@ -22,7 +22,7 @@ Two logical planes:
 
 - **Driver** – Orchestrates test sessions, synchronizes server/client nodes, evaluates results.
 - **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, NSS) that run the TLS tools. See [docs/NSS_SUPPORT.md](docs/NSS_SUPPORT.md).
-- **Capability filter** (planned) – Query wrapper capabilities (ciphers, TLS versions) before running tests.
+- **Capability filter** – After `GetMetadata`, the driver skips a scenario (successful exit) if metadata shows the server or client cannot negotiate the required TLS version or role; self-test: `python3 scripts/test_capability_filter.py` from repo root after `protoc`.
 
 ## Tech stack
 
@@ -40,7 +40,7 @@ Two logical planes:
 | `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
 | `scripts/` | Certificates, local/Docker run scripts |
 | `deploy/` | Dockerfile, compose files |
-| `deploy/combos/` | One compose file per server×client pair |
+| `deploy/combos/matrix.yaml` | One parameterized Compose stack (`SERVER_WRAPPER` / `CLIENT_WRAPPER`) |
 | `docs/` | Limitations, NSS notes, roadmap, spec notes |
 
 Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the Docker image build; it is not versioned.
@@ -64,37 +64,23 @@ The driver runs two scenarios by default (`establish_transmit_close` and `expect
 
 ### Option 2: Docker
 
-Nine compose files in `deploy/combos/` (one per server×client pair):
+All server×client pairs use **`deploy/combos/matrix.yaml`**. Wrappers are chosen with environment variables **`SERVER_WRAPPER`** and **`CLIENT_WRAPPER`** (`openssl`, `gnutls`, or `nss`). The image runs **`/app/wrapper_launch.sh`**, which starts the matching Python wrapper. `NSSDB=/app/nssdb` is set for both nodes (ignored by OpenSSL/GnuTLS).
 
-| Compose file | TLS server | TLS client |
-|--------------|------------|------------|
-| `openssl-openssl.yaml` | OpenSSL | OpenSSL |
-| `openssl-gnutls.yaml` | OpenSSL | GnuTLS |
-| `openssl-nss.yaml` | OpenSSL | NSS |
-| `gnutls-openssl.yaml` | GnuTLS | OpenSSL |
-| `gnutls-gnutls.yaml` | GnuTLS | GnuTLS |
-| `gnutls-nss.yaml` | GnuTLS | NSS |
-| `nss-openssl.yaml` | NSS | OpenSSL |
-| `nss-gnutls.yaml` | NSS | GnuTLS |
-| `nss-nss.yaml` | NSS | NSS |
-
-**Default (8 combos, CI):** skips **GnuTLS×NSS** due to a known handshake limitation — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+**CI / default:** all **9** server×client pairs (including **GnuTLS×NSS**, which sets `INTEROP_GNUTLS_NSS_PAIR` so the NSS client avoids DNS SNI when connecting by IP — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)).
 
 ```bash
 ./scripts/run_all_combos.sh
 ```
 
-**All 9 combos** (including GnuTLS×NSS, may fail):
-
-```bash
-./scripts/run_all_combos.sh --all
-```
+`./scripts/run_all_combos.sh --all` is the same as above (kept for older scripts).
 
 **Single combo:**
 
 ```bash
 ./scripts/run_all_combos.sh openssl nss
-./scripts/run_docker.sh deploy/combos/gnutls-gnutls.yaml
+./scripts/run_all_combos.sh gnutls-gnutls
+# or manually (pick a unique compose project name per run):
+SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-openssl -f deploy/combos/matrix.yaml run --rm --build driver
 ```
 
 Legacy single-file compose examples:
@@ -107,7 +93,7 @@ Legacy single-file compose examples:
 
 ### CI (GitHub Actions)
 
-On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (8 Docker combos).
+On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (9 Docker combos).
 
 ---
 

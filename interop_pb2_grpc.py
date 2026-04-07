@@ -26,7 +26,7 @@ if _version_not_supported:
 
 
 class TlsInteropWrapperStub(object):
-    """--- SERVICE DEFINITION (Volitelné pro gRPC) ---
+    """--- gRPC service ---
 
     """
 
@@ -49,7 +49,7 @@ class TlsInteropWrapperStub(object):
 
 
 class TlsInteropWrapperServicer(object):
-    """--- SERVICE DEFINITION (Volitelné pro gRPC) ---
+    """--- gRPC service ---
 
     """
 
@@ -87,7 +87,7 @@ def add_TlsInteropWrapperServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class TlsInteropWrapper(object):
-    """--- SERVICE DEFINITION (Volitelné pro gRPC) ---
+    """--- gRPC service ---
 
     """
 

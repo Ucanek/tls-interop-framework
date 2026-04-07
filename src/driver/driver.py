@@ -11,11 +11,33 @@ import interop_pb2_grpc
 
 GREEN = "\033[92m"
 RED = "\033[91m"
+YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 SUCCESS = interop_pb2.OperationResponse.SUCCESS
 FAILURE = interop_pb2.OperationResponse.FAILURE
 ERROR = interop_pb2.OperationResponse.ERROR
+
+# scenario name -> TlsConfig.version used by that scenario (mapped to GetMetadata capability names)
+_SCENARIO_TLS_REQUIREMENT = {
+    "establish_transmit_close": "1.3",
+    "expect_failure_wrong_hostname": "1.3",
+}
+
+
+def _tls_config_version_to_capability_name(version_str):
+    """Map driver TlsConfig.version to Capability.name from wrappers (e.g. TLS1.3)."""
+    if version_str is None or str(version_str).strip() == "":
+        return "TLS1.3"
+    low = str(version_str).strip().lower()
+    if low in ("1.2", "1.2.0", "tls1.2", "tls1_2"):
+        return "TLS1.2"
+    if low in ("1.3", "1.3.0", "tls1.3", "tls1_3"):
+        return "TLS1.3"
+    upper = str(version_str).strip().upper().replace(" ", "")
+    if upper in ("TLS1.2", "TLS1.3"):
+        return upper
+    return "TLS1.3"
 
 
 class InteropDriver:
@@ -27,6 +49,8 @@ class InteropDriver:
             grpc.insecure_channel(client_addr)
         )
         self._last_failure = None
+        self.server_metadata = None
+        self.client_metadata = None
 
     def _log_metadata(self, label, metadata):
         role_names = {1: "CLIENT", 2: "SERVER"}
@@ -35,6 +59,42 @@ class InteropDriver:
         print(f"         roles={roles_str}")
         versions = [c.name for c in metadata.supported_versions]
         print(f"         supported_versions={versions[:5]}{'...' if len(versions) > 5 else ''}")
+
+    def _metadata_can_negotiate_version(self, metadata, capability_name, role):
+        """True if role is allowed and TLS version is listed with NEGOTIATE; empty supported_versions => allow."""
+        if metadata is None:
+            return True
+        if metadata.roles and role not in metadata.roles:
+            return False
+        caps = list(metadata.supported_versions)
+        if not caps:
+            return True
+        for c in caps:
+            if c.name == capability_name and interop_pb2.NEGOTIATE in c.flags:
+                return True
+        return False
+
+    def scenario_skip_reason(self, scenario_name):
+        """If scenario should be skipped from GetMetadata, return reason; else None."""
+        need_tls = _SCENARIO_TLS_REQUIREMENT.get(scenario_name)
+        if need_tls is None or self.server_metadata is None or self.client_metadata is None:
+            return None
+        cap_name = _tls_config_version_to_capability_name(need_tls)
+        if not self._metadata_can_negotiate_version(
+            self.server_metadata, cap_name, interop_pb2.SERVER
+        ):
+            return (
+                f"server ({self.server_metadata.component_name}) cannot negotiate {cap_name} "
+                "per GetMetadata"
+            )
+        if not self._metadata_can_negotiate_version(
+            self.client_metadata, cap_name, interop_pb2.CLIENT
+        ):
+            return (
+                f"client ({self.client_metadata.component_name}) cannot negotiate {cap_name} "
+                "per GetMetadata"
+            )
+        return None
 
     def _check_response(self, resp, label):
         """Return True if status is SUCCESS, else set _last_failure and return False."""
@@ -157,7 +217,7 @@ class InteropDriver:
             self._cleanup()
 
     def run_scenario(self, name, tls_hostname):
-        """Run one scenario by name. Returns True if passed."""
+        """Run one scenario. Returns True if passed or skipped (capability filter)."""
         scenarios = {
             "establish_transmit_close": self.run_establish_transmit_close,
             "expect_failure_wrong_hostname": self.run_expect_failure_wrong_hostname,
@@ -165,6 +225,10 @@ class InteropDriver:
         if name not in scenarios:
             print(f"{RED}[Driver] Unknown scenario: {name}{RESET}")
             return False
+        skip = self.scenario_skip_reason(name)
+        if skip:
+            print(f"{YELLOW}[Driver] SKIP {name}: {skip}{RESET}")
+            return True
         return scenarios[name](tls_hostname)
 
     def run_all_scenarios(self, tls_hostname):
@@ -194,10 +258,10 @@ if __name__ == "__main__":
 
     print("[Driver] Fetching metadata...")
     try:
-        server_meta = driver.server_stub.GetMetadata(interop_pb2.Empty())
-        client_meta = driver.client_stub.GetMetadata(interop_pb2.Empty())
-        driver._log_metadata("Server", server_meta)
-        driver._log_metadata("Client", client_meta)
+        driver.server_metadata = driver.server_stub.GetMetadata(interop_pb2.Empty())
+        driver.client_metadata = driver.client_stub.GetMetadata(interop_pb2.Empty())
+        driver._log_metadata("Server", driver.server_metadata)
+        driver._log_metadata("Client", driver.client_metadata)
     except Exception as e:
         print(f"{RED}[Driver] GetMetadata failed: {e}{RESET}")
         sys.exit(1)

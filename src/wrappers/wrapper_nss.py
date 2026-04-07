@@ -2,6 +2,7 @@
 NSS (Network Security Services) wrapper. Uses selfserv (server) and tstclnt (client).
 Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB created by scripts/setup_nssdb.sh.
 Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default interop).
+Matrix workarounds: see matrix_env.py (GnuTLS×NSS Docker).
 """
 import os
 import re
@@ -18,6 +19,8 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 
 import interop_pb2
 import interop_pb2_grpc
+
+from matrix_env import tstclnt_host_and_extra_argv
 
 # NSS tools may live in unsupported-tools on Fedora (not in PATH)
 def _nss_tool(name):
@@ -139,16 +142,17 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     msg = "NSS Server started"
                 else:
                     host = request.config.server_hostname or "localhost"
+                    port = int(request.config.port)
+                    peer, extra = tstclnt_host_and_extra_argv(host, port)
                     cmd = [
                         self._tstclnt,
                         "-d",
                         db_spec,
                         "-h",
-                        host,
+                        peer,
                         "-p",
-                        str(request.config.port),
-                        "-a",
-                        host,  # explicit SNI for gnutls-serv --sni-hostname
+                        str(port),
+                        *extra,
                         "-V",
                         "tls1.2:tls1.3",
                         "-o",  # override cert validation for testing

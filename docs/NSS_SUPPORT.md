@@ -34,7 +34,7 @@ Packages: Fedora `nss-tools`, Debian/Ubuntu `libnss3-tools`.
 | **NSS wrapper** | `src/wrappers/wrapper_nss.py` – gRPC server, ESTABLISH → `selfserv` / `tstclnt`, TRANSMIT, CLOSE. Uses env `NSSDB` (default `./nssdb`), `CERT_NICKNAME` (default `interop`). |
 | **GetMetadata** | Returns `LibraryMetadata` with component_name `"NSS"`, version, roles, supported_versions/cipher_suites/groups. |
 | **NSS DB setup** | `scripts/setup_nssdb.sh` creates NSS DB from `cert.pem` and `key.pem` (certutil, pk12util). Dockerfile runs it at build time so image has `/app/nssdb`. |
-| **Compose** | `deploy/combos/*.yaml` – jedna kombinace server×klient na soubor. CI: `./scripts/run_all_combos.sh` (8 kombinací; **GnuTLS×NSS** přeskočena – viz [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md)). |
+| **Compose** | `deploy/combos/matrix.yaml` + `scripts/run_all_combos.sh`; workaround GnuTLS×NSS v [matrix_env.py](../src/wrappers/matrix_env.py) / [KNOWN_LIMITATIONS.md](KNOWN_LIMITATIONS.md). |
 
 ---
 

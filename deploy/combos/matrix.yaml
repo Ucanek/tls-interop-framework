@@ -1,0 +1,48 @@
+# Single compose for all server×client pairs. Set wrappers via shell env:
+#   SERVER_WRAPPER=openssl|gnutls|nss   CLIENT_WRAPPER=openssl|gnutls|nss
+# Defaults: openssl / openssl
+#
+# Prefer ./scripts/run_all_combos.sh (sets project name per pair) or:
+#   SERVER_WRAPPER=nss CLIENT_WRAPPER=gnutls docker compose -p interop-nss-gnutls -f deploy/combos/matrix.yaml run --rm --build driver
+#
+# INTEROP_GNUTLS_NSS_PAIR: see src/wrappers/matrix_env.py and docs/KNOWN_LIMITATIONS.md
+
+x-interop-matrix-env: &interop_matrix_env
+  INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
+
+services:
+  server_node:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: tls-interop-wrapper
+    # No host ports: driver talks over the compose network; publishing 50051/50052
+    # would collide when running multiple combos or if a previous run left containers up.
+    environment:
+      WRAPPER: ${SERVER_WRAPPER:-openssl}
+      NSSDB: /app/nssdb
+      <<: *interop_matrix_env
+    command: ["/app/wrapper_launch.sh"]
+
+  client_node:
+    build:
+      context: ../..
+      dockerfile: deploy/Dockerfile
+    image: tls-interop-wrapper
+    environment:
+      WRAPPER: ${CLIENT_WRAPPER:-openssl}
+      GRPC_PORT: "50051"
+      NSSDB: /app/nssdb
+      <<: *interop_matrix_env
+    command: ["/app/wrapper_launch.sh"]
+
+  driver:
+    image: tls-interop-wrapper
+    depends_on:
+      - server_node
+      - client_node
+    environment:
+      TLS_SERVER_GRPC: "server_node:50051"
+      TLS_CLIENT_GRPC: "client_node:50051"
+      TLS_HOSTNAME: "server_node"
+    command: ["sh", "-c", "sleep 5 && PYTHONPATH=/app python3 driver.py"]
