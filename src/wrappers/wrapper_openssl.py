@@ -26,6 +26,16 @@ def _cap(name, *flags):
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
+def _tls_mode(config):
+    """Return '1.2' or '1.3' from TlsConfig.version."""
+    if config is None:
+        return "1.3"
+    v = (config.version or "").strip().lower()
+    if v in ("1.2", "1.2.0", "tls1.2", "tls1_2"):
+        return "1.2"
+    return "1.3"
+
+
 class OpenSSLWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
@@ -76,10 +86,11 @@ class OpenSSLWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
 
         try:
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
+                tls_flag = "-tls1_2" if _tls_mode(request.config) == "1.2" else "-tls1_3"
                 if request.role == interop_pb2.SERVER:
                     cmd = [
                         "openssl", "s_server", "-accept", f"0.0.0.0:{request.config.port}",
-                        "-cert", "cert.pem", "-key", "key.pem", "-tls1_3", "-quiet",
+                        "-cert", "cert.pem", "-key", "key.pem", tls_flag, "-quiet",
                     ]
                     self.server_proc = subprocess.Popen(
                         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
@@ -92,7 +103,7 @@ class OpenSSLWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "s_client",
                         "-connect",
                         f"{request.config.server_hostname}:{request.config.port}",
-                        "-tls1_3",
+                        tls_flag,
                         "-quiet",
                     ]
                     self.client_proc = subprocess.Popen(

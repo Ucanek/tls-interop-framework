@@ -21,7 +21,9 @@ ERROR = interop_pb2.OperationResponse.ERROR
 # scenario name -> TlsConfig.version used by that scenario (mapped to GetMetadata capability names)
 _SCENARIO_TLS_REQUIREMENT = {
     "establish_transmit_close": "1.3",
+    "establish_transmit_close_tls12": "1.2",
     "expect_failure_wrong_hostname": "1.3",
+    "expect_failure_wrong_port": "1.3",
 }
 
 
@@ -116,66 +118,82 @@ class InteropDriver:
             except Exception as e:
                 print(f"[Driver] CLOSE {role} exception: {e}")
 
-    def _default_config(self, tls_hostname):
+    def _default_config(self, tls_hostname, version="1.3"):
         return interop_pb2.TlsConfig(
-            version="1.3",
+            version=version,
             server_hostname=tls_hostname,
             port=5555,
         )
 
-    def run_establish_transmit_close(self, tls_hostname):
-        """Scenario: establish TLS, transmit payload, verify data, then close. Expect SUCCESS."""
-        conf = self._default_config(tls_hostname)
+    def _run_establish_transmit(self, conf, label):
+        """Establish TLS 1.x, transmit payload, verify echo on server read. Caller handles cleanup."""
         test_message = b"INTEROP_SECRET_TOKEN"
-        try:
-            print("[Driver] Scenario: establish → transmit → close")
-            print("[Driver] Establishing connection...")
-            r = self.server_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.SERVER,
-                    config=conf,
-                )
+        print(f"[Driver] Scenario: {label}")
+        print("[Driver] Establishing connection...")
+        r = self.server_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.ESTABLISH,
+                role=interop_pb2.SERVER,
+                config=conf,
             )
-            if not self._check_response(r, "ESTABLISH server"):
-                return False
-            r = self.client_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.CLIENT,
-                    config=conf,
-                )
-            )
-            if not self._check_response(r, "ESTABLISH client"):
-                return False
-
-            time.sleep(0.5)
-            print(f"[Driver] Transmitting: {test_message.decode()}")
-            r = self.client_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.TRANSMIT,
-                    role=interop_pb2.CLIENT,
-                    payload=test_message,
-                )
-            )
-            if not self._check_response(r, "TRANSMIT client"):
-                return False
-
-            time.sleep(1)
-            r = self.server_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.TRANSMIT,
-                    role=interop_pb2.SERVER,
-                )
-            )
-            if not self._check_response(r, "TRANSMIT server"):
-                return False
-
-            if test_message in r.output_data:
-                print(f"{GREEN}>>> SCENARIO PASSED: Data successfully transmitted <<<{RESET}")
-                return True
-            print(f"{RED}>>> SCENARIO FAILED: Data corruption <<<{RESET}")
+        )
+        if not self._check_response(r, "ESTABLISH server"):
             return False
+        r = self.client_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.ESTABLISH,
+                role=interop_pb2.CLIENT,
+                config=conf,
+            )
+        )
+        if not self._check_response(r, "ESTABLISH client"):
+            return False
+
+        time.sleep(0.5)
+        print(f"[Driver] Transmitting: {test_message.decode()}")
+        r = self.client_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.TRANSMIT,
+                role=interop_pb2.CLIENT,
+                payload=test_message,
+            )
+        )
+        if not self._check_response(r, "TRANSMIT client"):
+            return False
+
+        time.sleep(1)
+        r = self.server_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.TRANSMIT,
+                role=interop_pb2.SERVER,
+            )
+        )
+        if not self._check_response(r, "TRANSMIT server"):
+            return False
+
+        if test_message in r.output_data:
+            print(f"{GREEN}>>> SCENARIO PASSED: Data successfully transmitted <<<{RESET}")
+            return True
+        print(f"{RED}>>> SCENARIO FAILED: Data corruption <<<{RESET}")
+        return False
+
+    def run_establish_transmit_close(self, tls_hostname):
+        """Establish TLS 1.3, transmit, verify. Expect SUCCESS."""
+        try:
+            return self._run_establish_transmit(
+                self._default_config(tls_hostname, "1.3"),
+                "establish → transmit → close (TLS 1.3)",
+            )
+        finally:
+            self._cleanup()
+
+    def run_establish_transmit_close_tls12(self, tls_hostname):
+        """Same as happy path but TLS 1.2 only. Expect SUCCESS."""
+        try:
+            return self._run_establish_transmit(
+                self._default_config(tls_hostname, "1.2"),
+                "establish → transmit → close (TLS 1.2)",
+            )
         finally:
             self._cleanup()
 
@@ -216,11 +234,50 @@ class InteropDriver:
         finally:
             self._cleanup()
 
+    def run_expect_failure_wrong_port(self, tls_hostname):
+        """Server on configured port; client connects to another port. Expect client ESTABLISH to fail."""
+        good_conf = self._default_config(tls_hostname, "1.3")
+        bad_conf = interop_pb2.TlsConfig(
+            version=good_conf.version,
+            server_hostname=good_conf.server_hostname,
+            port=good_conf.port + 1,
+        )
+        try:
+            print("[Driver] Scenario: expect failure (wrong port)")
+            print("[Driver] Establishing server...")
+            r = self.server_stub.ExecuteOperation(
+                interop_pb2.OperationRequest(
+                    type=interop_pb2.OperationRequest.ESTABLISH,
+                    role=interop_pb2.SERVER,
+                    config=good_conf,
+                )
+            )
+            if not self._check_response(r, "ESTABLISH server"):
+                return False
+
+            print(f"[Driver] Establishing client (port {bad_conf.port}, no listener)...")
+            r = self.client_stub.ExecuteOperation(
+                interop_pb2.OperationRequest(
+                    type=interop_pb2.OperationRequest.ESTABLISH,
+                    role=interop_pb2.CLIENT,
+                    config=bad_conf,
+                )
+            )
+            if r.status == SUCCESS:
+                print(f"{RED}>>> SCENARIO FAILED: Expected client to fail, got SUCCESS <<<{RESET}")
+                return False
+            print(f"{GREEN}>>> SCENARIO PASSED: Client failed as expected ({r.message or r.status}) <<<{RESET}")
+            return True
+        finally:
+            self._cleanup()
+
     def run_scenario(self, name, tls_hostname):
         """Run one scenario. Returns True if passed or skipped (capability filter)."""
         scenarios = {
             "establish_transmit_close": self.run_establish_transmit_close,
+            "establish_transmit_close_tls12": self.run_establish_transmit_close_tls12,
             "expect_failure_wrong_hostname": self.run_expect_failure_wrong_hostname,
+            "expect_failure_wrong_port": self.run_expect_failure_wrong_port,
         }
         if name not in scenarios:
             print(f"{RED}[Driver] Unknown scenario: {name}{RESET}")
@@ -233,7 +290,12 @@ class InteropDriver:
 
     def run_all_scenarios(self, tls_hostname):
         """Run all scenarios. Returns True iff all passed."""
-        names = ["establish_transmit_close", "expect_failure_wrong_hostname"]
+        names = [
+            "establish_transmit_close",
+            "establish_transmit_close_tls12",
+            "expect_failure_wrong_hostname",
+            "expect_failure_wrong_port",
+        ]
         results = []
         for name in names:
             results.append(self.run_scenario(name, tls_hostname))
@@ -245,7 +307,13 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scenario",
         default="all",
-        choices=["all", "establish_transmit_close", "expect_failure_wrong_hostname"],
+        choices=[
+            "all",
+            "establish_transmit_close",
+            "establish_transmit_close_tls12",
+            "expect_failure_wrong_hostname",
+            "expect_failure_wrong_port",
+        ],
         help="Scenario to run (default: all)",
     )
     args = parser.parse_args()

@@ -52,14 +52,14 @@ Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the D
 Use **`./scripts/run.sh`** (see `./scripts/run.sh help`). Typical flows:
 
 ```bash
-pip install grpcio grpcio-tools 'protobuf>=4.21'
+pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'
 ./scripts/run.sh protoc
 ./scripts/run.sh certs
 ./scripts/run.sh local          # host OpenSSL×OpenSSL + driver (no Docker)
 ./scripts/run.sh                # or: ./scripts/run.sh docker — all 9 matrix combos
 ```
 
-The driver runs two scenarios by default (`establish_transmit_close` and `expect_failure_wrong_hostname`). Use `python3 src/driver/driver.py --scenario establish_transmit_close` for a single scenario.
+By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default.
 
 **Docker matrix:** all pairs use **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. The image runs **`/app/wrapper_launch.sh`**. For GnuTLS×NSS, `INTEROP_GNUTLS_NSS_PAIR` is set automatically by `run.sh` (see [Known limitations](#known-limitations)).
 

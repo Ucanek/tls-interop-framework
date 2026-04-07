@@ -26,6 +26,15 @@ def _cap(name, *flags):
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
+def _tls_mode(config):
+    if config is None:
+        return "1.3"
+    v = (config.version or "").strip().lower()
+    if v in ("1.2", "1.2.0", "tls1.2", "tls1_2"):
+        return "1.2"
+    return "1.3"
+
+
 class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
@@ -100,6 +109,10 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                 else:
                     # Docker resolves hostname to IP; GnuTLS 3.8+ rejects SNI vs peer-IP (DISALLOWED_NAME).
                     host = request.config.server_hostname or "localhost"
+                    if _tls_mode(request.config) == "1.2":
+                        prio = "NORMAL:-VERS-ALL:+VERS-TLS1.2"
+                    else:
+                        prio = "NORMAL:-VERS-ALL:+VERS-TLS1.3"
                     cmd = [
                         "gnutls-cli",
                         "-p",
@@ -110,7 +123,7 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "--x509cafile",
                         "cert.pem",
                         "--priority",
-                        "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+                        prio,
                         host,
                     ]
                     self.client_proc = subprocess.Popen(

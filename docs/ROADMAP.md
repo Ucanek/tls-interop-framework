@@ -39,7 +39,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 | Step | What | Outcome |
 |------|------|--------|
 | 2.1 | **Scenario functions** | Driver runs a list of scenarios |
-| 2.2 | **Additional scenarios** | e.g. wrong hostname, future KEY_UPDATE when wired |
+| 2.2 | **Additional scenarios** | Wrong hostname, wrong port, TLS 1.2 happy path; KEY_UPDATE still future |
 | 2.3 | **Capability filter** | Skip with success + `SKIP` log when metadata rules out a scenario |
 
 **Definition of done:** ✅ Multiple scenarios; filter covered by `capability-test`.

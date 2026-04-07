@@ -44,6 +44,18 @@ def _cap(name, *flags):
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
+def _tls_version_range(config):
+    """NSS -V: always min:max. Bare tls1.2/tls1.3 are rejected by tstclnt/selfserv (Fedora nss-tools)."""
+    if config is None:
+        return "tls1.2:tls1.3"
+    v = (config.version or "").strip().lower()
+    if v in ("1.2", "1.2.0", "tls1.2", "tls1_2"):
+        return "tls1.2:tls1.2"
+    if v in ("1.3", "1.3.0", "tls1.3", "tls1_3"):
+        return "tls1.3:tls1.3"
+    return "tls1.2:tls1.3"
+
+
 class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
@@ -100,6 +112,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
 
         try:
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
+                nss_ver = _tls_version_range(request.config)
                 if request.role == interop_pb2.SERVER:
                     # selfserv binds to loopback only; other containers need 0.0.0.0.
                     ext_port = int(request.config.port)
@@ -127,7 +140,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "-p",
                         str(inner_port),
                         "-V",
-                        "tls1.2:tls1.3",
+                        nss_ver,
                         "-v",
                         "-v",  # verbose>1 so received app data is written to stdout (driver checks it)
                     ]
@@ -154,7 +167,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         str(port),
                         *extra,
                         "-V",
-                        "tls1.2:tls1.3",
+                        nss_ver,
                         "-o",  # override cert validation for testing
                     ]
                     self.client_proc = subprocess.Popen(

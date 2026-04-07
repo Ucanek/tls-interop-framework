@@ -53,7 +53,7 @@ cmd_local() {
 
   python3 -c "import grpc, interop_pb2" 2>/dev/null || {
     echo "Error: cannot import grpc or interop_pb2. Install in a venv:" >&2
-    echo "  pip install grpcio grpcio-tools 'protobuf>=4.21'" >&2
+    echo "  pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'" >&2
     echo "  ./scripts/run.sh protoc" >&2
     exit 1
   }
