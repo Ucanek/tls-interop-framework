@@ -2,35 +2,47 @@
 
 Recommended order of work, aligned with the draft spec and current codebase.
 
-**Target components:** OpenSSL, GnuTLS, **NSS**. The framework must work with all three; the driver and proto stay library-agnostic. See [NSS_SUPPORT.md](NSS_SUPPORT.md) for how NSS fits in.
+**Target components:** OpenSSL, GnuTLS, **NSS**. The framework runs all three; the driver and proto stay library-agnostic. NSS tooling, DB layout, and the GnuTLS×NSS workaround are documented in [README.md](../README.md) (sections *NSS* and *Known limitations*).
+
+---
+
+## Current status (snapshot)
+
+| Phase | Theme | Largely done |
+|-------|--------|----------------|
+| 1 | `GetMetadata` in wrappers | Yes (OpenSSL, GnuTLS, NSS) |
+| 2 | Scenarios + capability filter | Yes (`scenario_skip_reason`, `./scripts/run.sh capability-test`) |
+| 3 | CI + response handling | Yes (GitHub Actions, `run.sh ci`) |
+| 4 | NSS wrapper + matrix | Yes (`wrapper_nss.py`, `matrix.yaml`, `setup_nssdb.sh`) |
+| 5 | Spec extras | Optional / when needed |
 
 ---
 
 ## Phase 1: Capabilities (spec alignment)
 
-**Goal:** Driver can ask wrappers what they support; optional use in test selection.
+**Goal:** Driver can ask wrappers what they support; use in test selection.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 1.1 | Implement **GetMetadata** in OpenSSL wrapper | Return `LibraryMetadata`: component_name, version (from `openssl version`), roles [CLIENT, SERVER], supported_versions / cipher_suites / groups (e.g. from CLI or fixed TLS 1.3 list) with ModifyFlags. |
-| 1.2 | Implement **GetMetadata** in GnuTLS wrapper | Same shape; version from `gnutls-cli --version`, capabilities from GnuTLS priority or fixed set. |
-| 1.3 | Driver calls GetMetadata before test (optional) | Log or display metadata; later use it to skip incompatible tests (capability filter). |
+| 1.1 | **GetMetadata** in OpenSSL wrapper | `LibraryMetadata`: name, version, roles, supported_versions / cipher_suites / groups |
+| 1.2 | **GetMetadata** in GnuTLS wrapper | Same shape |
+| 1.3 | Driver uses GetMetadata | Log metadata; **skip** scenarios when capabilities insufficient |
 
-**Definition of done:** OpenSSL and GnuTLS wrappers respond to GetMetadata; driver can call it and print or use the result. No breaking change to current test. (NSS wrapper will implement GetMetadata when added.)
+**Definition of done:** ✅ All three wrappers implement GetMetadata; driver calls it and applies the capability filter.
 
 ---
 
 ## Phase 2: More tests and driver structure
 
-**Goal:** Not everything in one script; easy to add scenarios.
+**Goal:** Not everything in one blob; easy to add scenarios.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 2.1 | Extract test into **scenario functions** (e.g. `run_establish_transmit_close()`) | Driver has a small list of scenarios; main() runs one or all. |
-| 2.2 | Add **one more scenario** | e.g. “wrong hostname” or “TLS 1.2 only” (if CLI allows), or simple KEY_UPDATE test when wrappers support it. |
-| 2.3 | **Capability filter** | Driver uses `GetMetadata` before each scenario; skips (exit success, log `SKIP`) if server/client cannot negotiate the scenario TLS version / role. See `scenario_skip_reason` in `src/driver/driver.py`; test: `./scripts/run.sh capability-test`. |
+| 2.1 | **Scenario functions** | Driver runs a list of scenarios |
+| 2.2 | **Additional scenarios** | e.g. wrong hostname, future KEY_UPDATE when wired |
+| 2.3 | **Capability filter** | Skip with success + `SKIP` log when metadata rules out a scenario |
 
-**Definition of done:** At least two runnable scenarios; driver code is easier to extend.
+**Definition of done:** ✅ Multiple scenarios; filter covered by `capability-test`.
 
 ---
 
@@ -40,42 +52,37 @@ Recommended order of work, aligned with the draft spec and current codebase.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 3.1 | **CI workflow** (e.g. GitHub Actions) | On push/PR: `./scripts/run.sh` (`protoc`, `certs`, `local`, `docker`, …). |
-| 3.2 | **Error handling** | Driver checks `OperationResponse.status` for each call; report FAILURE/ERROR clearly and exit non‑zero on failure. |
+| 3.1 | **CI workflow** | `./scripts/run.sh` (`protoc`, `certs`, `local`, `docker`, …) |
+| 3.2 | **Error handling** | Non-zero exit on failed `OperationResponse` |
 
-**Definition of done:** CI runs local + Docker tests; failed response from wrapper fails the run.
+**Definition of done:** ✅ CI runs local + Docker matrix; failures fail the job.
 
 ---
 
 ## Phase 4: NSS wrapper (full support for three libraries)
 
-**Goal:** Framework works with NSS the same way as with OpenSSL and GnuTLS.
+**Goal:** NSS on par with OpenSSL/GnuTLS in the matrix.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 4.1 | **NSS wrapper** `src/wrappers/wrapper_nss.py` | Same gRPC service as OpenSSL/GnuTLS; ESTABLISH → `selfserv` / `tstclnt`, TRANSMIT (stdin/stdout), CLOSE. Cert handling: NSS DB (e.g. create DB + import cert in container or from TlsConfig). |
-| 4.2 | **GetMetadata for NSS** | component_name `"NSS"`, version from NSS, roles, capabilities (versions/ciphers/groups) with ModifyFlags. |
-| 4.3 | **Docker and Compose** | Image (or variant) with `nss-tools`, NSS DB setup; compose profile or file for NSS as server and/or client. |
-| 4.4 | **CI** | At least one job with NSS in the mix (e.g. NSS client vs OpenSSL server). |
+| 4.1 | **NSS wrapper** | `wrapper_nss.py`, `selfserv` / `tstclnt`, NSS DB |
+| 4.2 | **GetMetadata for NSS** | Same metadata shape as other wrappers |
+| 4.3 | **Docker / Compose** | Image with `nss-tools`, `matrix.yaml` rows for NSS |
+| 4.4 | **CI** | NSS included in matrix runs |
 
-**Definition of done:** Same scenarios run with NSS as one of the two nodes; no driver changes. See [NSS_SUPPORT.md](NSS_SUPPORT.md).
+**Definition of done:** ✅ Same scenarios across NSS combinations; GnuTLS×NSS env documented in README.
 
 ---
 
 ## Phase 5: Later (when needed)
 
-- **RequestSender / HTTP API:** If tests should be written as scripts that call the driver via HTTP (per spec).
-- **tmt / fmf:** Integrate with tmt plans and fmf metadata so tests are discoverable and runnable as a “test plan”.
-- **Control parameters:** Config file or CLI for “which component pairs to test” (e.g. ALL-S × GnuTLS-C, including NSS).
-- **Session/test/epoch model:** If we need session-level setup and multiple tests per session.
+- **RequestSender / HTTP API:** If tests should be scripts that call the driver via HTTP (per spec).
+- **tmt / fmf:** Discoverable “test plans” and metadata.
+- **Control parameters:** Driver-level config for pairs (beyond compose / `run.sh` args).
+- **Session / test / epoch model:** Session-level setup and multiple tests per session.
 
 ---
 
 ## Suggested next action
 
-**Done:** Phase 1, 2.1–2.2, 3 (CI + error handling), 4 (NSS wrapper), `scripts/run.sh`, `setup_nssdb.sh` (find certutil/pk12util).
-
-**Next (when useful):**
-
-- **Phase 5 – Later**  
-  RequestSender/HTTP API, tmt/fmf, control parameters (which pairs to test), session/test epochs. Start when the spec or usage requires it.
+**Next (when useful):** Phase 5 items above, or extend scenarios (e.g. KEY_UPDATE, stricter TLS version cases) and metadata fields if the spec or downstream tests need them.

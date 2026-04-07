@@ -5,7 +5,7 @@
 # Prefer ./scripts/run.sh (docker) — sets project name per pair — or:
 #   SERVER_WRAPPER=nss CLIENT_WRAPPER=gnutls docker compose -p interop-nss-gnutls -f deploy/matrix.yaml run --rm --build driver
 #
-# INTEROP_GNUTLS_NSS_PAIR: see src/wrappers/matrix_env.py and docs/KNOWN_LIMITATIONS.md
+# INTEROP_GNUTLS_NSS_PAIR: see src/wrappers/matrix_env.py and README.md (Known limitations)
 
 x-interop-matrix-env: &interop_matrix_env
   INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
