@@ -11,8 +11,21 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 MATRIX="deploy/combos/matrix.yaml"
+# INTEROP_GNUTLS_NSS_PAIR must match GNUTLS_NSS_PAIR_ENV in src/wrappers/matrix_env.py
+
 FAILED=()
 PASSED=()
+
+# Exports SERVER_WRAPPER, CLIENT_WRAPPER, and matrix workaround flags for compose interpolation.
+export_matrix_env_for_pair() {
+  local srv="$1" cli="$2"
+  export SERVER_WRAPPER="$srv" CLIENT_WRAPPER="$cli"
+  if [[ "$srv" == gnutls && "$cli" == nss ]]; then
+    export INTEROP_GNUTLS_NSS_PAIR=1
+  else
+    export INTEROP_GNUTLS_NSS_PAIR=0
+  fi
+}
 
 run_combo() {
   local srv="$1" cli="$2"
@@ -20,12 +33,7 @@ run_combo() {
   local project="interop-${srv}-${cli}"
   echo ""
   echo "========== $name =========="
-  export SERVER_WRAPPER="$srv" CLIENT_WRAPPER="$cli"
-  if [[ "$srv" == gnutls && "$cli" == nss ]]; then
-    export INTEROP_GNUTLS_NSS_PAIR=1
-  else
-    export INTEROP_GNUTLS_NSS_PAIR=0
-  fi
+  export_matrix_env_for_pair "$srv" "$cli"
   # Clear same-project leftovers (e.g. deps still running after a previous `compose run`).
   docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
   if docker compose -p "$project" -f "$MATRIX" run --rm --build driver 2>&1; then
