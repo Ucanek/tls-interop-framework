@@ -40,6 +40,35 @@ def _parse_version(out):
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
+def _nss_library_version():
+    """Installed NSS version for GetMetadata (tstclnt -V is the TLS range switch, not --version)."""
+    try:
+        if shutil.which("rpm"):
+            r = subprocess.run(
+                ["rpm", "-q", "nss-softokn"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0 and (r.stdout or "").strip():
+                return _parse_version(r.stdout) or ""
+    except Exception:
+        pass
+    try:
+        if shutil.which("dpkg-query"):
+            r = subprocess.run(
+                ["dpkg-query", "-W", "-f=${Version}\n", "libnss3"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0 and (r.stdout or "").strip():
+                return _parse_version(r.stdout) or ""
+    except Exception:
+        pass
+    return ""
+
+
 def _cap(name, *flags):
     return interop_pb2.Capability(name=name, flags=list(flags))
 
@@ -67,18 +96,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         self._tstclnt = _nss_tool("tstclnt")
 
     def GetMetadata(self, request, context):
-        version = "NSS"
-        try:
-            r = subprocess.run(
-                [self._tstclnt, "-V"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if r.returncode == 0:
-                version = _parse_version(r.stdout or r.stderr) or version
-        except Exception:
-            pass
+        version = _nss_library_version() or "unknown"
         return interop_pb2.LibraryMetadata(
             component_name="NSS",
             version=version,

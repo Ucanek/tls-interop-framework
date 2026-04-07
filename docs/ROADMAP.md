@@ -16,6 +16,8 @@ Recommended order of work, aligned with the draft spec and current codebase.
 | 4 | NSS wrapper + matrix | Yes (`wrapper_nss.py`, `matrix.yaml`, `setup_nssdb.sh`) |
 | 5 | Spec extras | Optional / when needed |
 
+**NSS notes:** All nine Docker pairs pass the driver scenarios. `LibraryMetadata.version` for NSS is taken from the installed package (`nss-softokn` via `rpm`, or `libnss3` via `dpkg-query`), not from `tstclnt -V` (that flag sets the TLS version *range* for tools). Wrappers pass `min:max` forms such as `tls1.3:tls1.3` to `tstclnt` / `selfserv` so TLS 1.2-only and 1.3-only runs are valid.
+
 ---
 
 ## Phase 1: Capabilities (spec alignment)
@@ -85,4 +87,4 @@ Recommended order of work, aligned with the draft spec and current codebase.
 
 ## Suggested next action
 
-**Next (when useful):** Phase 5 items above, or extend scenarios (e.g. KEY_UPDATE, stricter TLS version cases) and metadata fields if the spec or downstream tests need them.
+**Next (when useful):** Phase 5 (HTTP API, tmt/fmf, richer session config), or new scenarios (e.g. KEY_UPDATE, stricter TLS cases) if the spec needs them.
