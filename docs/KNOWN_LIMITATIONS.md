@@ -1,19 +1,16 @@
 # Known limitations
 
-## GnuTLS server × NSS client (`SERVER_WRAPPER=gnutls` `CLIENT_WRAPPER=nss` with `deploy/combos/matrix.yaml`)
+## GnuTLS server × NSS client (SNI vs. TCP peer)
 
-The NSS test client (`tstclnt`) and GnuTLS test server (`gnutls-serv`) often fail the TLS handshake with:
+Previously, `tstclnt` used `-h server_node -a server_node`. Docker resolves `server_node` to an IP for the TCP connection, but the ClientHello still carried the **DNS** SNI `server_node`. **GnuTLS 3.8+** rejects that combination and responds with `illegal_parameter` (“disallowed SNI server name”).
 
-`SSL_ERROR_ILLEGAL_PARAMETER_ALERT` (peer rejects a handshake message).
+**Mitigation (implemented):** When `INTEROP_GNUTLS_NSS_PAIR=1` (set by `./scripts/run_all_combos.sh` for the gnutls×nss matrix row), the NSS wrapper **resolves** the configured hostname to an address, passes that to `tstclnt -h`, and **does not** pass `-a`, so the handshake typically omits DNS SNI. Certificate trust still uses `tstclnt -o` for the test self-signed cert.
 
-This is a **stack-to-stack** incompatibility: NSS sends a ClientHello (extensions, groups, versions) that GnuTLS treats as invalid under its RFC interpretation, while e.g. **OpenSSL `s_server` accepts the same NSS client** without that alert.
-
-**Status:** This combo is **not** run in CI (`./scripts/run_all_combos.sh`). To attempt it anyway:
+Manual run:
 
 ```bash
-./scripts/run_all_combos.sh --all
-# or
-SERVER_WRAPPER=gnutls CLIENT_WRAPPER=nss docker compose -p interop-gnutls-nss -f deploy/combos/matrix.yaml run --rm --build driver
+INTEROP_GNUTLS_NSS_PAIR=1 SERVER_WRAPPER=gnutls CLIENT_WRAPPER=nss \
+  docker compose -p interop-gnutls-nss -f deploy/combos/matrix.yaml run --rm --build driver
 ```
 
-Future work: newer GnuTLS/NSS releases, different `gnutls-serv` priority strings, or an alternative NSS-facing server path in the wrapper.
+If `getaddrinfo` fails, the wrapper falls back to hostname + `-a` (old behaviour).

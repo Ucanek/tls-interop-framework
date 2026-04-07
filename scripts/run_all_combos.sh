@@ -1,8 +1,8 @@
 #!/bin/bash
 # Run server×client Docker combos via one parameterized compose (deploy/combos/matrix.yaml).
 #
-#   ./scripts/run_all_combos.sh                    # 8 combos (CI default; skips gnutls×nss)
-#   ./scripts/run_all_combos.sh --all              # all 9 including gnutls×nss (may fail)
+#   ./scripts/run_all_combos.sh                    # 9 combos (CI default; gnutls×nss sets INTEROP_GNUTLS_NSS_PAIR)
+#   ./scripts/run_all_combos.sh --all              # same as default (kept for compatibility)
 #   ./scripts/run_all_combos.sh openssl nss
 #   ./scripts/run_all_combos.sh gnutls-gnutls
 
@@ -13,7 +13,6 @@ cd "$ROOT"
 MATRIX="deploy/combos/matrix.yaml"
 FAILED=()
 PASSED=()
-SKIPPED=()
 
 run_combo() {
   local srv="$1" cli="$2"
@@ -22,6 +21,11 @@ run_combo() {
   echo ""
   echo "========== $name =========="
   export SERVER_WRAPPER="$srv" CLIENT_WRAPPER="$cli"
+  if [[ "$srv" == gnutls && "$cli" == nss ]]; then
+    export INTEROP_GNUTLS_NSS_PAIR=1
+  else
+    export INTEROP_GNUTLS_NSS_PAIR=0
+  fi
   # Clear same-project leftovers (e.g. deps still running after a previous `compose run`).
   docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
   if docker compose -p "$project" -f "$MATRIX" run --rm --build driver 2>&1; then
@@ -61,23 +65,20 @@ if [[ -n "${1:-}" ]]; then
   fi
 fi
 
-# CI / default: skip gnutls-nss (NSS tstclnt ↔ gnutls-serv handshake: illegal_parameter)
 PAIRS=(
   "openssl openssl"
   "openssl gnutls"
   "openssl nss"
   "gnutls openssl"
   "gnutls gnutls"
+  "gnutls nss"
   "nss openssl"
   "nss gnutls"
   "nss nss"
 )
 
-if [[ "${RUN_ALL:-}" == 1 ]]; then
-  PAIRS+=("gnutls nss")
-else
-  SKIPPED+=("gnutls×nss")
-fi
+# --all is a no-op (all pairs always run); kept so old CI/scripts do not break.
+[[ "${RUN_ALL:-}" == 1 ]] || true
 
 for pair in "${PAIRS[@]}"; do
   set -- $pair
@@ -88,7 +89,4 @@ echo ""
 echo "========== Summary =========="
 echo "Passed: ${#PASSED[@]} (${PASSED[*]:-none})"
 echo "Failed: ${#FAILED[@]} (${FAILED[*]:-none})"
-if [[ ${#SKIPPED[@]} -gt 0 ]]; then
-  echo "Skipped (known limitation): ${SKIPPED[*]} — see docs/KNOWN_LIMITATIONS.md"
-fi
 [[ ${#FAILED[@]} -eq 0 ]] && exit 0 || exit 1

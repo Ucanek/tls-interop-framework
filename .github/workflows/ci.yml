@@ -33,5 +33,5 @@ jobs:
       - name: Run local test
         run: ./scripts/run_local.sh
 
-      - name: Run Docker (8 server×client combos)
+      - name: Run Docker (9 server×client combos)
         run: ./scripts/run_all_combos.sh

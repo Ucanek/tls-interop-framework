@@ -16,6 +16,8 @@ services:
     environment:
       WRAPPER: ${SERVER_WRAPPER:-openssl}
       NSSDB: /app/nssdb
+      # Set to 1 for gnutls×nss: NSS client connects by IP without SNI (GnuTLS + DNS SNI + TCP-to-IP).
+      INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
     command: ["/app/wrapper_launch.sh"]
 
   client_node:
@@ -27,6 +29,7 @@ services:
       WRAPPER: ${CLIENT_WRAPPER:-openssl}
       GRPC_PORT: "50051"
       NSSDB: /app/nssdb
+      INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
     command: ["/app/wrapper_launch.sh"]
 
   driver:

@@ -66,17 +66,13 @@ The driver runs two scenarios by default (`establish_transmit_close` and `expect
 
 All server×client pairs use **`deploy/combos/matrix.yaml`**. Wrappers are chosen with environment variables **`SERVER_WRAPPER`** and **`CLIENT_WRAPPER`** (`openssl`, `gnutls`, or `nss`). The image runs **`/app/wrapper_launch.sh`**, which starts the matching Python wrapper. `NSSDB=/app/nssdb` is set for both nodes (ignored by OpenSSL/GnuTLS).
 
-**Default (8 combos, CI):** skips **GnuTLS×NSS** due to a known handshake limitation — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
+**CI / default:** all **9** server×client pairs (including **GnuTLS×NSS**, which sets `INTEROP_GNUTLS_NSS_PAIR` so the NSS client avoids DNS SNI when connecting by IP — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)).
 
 ```bash
 ./scripts/run_all_combos.sh
 ```
 
-**All 9 combos** (including GnuTLS×NSS, may fail):
-
-```bash
-./scripts/run_all_combos.sh --all
-```
+`./scripts/run_all_combos.sh --all` is the same as above (kept for older scripts).
 
 **Single combo:**
 
@@ -97,7 +93,7 @@ Legacy single-file compose examples:
 
 ### CI (GitHub Actions)
 
-On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (8 Docker combos).
+On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (9 Docker combos).
 
 ---
 

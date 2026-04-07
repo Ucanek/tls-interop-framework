@@ -6,6 +6,7 @@ Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default 
 import os
 import re
 import shutil
+import socket
 import sys
 import fcntl
 import subprocess
@@ -39,6 +40,38 @@ def _parse_version(out):
 
 def _cap(name, *flags):
     return interop_pb2.Capability(name=name, flags=list(flags))
+
+
+def _interop_gnutls_nss_pair():
+    """Set by compose when server=GnuTLS and client=NSS (see deploy/combos/matrix.yaml)."""
+    return os.environ.get("INTEROP_GNUTLS_NSS_PAIR", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+
+def _tstclnt_host_and_sni(hostname: str, port: int):
+    """
+    tstclnt -h target and optional -a for SNI.
+
+    GnuTLS 3.8+ rejects a DNS name in SNI when the TCP connection is to an IP (Docker DNS).
+    For the GnuTLS×NSS pair, resolve the server hostname and connect by IP without -a
+    (no SNI), and rely on -o for the self-signed cert.
+    """
+    h = hostname or "localhost"
+    if not _interop_gnutls_nss_pair():
+        return h, [("-a", h)]
+    try:
+        for fam in (socket.AF_INET, socket.AF_INET6):
+            infos = socket.getaddrinfo(h, int(port), family=fam, type=socket.SOCK_STREAM)
+            if infos:
+                ip = infos[0][4][0]
+                return str(ip), []
+    except Exception:
+        pass
+    return h, [("-a", h)]
 
 
 class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
@@ -139,20 +172,26 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     msg = "NSS Server started"
                 else:
                     host = request.config.server_hostname or "localhost"
+                    port = int(request.config.port)
+                    peer_host, sni_args = _tstclnt_host_and_sni(host, port)
                     cmd = [
                         self._tstclnt,
                         "-d",
                         db_spec,
                         "-h",
-                        host,
+                        peer_host,
                         "-p",
-                        str(request.config.port),
-                        "-a",
-                        host,  # explicit SNI for gnutls-serv --sni-hostname
-                        "-V",
-                        "tls1.2:tls1.3",
-                        "-o",  # override cert validation for testing
+                        str(port),
                     ]
+                    for flag, val in sni_args:
+                        cmd.extend([flag, val])
+                    cmd.extend(
+                        [
+                            "-V",
+                            "tls1.2:tls1.3",
+                            "-o",  # override cert validation for testing
+                        ]
+                    )
                     self.client_proc = subprocess.Popen(
                         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=os.getcwd()
                     )
