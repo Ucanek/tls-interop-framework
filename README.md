@@ -22,7 +22,7 @@ Two logical planes:
 
 - **Driver** – Orchestrates test sessions, synchronizes server/client nodes, evaluates results.
 - **Wrappers** – Per-library gRPC servers (OpenSSL, GnuTLS, NSS) that run the TLS tools. See [docs/NSS_SUPPORT.md](docs/NSS_SUPPORT.md).
-- **Capability filter** – After `GetMetadata`, the driver skips a scenario (successful exit) if metadata shows the server or client cannot negotiate the required TLS version or role; self-test: `python3 scripts/test_capability_filter.py` from repo root after `protoc`.
+- **Capability filter** – After `GetMetadata`, the driver skips a scenario (successful exit) if metadata shows the server or client cannot negotiate the required TLS version or role; self-test: `./scripts/run.sh capability-test` (after `protoc`).
 
 ## Tech stack
 
@@ -38,9 +38,9 @@ Two logical planes:
 | `proto/` | Protocol Buffer definitions |
 | `src/driver/` | Central orchestrator (driver) |
 | `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
-| `scripts/` | Certificates, local/Docker run scripts |
-| `deploy/` | Dockerfile, compose files |
-| `deploy/combos/matrix.yaml` | One parameterized Compose stack (`SERVER_WRAPPER` / `CLIENT_WRAPPER`) |
+| `scripts/run.sh` | **Main entry:** Docker matrix, local test, certs, protoc, compose, CI pipeline |
+| `scripts/` | `gen_certs.sh`, `setup_nssdb.sh` (used by image / `run.sh certs`), `test_capability_filter.py` |
+| `deploy/` | `Dockerfile`, `wrapper_launch.sh`, `matrix.yaml` (Docker matrix) |
 | `docs/` | Limitations, NSS notes, roadmap, spec notes |
 
 Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the Docker image build; it is not versioned.
@@ -49,51 +49,37 @@ Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the D
 
 ## Running the tests
 
-### Option 1: Local (no Docker)
-
-Requirements: Python 3, `openssl` CLI, `grpcio`, `protobuf`.
+Use **`./scripts/run.sh`** (see `./scripts/run.sh help`). Typical flows:
 
 ```bash
-./scripts/gen_certs.sh
 pip install grpcio grpcio-tools 'protobuf>=4.21'
-python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/interop.proto
-./scripts/run_local.sh
+./scripts/run.sh protoc
+./scripts/run.sh certs
+./scripts/run.sh local          # host OpenSSL×OpenSSL + driver (no Docker)
+./scripts/run.sh                # or: ./scripts/run.sh docker — all 9 matrix combos
 ```
 
 The driver runs two scenarios by default (`establish_transmit_close` and `expect_failure_wrong_hostname`). Use `python3 src/driver/driver.py --scenario establish_transmit_close` for a single scenario.
 
-### Option 2: Docker
-
-All server×client pairs use **`deploy/combos/matrix.yaml`**. Wrappers are chosen with environment variables **`SERVER_WRAPPER`** and **`CLIENT_WRAPPER`** (`openssl`, `gnutls`, or `nss`). The image runs **`/app/wrapper_launch.sh`**, which starts the matching Python wrapper. `NSSDB=/app/nssdb` is set for both nodes (ignored by OpenSSL/GnuTLS).
-
-**CI / default:** all **9** server×client pairs (including **GnuTLS×NSS**, which sets `INTEROP_GNUTLS_NSS_PAIR` so the NSS client avoids DNS SNI when connecting by IP — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md)).
+**Docker matrix:** all pairs use **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. The image runs **`/app/wrapper_launch.sh`**. `INTEROP_GNUTLS_NSS_PAIR` for GnuTLS×NSS is set automatically — see [docs/KNOWN_LIMITATIONS.md](docs/KNOWN_LIMITATIONS.md).
 
 ```bash
-./scripts/run_all_combos.sh
+./scripts/run.sh docker                    # all 9 combos
+./scripts/run.sh docker openssl nss        # one combo
+./scripts/run.sh docker gnutls-gnutls
 ```
 
-`./scripts/run_all_combos.sh --all` is the same as above (kept for older scripts).
-
-**Single combo:**
+Ad hoc matrix run (same as `run.sh docker gnutls openssl`):
 
 ```bash
-./scripts/run_all_combos.sh openssl nss
-./scripts/run_all_combos.sh gnutls-gnutls
-# or manually (pick a unique compose project name per run):
-SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-openssl -f deploy/combos/matrix.yaml run --rm --build driver
+SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-openssl -f deploy/matrix.yaml run --rm --build driver
 ```
 
-Legacy single-file compose examples:
-
-```bash
-./scripts/run_docker.sh
-./scripts/run_docker.sh deploy/docker-compose.reversed.yaml
-./scripts/run_docker.sh deploy/docker-compose.nss-client.yaml
-```
+**Full pipeline locally (matches CI):** `./scripts/run.sh ci`
 
 ### CI (GitHub Actions)
 
-On push/PR to `main`, CI runs the local test and **`./scripts/run_all_combos.sh`** (9 Docker combos).
+On push/PR to `main`, CI runs `./scripts/run.sh` steps: `protoc`, `certs`, `capability-test`, `local`, `docker`.
 
 ---
 

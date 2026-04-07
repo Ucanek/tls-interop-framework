@@ -1,5 +1,5 @@
 """
-Docker matrix integration: env vars set by deploy/combos/matrix.yaml and scripts/run_all_combos.sh.
+Docker matrix integration: env vars set by deploy/matrix.yaml and scripts/run.sh (docker).
 
 Keep the variable name in sync with YAML/shell (search for GNUTLS_NSS_PAIR_ENV).
 """
@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 import socket
 
-# Must match deploy/combos/matrix.yaml and run_all_combos.sh exports.
+# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
 GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
 
 _TRUTHY = frozenset({"1", "true", "yes", "on"})

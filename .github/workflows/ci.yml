@@ -24,14 +24,14 @@ jobs:
 
       - name: Generate protobuf and certs
         run: |
-          python -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/interop.proto
-          ./scripts/gen_certs.sh
+          ./scripts/run.sh protoc
+          ./scripts/run.sh certs
 
       - name: Capability filter (phase 2.3) self-check
-        run: python3 scripts/test_capability_filter.py
+        run: ./scripts/run.sh capability-test
 
       - name: Run local test
-        run: ./scripts/run_local.sh
+        run: ./scripts/run.sh local
 
       - name: Run Docker (9 server×client combos)
-        run: ./scripts/run_all_combos.sh
+        run: ./scripts/run.sh docker

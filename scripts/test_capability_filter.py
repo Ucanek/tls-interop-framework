@@ -4,7 +4,8 @@ Unit checks for the driver capability filter (phase 2.3).
 
 Run from repository root (after protoc + pip install grpcio protobuf):
 
-  python3 scripts/test_capability_filter.py
+  ./scripts/run.sh capability-test
+  # or: python3 scripts/test_capability_filter.py
 """
 import importlib.util
 import os

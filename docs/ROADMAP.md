@@ -28,7 +28,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 |------|------|--------|
 | 2.1 | Extract test into **scenario functions** (e.g. `run_establish_transmit_close()`) | Driver has a small list of scenarios; main() runs one or all. |
 | 2.2 | Add **one more scenario** | e.g. “wrong hostname” or “TLS 1.2 only” (if CLI allows), or simple KEY_UPDATE test when wrappers support it. |
-| 2.3 | **Capability filter** | Driver uses `GetMetadata` before each scenario; skips (exit success, log `SKIP`) if server/client cannot negotiate the scenario TLS version / role. See `scenario_skip_reason` in `src/driver/driver.py`; test: `python3 scripts/test_capability_filter.py`. |
+| 2.3 | **Capability filter** | Driver uses `GetMetadata` before each scenario; skips (exit success, log `SKIP`) if server/client cannot negotiate the scenario TLS version / role. See `scenario_skip_reason` in `src/driver/driver.py`; test: `./scripts/run.sh capability-test`. |
 
 **Definition of done:** At least two runnable scenarios; driver code is easier to extend.
 
@@ -40,7 +40,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 3.1 | **CI workflow** (e.g. GitHub Actions) | On push/PR: run `./scripts/run_local.sh` (or equivalent), then `docker compose -f deploy/docker-compose.yaml run driver` (and optionally reversed). |
+| 3.1 | **CI workflow** (e.g. GitHub Actions) | On push/PR: `./scripts/run.sh` (`protoc`, `certs`, `local`, `docker`, …). |
 | 3.2 | **Error handling** | Driver checks `OperationResponse.status` for each call; report FAILURE/ERROR clearly and exit non‑zero on failure. |
 
 **Definition of done:** CI runs local + Docker tests; failed response from wrapper fails the run.
@@ -73,7 +73,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 
 ## Suggested next action
 
-**Done:** Phase 1, 2.1–2.2, 3 (CI + error handling), 4 (NSS wrapper), `run_docker.sh`, `setup_nssdb.sh` (find certutil/pk12util).
+**Done:** Phase 1, 2.1–2.2, 3 (CI + error handling), 4 (NSS wrapper), `scripts/run.sh`, `setup_nssdb.sh` (find certutil/pk12util).
 
 **Next (when useful):**
 

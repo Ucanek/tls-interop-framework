@@ -71,7 +71,7 @@ This document compares the current implementation to the draft spec (Name: TLS i
 
 ### Control parameters
 - **Spec:** Test combination from list of pairs (e.g. `{ GnuTLS-C, ALL-S }`), common args (files), TLS args, capability filter.
-- **Current:** No such configuration. Which library is server/client is fixed by Docker Compose (and reversed compose), not by driver config.
+- **Current:** No such configuration. Which library is server/client is chosen by `deploy/matrix.yaml` / `./scripts/run.sh docker`, not by driver config.
 
 ### Pipeline and epochs
 - **Spec:** Session (tmt plan) → test → TLS (single session). Initial setup, test execution, cleanup at session/test level.

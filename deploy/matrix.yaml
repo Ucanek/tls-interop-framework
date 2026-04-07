@@ -2,8 +2,8 @@
 #   SERVER_WRAPPER=openssl|gnutls|nss   CLIENT_WRAPPER=openssl|gnutls|nss
 # Defaults: openssl / openssl
 #
-# Prefer ./scripts/run_all_combos.sh (sets project name per pair) or:
-#   SERVER_WRAPPER=nss CLIENT_WRAPPER=gnutls docker compose -p interop-nss-gnutls -f deploy/combos/matrix.yaml run --rm --build driver
+# Prefer ./scripts/run.sh (docker) — sets project name per pair — or:
+#   SERVER_WRAPPER=nss CLIENT_WRAPPER=gnutls docker compose -p interop-nss-gnutls -f deploy/matrix.yaml run --rm --build driver
 #
 # INTEROP_GNUTLS_NSS_PAIR: see src/wrappers/matrix_env.py and docs/KNOWN_LIMITATIONS.md
 
@@ -13,7 +13,7 @@ x-interop-matrix-env: &interop_matrix_env
 services:
   server_node:
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     # No host ports: driver talks over the compose network; publishing 50051/50052
@@ -26,7 +26,7 @@ services:
 
   client_node:
     build:
-      context: ../..
+      context: ..
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     environment:

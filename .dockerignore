@@ -18,5 +18,4 @@ nssdb
 docs
 proto
 *.md
-deploy/combos
-deploy/docker-compose*.yaml
+deploy/matrix.yaml
