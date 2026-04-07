@@ -28,7 +28,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 |------|------|--------|
 | 2.1 | Extract test into **scenario functions** (e.g. `run_establish_transmit_close()`) | Driver has a small list of scenarios; main() runs one or all. |
 | 2.2 | Add **one more scenario** | e.g. “wrong hostname” or “TLS 1.2 only” (if CLI allows), or simple KEY_UPDATE test when wrappers support it. |
-| 2.3 | (Optional) **Capability filter** | Before running a scenario, driver checks metadata and skips if e.g. TLS version not supported. |
+| 2.3 | **Capability filter** | Driver uses `GetMetadata` before each scenario; skips (exit success, log `SKIP`) if server/client cannot negotiate the scenario TLS version / role. See `scenario_skip_reason` in `src/driver/driver.py`; test: `python3 scripts/test_capability_filter.py`. |
 
 **Definition of done:** At least two runnable scenarios; driver code is easier to extend.
 
@@ -76,9 +76,6 @@ Recommended order of work, aligned with the draft spec and current codebase.
 **Done:** Phase 1, 2.1–2.2, 3 (CI + error handling), 4 (NSS wrapper), `run_docker.sh`, `setup_nssdb.sh` (find certutil/pk12util).
 
 **Next (when useful):**
-
-- **Phase 2.3 (optional) – Capability filter**  
-  Driver uses GetMetadata to skip scenarios a wrapper can’t support (e.g. TLS 1.2 when only 1.3 is reported).
 
 - **Phase 5 – Later**  
   RequestSender/HTTP API, tmt/fmf, control parameters (which pairs to test), session/test epochs. Start when the spec or usage requires it.

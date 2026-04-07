@@ -2,7 +2,8 @@
 # Run the interop test in Docker and then stop all containers.
 # Usage: ./scripts/run_docker.sh [compose-file]
 #   Default: deploy/docker-compose.yaml (OpenSSL server, GnuTLS client)
-#   Reversed: deploy/docker-compose.reversed.yaml (GnuTLS server, OpenSSL client)
+#   Matrix (parameterized): export SERVER_WRAPPER=… CLIENT_WRAPPER=… then
+#     ./scripts/run_docker.sh deploy/combos/matrix.yaml
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"

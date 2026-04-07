@@ -1,6 +1,6 @@
 # Known limitations
 
-## GnuTLS server × NSS client (`deploy/combos/gnutls-nss.yaml`)
+## GnuTLS server × NSS client (`SERVER_WRAPPER=gnutls` `CLIENT_WRAPPER=nss` with `deploy/combos/matrix.yaml`)
 
 The NSS test client (`tstclnt`) and GnuTLS test server (`gnutls-serv`) often fail the TLS handshake with:
 
@@ -13,7 +13,7 @@ This is a **stack-to-stack** incompatibility: NSS sends a ClientHello (extension
 ```bash
 ./scripts/run_all_combos.sh --all
 # or
-./scripts/run_docker.sh deploy/combos/gnutls-nss.yaml
+SERVER_WRAPPER=gnutls CLIENT_WRAPPER=nss docker compose -p interop-gnutls-nss -f deploy/combos/matrix.yaml run --rm --build driver
 ```
 
 Future work: newer GnuTLS/NSS releases, different `gnutls-serv` priority strings, or an alternative NSS-facing server path in the wrapper.

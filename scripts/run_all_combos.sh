@@ -1,8 +1,8 @@
 #!/bin/bash
-# Run server×client Docker combos (each combo = own compose in deploy/combos/).
+# Run server×client Docker combos via one parameterized compose (deploy/combos/matrix.yaml).
 #
-#   ./scripts/run_all_combos.sh              # 8 combos (CI default; skips gnutls×nss)
-#   ./scripts/run_all_combos.sh --all      # all 9 including gnutls×nss (may fail)
+#   ./scripts/run_all_combos.sh                    # 8 combos (CI default; skips gnutls×nss)
+#   ./scripts/run_all_combos.sh --all              # all 9 including gnutls×nss (may fail)
 #   ./scripts/run_all_combos.sh openssl nss
 #   ./scripts/run_all_combos.sh gnutls-gnutls
 
@@ -10,22 +10,27 @@ set -e
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-COMBOS_DIR="deploy/combos"
+MATRIX="deploy/combos/matrix.yaml"
 FAILED=()
 PASSED=()
 SKIPPED=()
 
 run_combo() {
-  local file="$1"
-  local name
-  name=$(basename "$file" .yaml | tr '-' '×')
+  local srv="$1" cli="$2"
+  local name="${srv}×${cli}"
+  local project="interop-${srv}-${cli}"
   echo ""
   echo "========== $name =========="
-  if docker compose -f "$file" run --rm --build driver 2>&1; then
+  export SERVER_WRAPPER="$srv" CLIENT_WRAPPER="$cli"
+  # Clear same-project leftovers (e.g. deps still running after a previous `compose run`).
+  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
+  if docker compose -p "$project" -f "$MATRIX" run --rm --build driver 2>&1; then
     PASSED+=("$name")
+    docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
     return 0
   else
     FAILED+=("$name")
+    docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
     return 1
   fi
 }
@@ -39,43 +44,44 @@ if [[ -n "${1:-}" ]]; then
     exit 1
   else
     if [[ -n "${2:-}" ]]; then
-      FILE="$COMBOS_DIR/$1-$2.yaml"
-    else
-      FILE="$COMBOS_DIR/$1.yaml"
+      run_combo "$1" "$2"
+      exit $?
     fi
-    if [[ ! -f "$FILE" ]]; then
-      echo "Compose file not found: $FILE" >&2
-      echo "Usage: $0 [--all] | [server client] | [combo-name]" >&2
+    if [[ "$1" != *-* ]]; then
+      echo "Usage: $0 [--all] | <server> <client> | <server>-<client>" >&2
       exit 1
     fi
-    EXIT=0
-    run_combo "$FILE" || EXIT=$?
-    docker compose -f "$FILE" down --remove-orphans 2>/dev/null || true
-    exit "$EXIT"
+    IFS='-' read -r a b c <<<"$1"
+    if [[ -n "$c" || -z "${b:-}" ]]; then
+      echo "Unknown combo name: $1 (use e.g. openssl-nss or openssl nss)" >&2
+      exit 1
+    fi
+    run_combo "$a" "$b"
+    exit $?
   fi
 fi
 
 # CI / default: skip gnutls-nss (NSS tstclnt ↔ gnutls-serv handshake: illegal_parameter)
-COMBOS=(
-  "$COMBOS_DIR/openssl-openssl.yaml"
-  "$COMBOS_DIR/openssl-gnutls.yaml"
-  "$COMBOS_DIR/openssl-nss.yaml"
-  "$COMBOS_DIR/gnutls-openssl.yaml"
-  "$COMBOS_DIR/gnutls-gnutls.yaml"
-  "$COMBOS_DIR/nss-openssl.yaml"
-  "$COMBOS_DIR/nss-gnutls.yaml"
-  "$COMBOS_DIR/nss-nss.yaml"
+PAIRS=(
+  "openssl openssl"
+  "openssl gnutls"
+  "openssl nss"
+  "gnutls openssl"
+  "gnutls gnutls"
+  "nss openssl"
+  "nss gnutls"
+  "nss nss"
 )
 
 if [[ "${RUN_ALL:-}" == 1 ]]; then
-  COMBOS+=("$COMBOS_DIR/gnutls-nss.yaml")
+  PAIRS+=("gnutls nss")
 else
   SKIPPED+=("gnutls×nss")
 fi
 
-for f in "${COMBOS[@]}"; do
-  run_combo "$f" || true
-  docker compose -f "$f" down --remove-orphans --quiet 2>/dev/null || true
+for pair in "${PAIRS[@]}"; do
+  set -- $pair
+  run_combo "$1" "$2" || true
 done
 
 echo ""
