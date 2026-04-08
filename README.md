@@ -67,6 +67,7 @@ By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** ha
 ./scripts/run.sh docker                    # all 9 combos
 ./scripts/run.sh docker openssl nss        # one combo
 ./scripts/run.sh docker gnutls-gnutls
+./scripts/run.sh nss-nss,gnutls-openssl   # several pairs: srv-cli,srv-cli,...
 ```
 
 Ad hoc matrix run (same as `run.sh docker gnutls openssl`):

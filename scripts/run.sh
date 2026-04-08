@@ -2,7 +2,12 @@
 # Single entry point for local prep, tests, and Docker matrix runs.
 #
 #   ./scripts/run.sh                    # all 9 Docker combos (deploy/matrix.yaml)
-#   ./scripts/run.sh docker [args]      # same; optional args: --all | openssl nss | gnutls-gnutls
+#   ./scripts/run.sh docker [args]      # same; see "Selecting pairs" below
+#   Selecting pairs (docker / default):
+#     (no args)                         all 9 combos
+#     openssl nss                       one combo (two words)
+#     openssl-nss                       one combo (hyphen)
+#     nss-nss,gnutls-openssl            several combos, comma-separated srv-cli
 #   ./scripts/run.sh local              # host test (OpenSSL×OpenSSL, no Docker)
 #   ./scripts/run.sh certs              # cert.pem / key.pem
 #   ./scripts/run.sh protoc             # regenerate interop_pb2*.py
@@ -23,7 +28,7 @@ usage() {
 ./scripts/run.sh [command] [args]
 
   (no command)     All 9 Docker matrix combos
-  docker|combos   Same; optional: --all | <srv> <cli> | srv-cli
+  docker|combos   Same; optional: --all | <srv> <cli> | srv-cli | srv-cli,srv-cli,...
   local           Host test (OpenSSL wrappers + driver)
   certs           Generate cert.pem / key.pem (gen_certs.sh)
   protoc          Regenerate interop_pb2*.py from proto/
@@ -118,57 +123,115 @@ run_combo() {
   fi
 }
 
-cmd_docker_matrix() {
-  if [[ -n "${1:-}" ]]; then
-    if [[ "$1" == "--all" ]]; then
-      shift
-      RUN_ALL=1
-    elif [[ "$1" == -* ]]; then
-      echo "Unknown option: $1" >&2
-      exit 1
-    else
-      if [[ -n "${2:-}" ]]; then
-        run_combo "$1" "$2"
-        exit $?
-      fi
-      if [[ "$1" != *-* ]]; then
-        echo "Usage: $0 docker [--all] | <server> <client> | <server>-<client>" >&2
-        exit 1
-      fi
-      IFS='-' read -r a b c <<<"$1"
-      if [[ -n "$c" || -z "${b:-}" ]]; then
-        echo "Unknown combo name: $1 (use e.g. openssl-nss or openssl nss)" >&2
-        exit 1
-      fi
-      run_combo "$a" "$b"
-      exit $?
-    fi
-  fi
+MATRIX_PAIRS=(
+  "openssl openssl"
+  "openssl gnutls"
+  "openssl nss"
+  "gnutls openssl"
+  "gnutls gnutls"
+  "gnutls nss"
+  "nss openssl"
+  "nss gnutls"
+  "nss nss"
+)
 
-  PAIRS=(
-    "openssl openssl"
-    "openssl gnutls"
-    "openssl nss"
-    "gnutls openssl"
-    "gnutls gnutls"
-    "gnutls nss"
-    "nss openssl"
-    "nss gnutls"
-    "nss nss"
-  )
+_trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
 
-  [[ "${RUN_ALL:-}" == 1 ]] || true
+_valid_wrapper() {
+  case "$1" in openssl | gnutls | nss) return 0 ;; *) return 1 ;; esac
+}
 
-  for pair in "${PAIRS[@]}"; do
-    set -- $pair
-    run_combo "$1" "$2" || true
-  done
-
+_matrix_summary() {
   echo ""
   echo "========== Summary =========="
   echo "Passed: ${#PASSED[@]} (${PASSED[*]:-none})"
   echo "Failed: ${#FAILED[@]} (${FAILED[*]:-none})"
-  [[ ${#FAILED[@]} -eq 0 ]] && exit 0 || exit 1
+  [[ ${#FAILED[@]} -eq 0 ]] && return 0 || return 1
+}
+
+# One srv-cli chunk from a comma-separated list (names must not contain '-')
+run_matrix_segment() {
+  local seg="$(_trim "$1")"
+  [[ -z "$seg" ]] && return 0
+  if [[ "$seg" == *' '* ]] || [[ "$seg" != *-* ]] || [[ "${seg#*-}" == *-* ]]; then
+    echo "Invalid pair (use server-client): $1" >&2
+    exit 1
+  fi
+  local srv="${seg%%-*}" cli="${seg#*-}"
+  if ! _valid_wrapper "$srv" || ! _valid_wrapper "$cli"; then
+    echo "Unknown wrapper (use openssl, gnutls, nss): '$srv' '$cli'" >&2
+    exit 1
+  fi
+  run_combo "$srv" "$cli" || true
+}
+
+cmd_docker_matrix() {
+  if [[ "${1:-}" == "--all" ]]; then
+    shift
+  fi
+  if [[ "${1:-}" == -* ]]; then
+    echo "Unknown option: $1" >&2
+    exit 1
+  fi
+
+  if [[ $# -eq 0 ]]; then
+    for pair in "${MATRIX_PAIRS[@]}"; do
+      set -- $pair
+      run_combo "$1" "$2" || true
+    done
+    _matrix_summary && exit 0 || exit 1
+  fi
+
+  # Exactly one pair as two words (no comma in the whole invocation)
+  if [[ $# -eq 2 ]] && [[ "$*" != *','* ]]; then
+    if ! _valid_wrapper "$1" || ! _valid_wrapper "$2"; then
+      echo "Unknown wrapper: '$1' / '$2'" >&2
+      exit 1
+    fi
+    run_combo "$1" "$2"
+    exit $?
+  fi
+
+  # Exactly one pair as server-client (single hyphen, no comma)
+  if [[ $# -eq 1 ]] && [[ "$1" == *-* ]] && [[ "$1" != *','* ]]; then
+    local a b c
+    IFS='-' read -r a b c <<<"$1"
+    if [[ -n "$c" || -z "${b:-}" ]]; then
+      echo "Unknown combo name: $1 (use e.g. openssl-nss or openssl nss)" >&2
+      exit 1
+    fi
+    if ! _valid_wrapper "$a" || ! _valid_wrapper "$b"; then
+      echo "Unknown wrapper in: $1" >&2
+      exit 1
+    fi
+    run_combo "$a" "$b"
+    exit $?
+  fi
+
+  # Comma-separated srv-cli list
+  if [[ "$*" == *','* ]]; then
+    local rest chunk
+    rest="$*"
+    while [[ -n "$rest" ]]; do
+      if [[ "$rest" == *','* ]]; then
+        chunk="${rest%%,*}"
+        rest="${rest#*,}"
+      else
+        chunk="$rest"
+        rest=""
+      fi
+      run_matrix_segment "$chunk"
+    done
+    _matrix_summary && exit 0 || exit 1
+  fi
+
+  echo "Usage: $0 [docker] [--all] | <server> <client> | <server>-<client> | srv-cli,srv-cli,..." >&2
+  exit 1
 }
 
 cmd_ci() {
