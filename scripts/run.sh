@@ -160,9 +160,6 @@ run_matrix_segment() {
 }
 
 cmd_docker_matrix() {
-  if [[ "${1:-}" == "--all" ]]; then
-    shift
-  fi
   if [[ "${1:-}" == -* ]]; then
     echo "Unknown option: $1" >&2
     exit 1
@@ -219,7 +216,7 @@ cmd_docker_matrix() {
     _matrix_summary && exit 0 || exit 1
   fi
 
-  echo "Usage: $0 [--all] | <server> <client> | <server>-<client> | srv-cli,srv-cli,..." >&2
+  echo "Usage: $0 <server> <client> | <server>-<client> | srv-cli,srv-cli,... (no arguments = all combinations)" >&2
   exit 1
 }
 
