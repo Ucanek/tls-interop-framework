@@ -45,4 +45,5 @@ services:
       TLS_SERVER_GRPC: "server_node:50051"
       TLS_CLIENT_GRPC: "client_node:50051"
       TLS_HOSTNAME: "server_node"
+      INTEROP_VERBOSE: ${INTEROP_VERBOSE:-0}
     command: ["sh", "-c", "sleep 5 && PYTHONPATH=/app python3 driver.py"]

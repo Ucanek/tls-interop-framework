@@ -61,7 +61,7 @@ pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'
 
 For ad hoc steps without the full `ci` pipeline, `./scripts/run.sh protoc`, `certs`, and `local` still exist (used by CI and documented in the script header).
 
-By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default.
+By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default. **Quiet output:** **`docker compose build`** uses **`-q`**. The driver prints **`✓` / `✗`** and the scenario name after each test; while a scenario runs, a **braille spinner** is drawn on **stderr** (only if stderr is a TTY, e.g. local terminal — not in typical CI). Skips use **`○`**. **`run.sh`** does not merge driver stderr into stdout so the spinner works under Docker. Use **`python3 src/driver/driver.py -v`** (or **`INTEROP_VERBOSE=1`**, **`./scripts/run.sh -v …`**) for full logs and visible image builds.
 
 **Docker matrix:** all pairs use **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. The image runs **`/app/wrapper_launch.sh`**. For GnuTLS×NSS, `INTEROP_GNUTLS_NSS_PAIR` is set automatically by `run.sh` (see [Known limitations](#known-limitations)).
 

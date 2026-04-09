@@ -12,6 +12,14 @@ cd "$ROOT"
 MATRIX="deploy/matrix.yaml"
 # INTEROP_GNUTLS_NSS_PAIR must match GNUTLS_NSS_PAIR_ENV in src/wrappers/matrix_env.py
 
+# Matches driver.py: INTEROP_VERBOSE truthy => show docker compose build output.
+interop_is_verbose() {
+  case "$(printf '%s' "${INTEROP_VERBOSE:-}" | tr '[:upper:]' '[:lower:]')" in
+    1 | true | yes) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 usage() {
   cat <<'EOF'
 ./scripts/run.sh [arguments]
@@ -23,6 +31,7 @@ usage() {
 
   capability-test  Driver capability filter self-check
   ci               Full pipeline (protoc, certs, tests, docker matrix)
+  -v / --verbose   Detailed driver log + docker build output (or INTEROP_VERBOSE=1); default: quiet + ✓/✗ per scenario
   help             This text
 EOF
 }
@@ -40,6 +49,10 @@ cmd_capability() {
 }
 
 cmd_local() {
+  while [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; do
+    export INTEROP_VERBOSE=1
+    shift
+  done
   if [[ ! -f cert.pem || ! -f key.pem ]]; then
     echo "Missing cert.pem or key.pem. Run: ./scripts/run.sh certs" >&2
     exit 1
@@ -101,15 +114,24 @@ run_combo() {
   echo "========== $name =========="
   export_matrix_env_for_pair "$srv" "$cli"
   docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
-  if docker compose -p "$project" -f "$MATRIX" run --rm --build driver 2>&1; then
+  local build_flags=()
+  if ! interop_is_verbose; then
+    build_flags=(-q)
+  fi
+  local rc=1
+  # Do not merge stderr into stdout: driver uses stderr for quiet-mode spinner (needs isatty).
+  if docker compose -p "$project" -f "$MATRIX" build "${build_flags[@]}" \
+    && docker compose -p "$project" -f "$MATRIX" run --rm driver; then
+    rc=0
+  fi
+  if [[ "$rc" -eq 0 ]]; then
     PASSED+=("$name")
     docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
     return 0
-  else
-    FAILED+=("$name")
-    docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
-    return 1
   fi
+  FAILED+=("$name")
+  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
+  return 1
 }
 
 MATRIX_PAIRS=(
@@ -160,6 +182,10 @@ run_matrix_segment() {
 }
 
 cmd_docker_matrix() {
+  while [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; do
+    export INTEROP_VERBOSE=1
+    shift
+  done
   if [[ "${1:-}" == -* ]]; then
     echo "Unknown option: $1" >&2
     exit 1
@@ -221,6 +247,10 @@ cmd_docker_matrix() {
 }
 
 cmd_ci() {
+  while [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; do
+    export INTEROP_VERBOSE=1
+    shift
+  done
   cmd_protoc
   cmd_certs
   cmd_capability
@@ -229,6 +259,10 @@ cmd_ci() {
 }
 
 main() {
+  while [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; do
+    export INTEROP_VERBOSE=1
+    shift
+  done
   if [[ $# -eq 0 ]]; then
     cmd_docker_matrix
     return
