@@ -34,4 +34,4 @@ jobs:
         run: ./scripts/run.sh local
 
       - name: Run Docker (9 server×client combos)
-        run: ./scripts/run.sh docker
+        run: ./scripts/run.sh

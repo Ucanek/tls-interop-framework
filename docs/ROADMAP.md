@@ -54,7 +54,7 @@ Recommended order of work, aligned with the draft spec and current codebase.
 
 | Step | What | Outcome |
 |------|------|--------|
-| 3.1 | **CI workflow** | `./scripts/run.sh` (`protoc`, `certs`, `local`, `docker`, …) |
+| 3.1 | **CI workflow** | `./scripts/run.sh` steps: `protoc`, `certs`, `capability-test`, `local`, full matrix (no args) |
 | 3.2 | **Error handling** | Non-zero exit on failed `OperationResponse` |
 
 **Definition of done:** ✅ CI runs local + Docker matrix; failures fail the job.

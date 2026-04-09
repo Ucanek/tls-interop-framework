@@ -38,7 +38,7 @@ Two logical planes:
 | `proto/` | Protocol Buffer definitions |
 | `src/driver/` | Central orchestrator (driver) |
 | `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
-| `scripts/run.sh` | **Main entry:** Docker matrix, local test, certs, protoc, CI pipeline |
+| `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` / `local` for CI and manual use |
 | `scripts/` | `gen_certs.sh`, `setup_nssdb.sh`, `test_capability_filter.py` |
 | `deploy/` | `Dockerfile`, `wrapper_launch.sh`, `matrix.yaml` (Docker matrix) |
 | `docs/` | Roadmap |
@@ -53,24 +53,26 @@ Use **`./scripts/run.sh`** (see `./scripts/run.sh help`). Typical flows:
 
 ```bash
 pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'
-./scripts/run.sh protoc
-./scripts/run.sh certs
-./scripts/run.sh local          # host OpenSSL×OpenSSL + driver (no Docker)
-./scripts/run.sh                # or: ./scripts/run.sh docker — all 9 matrix combos
+./scripts/run.sh                         # all 9 Docker matrix combos
+./scripts/run.sh openssl-nss             # one combo (also: openssl nss)
+./scripts/run.sh ci                      # like GitHub Actions: protoc, certs, tests, matrix
+./scripts/run.sh capability-test         # capability filter self-check
 ```
+
+For ad hoc steps without the full `ci` pipeline, `./scripts/run.sh protoc`, `certs`, and `local` still exist (used by CI and documented in the script header).
 
 By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default.
 
 **Docker matrix:** all pairs use **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. The image runs **`/app/wrapper_launch.sh`**. For GnuTLS×NSS, `INTEROP_GNUTLS_NSS_PAIR` is set automatically by `run.sh` (see [Known limitations](#known-limitations)).
 
 ```bash
-./scripts/run.sh docker                    # all 9 combos
-./scripts/run.sh docker openssl nss        # one combo
-./scripts/run.sh docker gnutls-gnutls
+./scripts/run.sh                          # all 9 combos
+./scripts/run.sh openssl nss
+./scripts/run.sh gnutls-gnutls
 ./scripts/run.sh nss-nss,gnutls-openssl   # several pairs: srv-cli,srv-cli,...
 ```
 
-Ad hoc matrix run (same as `run.sh docker gnutls openssl`):
+Ad hoc matrix run (same as `run.sh gnutls openssl`):
 
 ```bash
 SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-openssl -f deploy/matrix.yaml run --rm --build driver
@@ -80,7 +82,7 @@ SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-op
 
 ### CI (GitHub Actions)
 
-On push/PR to `main`, CI runs `./scripts/run.sh` steps: `protoc`, `certs`, `capability-test`, `local`, `docker`.
+On push/PR to `main`, CI runs `./scripts/run.sh protoc`, `certs`, `capability-test`, `local`, then the full Docker matrix via `./scripts/run.sh` (no arguments).
 
 ---
 
@@ -106,7 +108,7 @@ GnuTLS×NSS uses extra logic in `src/wrappers/matrix_env.py` (`tstclnt_host_and_
 
 Previously, `tstclnt` used `-h server_node -a server_node`. Docker resolves `server_node` to an IP for the TCP connection, but the ClientHello still carried the **DNS** SNI `server_node`. **GnuTLS 3.8+** rejects that combination and responds with `illegal_parameter` (“disallowed SNI server name”).
 
-**Mitigation (implemented):** When `INTEROP_GNUTLS_NSS_PAIR=1` (set by `./scripts/run.sh docker` for the gnutls×nss matrix row; constant `GNUTLS_NSS_PAIR_ENV` in `src/wrappers/matrix_env.py`), the NSS wrapper **resolves** the configured hostname to an address, passes that to `tstclnt -h`, and **does not** pass `-a`, so the handshake typically omits DNS SNI. Certificate trust still uses `tstclnt -o` for the test self-signed cert. Logic lives in `tstclnt_host_and_extra_argv()` in that module.
+**Mitigation (implemented):** When `INTEROP_GNUTLS_NSS_PAIR=1` (set by `run.sh` for the gnutls×nss matrix row; constant `GNUTLS_NSS_PAIR_ENV` in `src/wrappers/matrix_env.py`), the NSS wrapper **resolves** the configured hostname to an address, passes that to `tstclnt -h`, and **does not** pass `-a`, so the handshake typically omits DNS SNI. Certificate trust still uses `tstclnt -o` for the test self-signed cert. Logic lives in `tstclnt_host_and_extra_argv()` in that module.
 
 Manual run:
 

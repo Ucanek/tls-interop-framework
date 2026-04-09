@@ -1,19 +1,8 @@
 #!/bin/bash
-# Single entry point for local prep, tests, and Docker matrix runs.
-#
-#   ./scripts/run.sh                    # all 9 Docker combos (deploy/matrix.yaml)
-#   ./scripts/run.sh docker [args]      # same; see "Selecting pairs" below
-#   Selecting pairs (docker / default):
-#     (no args)                         all 9 combos
-#     openssl nss                       one combo (two words)
-#     openssl-nss                       one combo (hyphen)
-#     nss-nss,gnutls-openssl            several combos, comma-separated srv-cli
-#   ./scripts/run.sh local              # host test (OpenSSL×OpenSSL, no Docker)
-#   ./scripts/run.sh certs              # cert.pem / key.pem
-#   ./scripts/run.sh protoc             # regenerate interop_pb2*.py
-#   ./scripts/run.sh capability-test    # driver capability filter self-check
-#   ./scripts/run.sh ci                 # protoc + certs + capability + local + docker (like CI)
-#   ./scripts/run.sh help
+# Entry point: Docker matrix (default), CI-like pipeline, capability self-check.
+# Matrix args (same with or without leading "docker"): no args = all 9 combos;
+# openssl nss | openssl-nss | nss-nss,gnutls-openssl (comma-separated srv-cli).
+# Hidden commands (CI / tooling): protoc, certs, local, docker.
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -25,16 +14,16 @@ MATRIX="deploy/matrix.yaml"
 
 usage() {
   cat <<'EOF'
-./scripts/run.sh [command] [args]
+./scripts/run.sh [arguments]
 
-  (no command)     All 9 Docker matrix combos
-  docker|combos   Same; optional: --all | <srv> <cli> | srv-cli | srv-cli,srv-cli,...
-  local           Host test (OpenSSL wrappers + driver)
-  certs           Generate cert.pem / key.pem (gen_certs.sh)
-  protoc          Regenerate interop_pb2*.py from proto/
-  capability-test Run scripts/test_capability_filter.py
-  ci              protoc, certs, capability-test, local, docker (full pipeline)
-  help            This text
+  (no arguments)   All 9 Docker matrix combinations
+  <srv> <cli>      One combination (e.g. openssl nss)
+  <srv>-<cli>      Same (e.g. openssl-nss)
+  srv-cli,...      Several combinations, comma-separated
+
+  capability-test  Driver capability filter self-check
+  ci               Full pipeline (protoc, certs, tests, docker matrix)
+  help             This text
 EOF
 }
 
@@ -230,7 +219,7 @@ cmd_docker_matrix() {
     _matrix_summary && exit 0 || exit 1
   fi
 
-  echo "Usage: $0 [docker] [--all] | <server> <client> | <server>-<client> | srv-cli,srv-cli,..." >&2
+  echo "Usage: $0 [--all] | <server> <client> | <server>-<client> | srv-cli,srv-cli,..." >&2
   exit 1
 }
 
