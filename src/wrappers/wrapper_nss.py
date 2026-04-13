@@ -17,8 +17,8 @@ import grpc
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-import interop_pb2
-import interop_pb2_grpc
+from proto import interop_pb2
+from proto import interop_pb2_grpc
 
 from matrix_env import tstclnt_host_and_extra_argv
 

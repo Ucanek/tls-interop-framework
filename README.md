@@ -35,7 +35,7 @@ Two logical planes:
 
 | Path | Description |
 |------|-------------|
-| `proto/` | Protocol Buffer definitions |
+| `proto/` | `.proto` schema and generated Python (`interop_pb2*.py`; refresh with `./scripts/run.sh protoc`) |
 | `src/driver/` | Central orchestrator (driver) |
 | `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
 | `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` for CI and manual use |

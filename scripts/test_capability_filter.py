@@ -21,7 +21,7 @@ _SPEC = importlib.util.spec_from_file_location(
 _driver = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(_driver)
 
-interop_pb2 = __import__("interop_pb2")
+from proto import interop_pb2
 
 InteropDriver = _driver.InteropDriver
 _tls = _driver._tls_config_version_to_capability_name

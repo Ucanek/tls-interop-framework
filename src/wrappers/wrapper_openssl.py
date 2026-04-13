@@ -10,8 +10,8 @@ import grpc
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
-import interop_pb2
-import interop_pb2_grpc
+from proto import interop_pb2
+from proto import interop_pb2_grpc
 
 
 def _parse_version(out):

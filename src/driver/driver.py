@@ -7,8 +7,8 @@ import time
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
 
 import grpc
-import interop_pb2
-import interop_pb2_grpc
+from proto import interop_pb2
+from proto import interop_pb2_grpc
 
 GREEN = "\033[92m"
 RED = "\033[91m"

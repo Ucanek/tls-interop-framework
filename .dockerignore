@@ -16,6 +16,5 @@ nssdb
 
 # Not copied into the wrapper image (Dockerfile uses selective COPY)
 docs
-proto
 *.md
 deploy/matrix.yaml

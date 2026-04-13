@@ -37,7 +37,10 @@ EOF
 }
 
 cmd_protoc() {
-  python3 -m grpc_tools.protoc -I proto --python_out=. --grpc_python_out=. proto/interop.proto
+  python3 -m grpc_tools.protoc -I proto --python_out=proto --grpc_python_out=proto proto/interop.proto
+  # grpc plugin emits a flat import; proto/ is a Python package, so use a relative import.
+  sed -i 's/^import interop_pb2 as interop__pb2$/from . import interop_pb2 as interop__pb2/' proto/interop_pb2_grpc.py
+  sed -i "s/_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'interop_pb2',/_builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'proto.interop_pb2',/" proto/interop_pb2.py
 }
 
 cmd_certs() {
