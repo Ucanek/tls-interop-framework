@@ -38,7 +38,7 @@ Two logical planes:
 | `proto/` | Protocol Buffer definitions |
 | `src/driver/` | Central orchestrator (driver) |
 | `src/wrappers/` | Library shims (OpenSSL, GnuTLS, NSS) |
-| `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` / `local` for CI and manual use |
+| `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` for CI and manual use |
 | `scripts/` | `gen_certs.sh`, `setup_nssdb.sh`, `test_capability_filter.py` |
 | `deploy/` | `Dockerfile`, `wrapper_launch.sh`, `matrix.yaml` (Docker matrix) |
 | `docs/` | Roadmap |
@@ -59,7 +59,7 @@ pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'
 ./scripts/run.sh capability-test         # capability filter self-check
 ```
 
-For ad hoc steps without the full `ci` pipeline, `./scripts/run.sh protoc`, `certs`, and `local` still exist (used by CI and documented in the script header).
+For ad hoc steps without the full `ci` pipeline, `./scripts/run.sh protoc` and `certs` still exist (used by CI; see the script header).
 
 By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default. **Quiet output:** **`docker compose build`** uses **`-q`**. The driver prints **`✓` / `✗`** and the scenario name after each test; while a scenario runs, a **braille spinner** is drawn on **stderr** (only if stderr is a TTY, e.g. local terminal — not in typical CI). Skips use **`○`**. **`run.sh`** does not merge driver stderr into stdout so the spinner works under Docker. Use **`python3 src/driver/driver.py -v`** (or **`INTEROP_VERBOSE=1`**, **`./scripts/run.sh -v …`**) for full logs and visible image builds.
 
@@ -82,7 +82,7 @@ SERVER_WRAPPER=gnutls CLIENT_WRAPPER=openssl docker compose -p interop-gnutls-op
 
 ### CI (GitHub Actions)
 
-On push/PR to `main`, CI runs `./scripts/run.sh protoc`, `certs`, `capability-test`, `local`, then the full Docker matrix via `./scripts/run.sh` (no arguments).
+On push/PR to `main`, CI runs `./scripts/run.sh protoc`, `certs`, `capability-test`, then the full Docker matrix via `./scripts/run.sh` (no arguments).
 
 ---
 

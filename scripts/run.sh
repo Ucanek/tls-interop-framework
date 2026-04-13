@@ -2,7 +2,7 @@
 # Entry point: Docker matrix (default), CI-like pipeline, capability self-check.
 # Matrix args (same with or without leading "docker"): no args = all 9 combos;
 # openssl nss | openssl-nss | nss-nss,gnutls-openssl (comma-separated srv-cli).
-# Hidden commands (CI / tooling): protoc, certs, local, docker.
+# Hidden commands (CI / tooling): protoc, certs, docker.
 
 set -e
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -46,49 +46,6 @@ cmd_certs() {
 
 cmd_capability() {
   python3 "$SCRIPT_DIR/test_capability_filter.py"
-}
-
-cmd_local() {
-  while [[ "${1:-}" == "-v" || "${1:-}" == "--verbose" ]]; do
-    export INTEROP_VERBOSE=1
-    shift
-  done
-  if [[ ! -f cert.pem || ! -f key.pem ]]; then
-    echo "Missing cert.pem or key.pem. Run: ./scripts/run.sh certs" >&2
-    exit 1
-  fi
-
-  python3 -c "import grpc, interop_pb2" 2>/dev/null || {
-    echo "Error: cannot import grpc or interop_pb2. Install in a venv:" >&2
-    echo "  pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'" >&2
-    echo "  ./scripts/run.sh protoc" >&2
-    exit 1
-  }
-
-  cleanup() {
-    echo "[run] local: stopping wrappers..."
-    kill "$PID1" "$PID2" 2>/dev/null || true
-    wait "$PID1" "$PID2" 2>/dev/null || true
-  }
-  trap cleanup EXIT
-
-  echo "[run] local: stopping any existing wrappers..."
-  pkill -f "wrapper_openssl|wrapper_gnutls" 2>/dev/null || true
-  sleep 2
-
-  echo "[run] local: starting server wrapper (gRPC 50051)..."
-  python3 src/wrappers/wrapper_openssl.py &
-  PID1=$!
-  sleep 1
-
-  echo "[run] local: starting client wrapper (gRPC 50052)..."
-  GRPC_PORT=50052 python3 src/wrappers/wrapper_openssl.py &
-  PID2=$!
-  sleep 2
-
-  echo "[run] local: running driver..."
-  TLS_SERVER_GRPC=localhost:50051 TLS_CLIENT_GRPC=localhost:50052 TLS_HOSTNAME=localhost \
-    python3 src/driver/driver.py
 }
 
 # --- Docker matrix ---
@@ -254,7 +211,6 @@ cmd_ci() {
   cmd_protoc
   cmd_certs
   cmd_capability
-  cmd_local
   cmd_docker_matrix
 }
 
@@ -271,10 +227,6 @@ main() {
     help | -h | --help)
       usage
       exit 0
-      ;;
-    local)
-      shift
-      cmd_local "$@"
       ;;
     certs)
       shift

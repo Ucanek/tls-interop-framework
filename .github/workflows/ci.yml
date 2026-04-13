@@ -30,8 +30,5 @@ jobs:
       - name: Capability filter (phase 2.3) self-check
         run: ./scripts/run.sh capability-test
 
-      - name: Run local test
-        run: ./scripts/run.sh local
-
       - name: Run Docker (9 server×client combos)
         run: ./scripts/run.sh
