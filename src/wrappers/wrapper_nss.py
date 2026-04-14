@@ -2,11 +2,12 @@
 NSS (Network Security Services) wrapper. Uses selfserv (server) and tstclnt (client).
 Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB created by scripts/setup_nssdb.sh.
 Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default interop).
-Matrix workarounds: see matrix_env.py (GnuTLS×NSS Docker).
+INTEROP_GNUTLS_NSS_PAIR: set by run.sh / matrix for gnutls×nss (SNI vs TCP peer); see README.
 """
 import os
 import re
 import shutil
+import socket
 import sys
 import fcntl
 import subprocess
@@ -20,7 +21,38 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")
 from proto import interop_pb2
 from proto import interop_pb2_grpc
 
-from matrix_env import tstclnt_host_and_extra_argv
+# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
+_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+
+def _gnutls_nss_pair_enabled() -> bool:
+    """GnuTLS server × NSS client row in the Docker matrix."""
+    return os.environ.get(_PAIR_ENV, "0").strip().lower() in _TRUTHY
+
+
+def _tstclnt_host_and_extra_argv(hostname: str, port: int) -> tuple[str, list[str]]:
+    """
+    Return (value for tstclnt -h, extra argv after -p).
+
+    Normally: hostname and ``-a <same>`` so SNI matches the server name.
+
+    For GnuTLS×NSS in Docker: resolve hostname to IP for ``-h``, omit ``-a``, so GnuTLS 3.8+
+    does not reject ClientHello (see README). Fallback to hostname + ``-a`` if lookup fails.
+    """
+    h = hostname or "localhost"
+    p = int(port)
+    if not _gnutls_nss_pair_enabled():
+        return h, ["-a", h]
+    try:
+        for fam in (socket.AF_INET, socket.AF_INET6):
+            infos = socket.getaddrinfo(h, p, family=fam, type=socket.SOCK_STREAM)
+            if infos:
+                return str(infos[0][4][0]), []
+    except OSError:
+        pass
+    return h, ["-a", h]
+
 
 # NSS tools may live in unsupported-tools on Fedora (not in PATH)
 def _nss_tool(name):
@@ -174,7 +206,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                 else:
                     host = request.config.server_hostname or "localhost"
                     port = int(request.config.port)
-                    peer, extra = tstclnt_host_and_extra_argv(host, port)
+                    peer, extra = _tstclnt_host_and_extra_argv(host, port)
                     cmd = [
                         self._tstclnt,
                         "-d",

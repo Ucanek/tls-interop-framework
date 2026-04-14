@@ -98,7 +98,7 @@ The driver and proto stay **library-agnostic**. NSS is integrated as a third wra
 - **NSS DB:** environment `NSSDB` (default `./nssdb`), certificate nickname `CERT_NICKNAME` (default `interop`). Populated by `scripts/setup_nssdb.sh` from `cert.pem` / `key.pem`, or during the Docker image build (`/app/nssdb`).
 - **Packages:** Fedora `nss-tools`, Debian/Ubuntu `libnss3-tools`.
 
-GnuTLS×NSS uses extra logic in `src/wrappers/matrix_env.py` (`tstclnt_host_and_extra_argv`) when `INTEROP_GNUTLS_NSS_PAIR=1`; see [Known limitations](#known-limitations).
+GnuTLS×NSS uses extra `tstclnt` logic in `src/wrappers/wrapper_nss.py` when `INTEROP_GNUTLS_NSS_PAIR=1`; see [Known limitations](#known-limitations).
 
 ---
 
@@ -108,7 +108,7 @@ GnuTLS×NSS uses extra logic in `src/wrappers/matrix_env.py` (`tstclnt_host_and_
 
 Previously, `tstclnt` used `-h server_node -a server_node`. Docker resolves `server_node` to an IP for the TCP connection, but the ClientHello still carried the **DNS** SNI `server_node`. **GnuTLS 3.8+** rejects that combination and responds with `illegal_parameter` (“disallowed SNI server name”).
 
-**Mitigation (implemented):** When `INTEROP_GNUTLS_NSS_PAIR=1` (set by `run.sh` for the gnutls×nss matrix row; constant `GNUTLS_NSS_PAIR_ENV` in `src/wrappers/matrix_env.py`), the NSS wrapper **resolves** the configured hostname to an address, passes that to `tstclnt -h`, and **does not** pass `-a`, so the handshake typically omits DNS SNI. Certificate trust still uses `tstclnt -o` for the test self-signed cert. Logic lives in `tstclnt_host_and_extra_argv()` in that module.
+**Mitigation (implemented):** When `INTEROP_GNUTLS_NSS_PAIR=1` (set by `run.sh` for the gnutls×nss matrix row), the NSS wrapper **resolves** the configured hostname to an address, passes that to `tstclnt -h`, and **does not** pass `-a`, so the handshake typically omits DNS SNI. Certificate trust still uses `tstclnt -o` for the test self-signed cert. Logic lives in `_tstclnt_host_and_extra_argv()` in `src/wrappers/wrapper_nss.py`.
 
 Manual run:
 
