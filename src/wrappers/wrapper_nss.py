@@ -1,60 +1,28 @@
 """
 NSS (Network Security Services) wrapper. Uses selfserv (server) and tstclnt (client).
-Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB created by scripts/setup_nssdb.sh.
+Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB from scripts/setup_nssdb.sh.
 Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default interop).
-INTEROP_GNUTLS_NSS_PAIR: set by run.sh / matrix for gnutls×nss (SNI vs TCP peer); see README.
+INTEROP_GNUTLS_NSS_PAIR: see wrapper_common / README (GnuTLS server × NSS client).
 """
 import os
-import re
 import shutil
-import socket
-import sys
-import fcntl
 import subprocess
 import time
-from concurrent import futures
 
-import grpc
-
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
-
-from proto import interop_pb2
-from proto import interop_pb2_grpc
-
-# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
-_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
-_TRUTHY = frozenset({"1", "true", "yes", "on"})
-
-
-def _gnutls_nss_pair_enabled() -> bool:
-    """GnuTLS server × NSS client row in the Docker matrix."""
-    return os.environ.get(_PAIR_ENV, "0").strip().lower() in _TRUTHY
+import wrapper_common
+from proto import interop_pb2, interop_pb2_grpc
+from wrapper_common import (
+    format_client_connect_failure,
+    nss_tstclnt_host_and_extra_argv,
+    parse_version_line,
+    popen_stdio_merged,
+    read_transmit_stdout,
+    serve_insecure,
+    standard_library_metadata,
+    transmit_payload_bytes,
+)
 
 
-def _tstclnt_host_and_extra_argv(hostname: str, port: int) -> tuple[str, list[str]]:
-    """
-    Return (value for tstclnt -h, extra argv after -p).
-
-    Normally: hostname and ``-a <same>`` so SNI matches the server name.
-
-    For GnuTLS×NSS in Docker: resolve hostname to IP for ``-h``, omit ``-a``, so GnuTLS 3.8+
-    does not reject ClientHello (see README). Fallback to hostname + ``-a`` if lookup fails.
-    """
-    h = hostname or "localhost"
-    p = int(port)
-    if not _gnutls_nss_pair_enabled():
-        return h, ["-a", h]
-    try:
-        for fam in (socket.AF_INET, socket.AF_INET6):
-            infos = socket.getaddrinfo(h, p, family=fam, type=socket.SOCK_STREAM)
-            if infos:
-                return str(infos[0][4][0]), []
-    except OSError:
-        pass
-    return h, ["-a", h]
-
-
-# NSS tools may live in unsupported-tools on Fedora (not in PATH)
 def _nss_tool(name):
     if shutil.which(name):
         return name
@@ -65,15 +33,7 @@ def _nss_tool(name):
     return name
 
 
-def _parse_version(out):
-    text = (out or "").strip()
-    first_line = text.split("\n")[0].strip() if text else ""
-    match = re.search(r"\d+\.\d+(?:\.\d+)?", first_line)
-    return match.group(0) if match else (first_line[:40] if first_line else "unknown")
-
-
 def _nss_library_version():
-    """Installed NSS version for GetMetadata (tstclnt -V is the TLS range switch, not --version)."""
     try:
         if shutil.which("rpm"):
             r = subprocess.run(
@@ -83,8 +43,8 @@ def _nss_library_version():
                 timeout=5,
             )
             if r.returncode == 0 and (r.stdout or "").strip():
-                return _parse_version(r.stdout) or ""
-    except Exception:
+                return parse_version_line(r.stdout) or ""
+    except (OSError, subprocess.SubprocessError):
         pass
     try:
         if shutil.which("dpkg-query"):
@@ -95,18 +55,13 @@ def _nss_library_version():
                 timeout=5,
             )
             if r.returncode == 0 and (r.stdout or "").strip():
-                return _parse_version(r.stdout) or ""
-    except Exception:
+                return parse_version_line(r.stdout) or ""
+    except (OSError, subprocess.SubprocessError):
         pass
     return ""
 
 
-def _cap(name, *flags):
-    return interop_pb2.Capability(name=name, flags=list(flags))
-
-
 def _tls_version_range(config):
-    """NSS -V: always min:max. Bare tls1.2/tls1.3 are rejected by tstclnt/selfserv (Fedora nss-tools)."""
     if config is None:
         return "tls1.2:tls1.3"
     v = (config.version or "").strip().lower()
@@ -121,7 +76,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
     def __init__(self):
         self.server_proc = None
         self.client_proc = None
-        self._socat_proc = None  # TCP proxy: selfserv only listens on loopback
+        self._socat_proc = None
         self._nssdb = os.environ.get("NSSDB", "nssdb")
         self._nick = os.environ.get("CERT_NICKNAME", "interop")
         self._selfserv = _nss_tool("selfserv")
@@ -129,29 +84,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
 
     def GetMetadata(self, request, context):
         version = _nss_library_version() or "unknown"
-        return interop_pb2.LibraryMetadata(
-            component_name="NSS",
-            version=version,
-            roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-            supported_versions=[
-                _cap("TLS1.2", interop_pb2.READ, interop_pb2.NEGOTIATE),
-                _cap("TLS1.3", interop_pb2.READ, interop_pb2.SET, interop_pb2.NEGOTIATE),
-            ],
-            cipher_suites=[
-                _cap("TLS_AES_256_GCM_SHA384", interop_pb2.READ, interop_pb2.NEGOTIATE),
-                _cap("TLS_CHACHA20_POLY1305_SHA256", interop_pb2.READ, interop_pb2.NEGOTIATE),
-                _cap("TLS_AES_128_GCM_SHA256", interop_pb2.READ, interop_pb2.NEGOTIATE),
-            ],
-            groups=[
-                _cap("X25519", interop_pb2.READ, interop_pb2.NEGOTIATE),
-                _cap("P-256", interop_pb2.READ, interop_pb2.NEGOTIATE),
-                _cap("P-384", interop_pb2.READ, interop_pb2.NEGOTIATE),
-            ],
-        )
-
-    def _make_non_blocking(self, fd):
-        flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-        fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+        return standard_library_metadata("NSS", version)
 
     def ExecuteOperation(self, request, context):
         status = interop_pb2.OperationResponse.SUCCESS
@@ -164,7 +97,6 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
                 nss_ver = _tls_version_range(request.config)
                 if request.role == interop_pb2.SERVER:
-                    # selfserv binds to loopback only; other containers need 0.0.0.0.
                     ext_port = int(request.config.port)
                     inner_port = ext_port + 10000
                     self._socat_proc = subprocess.Popen(
@@ -178,7 +110,6 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         stderr=subprocess.DEVNULL,
                     )
                     time.sleep(0.4)
-                    # stdbuf -o 0: unbuffered stdout so fwrite() in selfserv reaches pipe immediately
                     cmd = [
                         "stdbuf",
                         "-o0",
@@ -192,21 +123,14 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "-V",
                         nss_ver,
                         "-v",
-                        "-v",  # verbose>1 so received app data is written to stdout (driver checks it)
+                        "-v",
                     ]
-                    self.server_proc = subprocess.Popen(
-                        cmd,
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        cwd=os.getcwd(),
-                    )
-                    self._make_non_blocking(self.server_proc.stdout)
+                    self.server_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
                     msg = "NSS Server started"
                 else:
                     host = request.config.server_hostname or "localhost"
                     port = int(request.config.port)
-                    peer, extra = _tstclnt_host_and_extra_argv(host, port)
+                    peer, extra = nss_tstclnt_host_and_extra_argv(host, port)
                     cmd = [
                         self._tstclnt,
                         "-d",
@@ -218,22 +142,13 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         *extra,
                         "-V",
                         nss_ver,
-                        "-o",  # override cert validation for testing
+                        "-o",
                     ]
-                    self.client_proc = subprocess.Popen(
-                        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd=os.getcwd()
-                    )
-                    self._make_non_blocking(self.client_proc.stdout)
-                    time.sleep(3.5)  # NSS↔GnuTLS handshake can be slow
+                    self.client_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
+                    time.sleep(3.5)
                     if self.client_proc.poll() is not None:
                         status = interop_pb2.OperationResponse.FAILURE
-                        try:
-                            err = (self.client_proc.stdout.read() or b"").decode(errors="replace")[-600:]
-                        except Exception:
-                            err = ""
-                        msg = "Client process exited (connection failed)"
-                        if err.strip():
-                            msg += " | " + err.strip().replace("\n", " ")
+                        msg = format_client_connect_failure(self.client_proc)
                     else:
                         msg = "NSS Client connected"
                 time.sleep(1)
@@ -248,9 +163,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                     msg = "Process already exited"
                 else:
                     if request.payload:
-                        data = request.payload + b"\n"
-                        if request.role == interop_pb2.CLIENT:
-                            data = b"POST / HTTP/1.0\r\n\r\n" + data  # NSS selfserv expects HTTP-like POST
+                        data = transmit_payload_bytes(request.payload, request.role)
                         try:
                             target.stdin.write(data)
                             target.stdin.flush()
@@ -259,28 +172,19 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                             status = interop_pb2.OperationResponse.ERROR
                             msg = "Broken pipe (process may have exited)"
                     if status == interop_pb2.OperationResponse.SUCCESS:
-                        try:
-                            # Server (selfserv) may buffer stdout; non-blocking read can be empty.
-                            # Wait and collect output in small reads so we get the echoed POST body.
-                            out_data = b""
-                            if request.role == interop_pb2.SERVER:
-                                time.sleep(0.8)
-                                for _ in range(25):
-                                    try:
-                                        chunk = target.stdout.read()
-                                        if chunk:
-                                            out_data += chunk
-                                    except (BlockingIOError, OSError):
-                                        pass
-                                    time.sleep(0.1)
-                            else:
-                                out_data = target.stdout.read() or b""
-                        except IOError:
-                            out_data = b""
+                        out_data = read_transmit_stdout(
+                            target,
+                            request.role,
+                            server_poll=request.role == interop_pb2.SERVER,
+                        )
 
             elif request.type == interop_pb2.OperationRequest.CLOSE:
                 self._cleanup()
                 msg = "Cleanup successful"
+
+            else:
+                status = interop_pb2.OperationResponse.ERROR
+                msg = f"Unsupported OpType: {request.type}"
 
         except Exception as e:
             status = interop_pb2.OperationResponse.ERROR
@@ -308,15 +212,5 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         self._socat_proc = None
 
 
-def serve(port=None):
-    port = port or int(os.environ.get("GRPC_PORT", "50051"))
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(NSSWrapper(), server)
-    server.add_insecure_port(f"0.0.0.0:{port}")
-    server.start()
-    print(f"NSS wrapper listening on {port}...")
-    server.wait_for_termination()
-
-
 if __name__ == "__main__":
-    serve()
+    serve_insecure(NSSWrapper, "NSS")

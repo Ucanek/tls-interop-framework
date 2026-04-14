@@ -10,7 +10,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
 MATRIX="deploy/matrix.yaml"
-# INTEROP_GNUTLS_NSS_PAIR: gnutls×nss only; NSS wrapper reads it (see README + wrapper_nss.py).
+# INTEROP_GNUTLS_NSS_PAIR: gnutls×nss only (see README + src/wrappers/wrapper_common.py).
 
 # Matches driver.py: INTEROP_VERBOSE truthy => show docker compose build output.
 interop_is_verbose() {
