@@ -13,6 +13,7 @@ import wrapper_common
 from proto import interop_pb2, interop_pb2_grpc
 from wrapper_common import (
     format_client_connect_failure,
+    format_executed_command,
     nss_tstclnt_host_and_extra_argv,
     parse_version_line,
     popen_stdio_merged,
@@ -99,12 +100,14 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                 if request.role == interop_pb2.SERVER:
                     ext_port = int(request.config.port)
                     inner_port = ext_port + 10000
+                    cwd = os.getcwd()
+                    socat_cmd = [
+                        "socat",
+                        f"TCP-LISTEN:{ext_port},bind=0.0.0.0,fork,reuseaddr",
+                        f"TCP:127.0.0.1:{inner_port}",
+                    ]
                     self._socat_proc = subprocess.Popen(
-                        [
-                            "socat",
-                            f"TCP-LISTEN:{ext_port},bind=0.0.0.0,fork,reuseaddr",
-                            f"TCP:127.0.0.1:{inner_port}",
-                        ],
+                        socat_cmd,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
@@ -125,7 +128,13 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "-v",
                         "-v",
                     ]
-                    self.server_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
+                    self.server_proc = popen_stdio_merged(cmd, cwd=cwd)
+                    logs = "\n".join(
+                        (
+                            format_executed_command(socat_cmd, cwd),
+                            format_executed_command(cmd, cwd),
+                        )
+                    )
                     msg = "NSS Server started"
                 else:
                     host = request.config.server_hostname or "localhost"
@@ -144,7 +153,9 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         nss_ver,
                         "-o",
                     ]
-                    self.client_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
+                    cwd = os.getcwd()
+                    self.client_proc = popen_stdio_merged(cmd, cwd=cwd)
+                    logs = format_executed_command(cmd, cwd)
                     time.sleep(3.5)
                     if self.client_proc.poll() is not None:
                         status = interop_pb2.OperationResponse.FAILURE

@@ -43,6 +43,15 @@ def _tls_config_version_to_capability_name(version_str):
     return "TLS1.3"
 
 
+def _operation_response_detail(resp):
+    """Human-readable failure detail; includes ``logs`` (e.g. shell command) when both are set."""
+    m = (resp.message or "").strip()
+    logs = (resp.logs or "").strip()
+    if m and logs:
+        return f"{m}\n{logs}"
+    return m or logs or "no message"
+
+
 class _QuietSpinner:
     """stderr-only braille frame; cleared on stop. Use only when stderr is a TTY."""
 
@@ -142,10 +151,13 @@ class InteropDriver:
     def _check_response(self, resp, label):
         """Return True if status is SUCCESS, else set _last_failure and return False."""
         if resp.status == SUCCESS:
+            if self._verbose and (resp.logs or "").strip():
+                for line in resp.logs.strip().split("\n"):
+                    self._vprint(f"[Driver] {label} (wrapper cmd): {line}")
             return True
-        self._last_failure = (label, resp.status, resp.message or resp.logs)
+        detail = _operation_response_detail(resp)
+        self._last_failure = (label, resp.status, detail)
         status_name = "FAILURE" if resp.status == FAILURE else "ERROR"
-        detail = resp.message or resp.logs or "no message"
         if self._verbose:
             print(f"{RED}[Driver] {label}: {status_name} - {detail}{RESET}")
         return False
@@ -380,7 +392,7 @@ class InteropDriver:
         else:
             detail = ""
             if self._last_failure:
-                detail = (self._last_failure[2] or "").replace("\n", " ").strip()[:120]
+                detail = (self._last_failure[2] or "").replace("\n", " ").strip()[:220]
             suf = f"  ({detail})" if detail else ""
             print(f"{RED}✗{RESET}  {name}{suf}")
         return ok

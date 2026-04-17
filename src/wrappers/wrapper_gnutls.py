@@ -11,6 +11,7 @@ import wrapper_common
 from proto import interop_pb2, interop_pb2_grpc
 from wrapper_common import (
     format_client_connect_failure,
+    format_executed_command,
     popen_stdio_merged,
     read_transmit_stdout,
     run_cli_version,
@@ -53,7 +54,9 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         "-q",
                         "--echo",
                     ]
-                    self.server_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
+                    cwd = os.getcwd()
+                    self.server_proc = popen_stdio_merged(cmd, cwd=cwd)
+                    logs = format_executed_command(cmd, cwd)
                     msg = "GnuTLS Server started"
                 else:
                     host = request.config.server_hostname or "localhost"
@@ -74,7 +77,9 @@ class GnuTLSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
                         prio,
                         host,
                     ]
-                    self.client_proc = popen_stdio_merged(cmd, cwd=os.getcwd())
+                    cwd = os.getcwd()
+                    self.client_proc = popen_stdio_merged(cmd, cwd=cwd)
+                    logs = format_executed_command(cmd, cwd)
                     time.sleep(2.5)
                     if self.client_proc.poll() is not None:
                         status = interop_pb2.OperationResponse.FAILURE

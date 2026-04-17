@@ -1,90 +1,133 @@
-# Roadmap – How we proceed
+# Roadmap
 
-Recommended order of work, aligned with the draft spec and current codebase.
+This roadmap is aligned with:
 
-**Target components:** OpenSSL, GnuTLS, **NSS**. The framework runs all three; the driver and proto stay library-agnostic. NSS tooling, DB layout, and the GnuTLS×NSS workaround are documented in [README.md](../README.md) (sections *NSS* and *Known limitations*).
+- **Upstream interoperability architecture** — fmf metadata, tmt-based discovery/execution, generic test runner, subject metadata, separate test-case repository.
+- **Crypto Team epic (automated / “second approach”)** — one logical test per scenario across all client×server pairs, common interface, wrappers, success criteria for upstream CI and shared maintenance.
 
----
-
-## Current status (snapshot)
-
-| Phase | Theme | Largely done |
-|-------|--------|----------------|
-| 1 | `GetMetadata` in wrappers | Yes (OpenSSL, GnuTLS, NSS) |
-| 2 | Scenarios + capability filter | Yes (`scenario_skip_reason`, `./scripts/run.sh capability-test`) |
-| 3 | CI + response handling | Yes (GitHub Actions, `run.sh ci`) |
-| 4 | NSS wrapper + matrix | Yes (`wrapper_nss.py`, `matrix.yaml`, `setup_nssdb.sh`) |
-| 5 | Spec extras | Optional / when needed |
-
-**NSS notes:** All nine Docker pairs pass the driver scenarios. `LibraryMetadata.version` for NSS is taken from the installed package (`nss-softokn` via `rpm`, or `libnss3` via `dpkg-query`), not from `tstclnt -V` (that flag sets the TLS version *range* for tools). Wrappers pass `min:max` forms such as `tls1.3:tls1.3` to `tstclnt` / `selfserv` so TLS 1.2-only and 1.3-only runs are valid.
+NSS tooling, the GnuTLS×NSS workaround, and how to run the matrix are documented in [README.md](../README.md).
 
 ---
 
-## Phase 1: Capabilities (spec alignment)
+## Current baseline (done)
 
-**Goal:** Driver can ask wrappers what they support; use in test selection.
+The repository already delivers the **core of the second (universal) approach**: a **common test driver**, **gRPC/Protobuf contract**, **per-library wrappers** (OpenSSL, GnuTLS, NSS), a **full Docker matrix** of pairs, **`GetMetadata` / capability-based skips**, and **CI** (`protoc`, certs, capability self-check, matrix).
 
-| Step | What | Outcome |
-|------|------|--------|
-| 1.1 | **GetMetadata** in OpenSSL wrapper | `LibraryMetadata`: name, version, roles, supported_versions / cipher_suites / groups |
-| 1.2 | **GetMetadata** in GnuTLS wrapper | Same shape |
-| 1.3 | Driver uses GetMetadata | Log metadata; **skip** scenarios when capabilities insufficient |
+| Area | Status |
+|------|--------|
+| Wrappers + `GetMetadata` | Done for all three stacks |
+| Driver scenarios + capability filter | Done (`scenario_skip_reason`, `capability-test`) |
+| Docker image + `matrix.yaml` + `run.sh` | Done (including NSS DB / image layout) |
+| CI on this repo | Done (GitHub Actions) |
 
-**Definition of done:** ✅ All three wrappers implement GetMetadata; driver calls it and applies the capability filter.
-
----
-
-## Phase 2: More tests and driver structure
-
-**Goal:** Not everything in one blob; easy to add scenarios.
-
-| Step | What | Outcome |
-|------|------|--------|
-| 2.1 | **Scenario functions** | Driver runs a list of scenarios |
-| 2.2 | **Additional scenarios** | Wrong hostname, wrong port, TLS 1.2 happy path; KEY_UPDATE still future |
-| 2.3 | **Capability filter** | Skip with success + `SKIP` log when metadata rules out a scenario |
-
-**Definition of done:** ✅ Multiple scenarios; filter covered by `capability-test`.
+**Note:** The **first subproject** (manual, library-specific tests for hard corner cases) remains complementary; this codebase does not replace it.
 
 ---
 
-## Phase 3: CI and robustness
+## Unified gap analysis
 
-**Goal:** Every change is automatically tested.
+The sections below merge what still differs from **both** the upstream architecture doc and the epic’s **success criteria / design**.
 
-| Step | What | Outcome |
-|------|------|--------|
-| 3.1 | **CI workflow** | `./scripts/run.sh` steps: `protoc`, `certs`, `capability-test`, full matrix (no args) |
-| 3.2 | **Error handling** | Non-zero exit on failed `OperationResponse` |
+### 1. Test discovery and packaging
 
-**Definition of done:** ✅ CI runs Docker matrix (and prerequisite steps); failures fail the job.
+| Gap | Source |
+|-----|--------|
+| No **fmf** metadata or **tmt** execution (discover/filter/run tests from the tree) | Upstream architecture |
+| Tests are **methods in the driver**, not standalone scripts + metadata in a **tests-only** layout | Both |
+| No published pattern for a **central “interop tests” repo** separate from runner/wrappers | Epic |
+
+### 2. Generic runner and upstream integration
+
+| Gap | Source |
+|-----|--------|
+| Runner is tuned to **this** wrapper set and Docker Compose, not a documented **plug-in** model for arbitrary future components | Epic |
+| **Upstream projects** cannot yet “drop in” interop on **every PR** without custom work; missing **reusable CI recipe** (container, action, minimal steps) | Epic success criteria |
+| **Documentation** focuses on cloning this repo; weak on **integrating into another project’s CI** | Epic |
+
+### 3. Common interface and metadata depth
+
+| Gap | Source |
+|-----|--------|
+| Interface is **Protobuf** (good) but narrow; no separate **capability catalog** / versioned interface doc beside `.proto` | Upstream architecture |
+| **Subject-side metadata files** (deps, how to build/run driver, protocol version) are not used — only runtime `GetMetadata` | Upstream architecture |
+| **RequestSender / HTTP** entrypoint for external test scripts not present | Draft spec (README table) |
+
+### 4. Wrapper observability and spec detail
+
+| Gap | Source |
+|-----|--------|
+| Wrappers do not reliably **log executed commands** for manual reproduction (epic explicitly asks for this) | Epic design |
+| **KEY_UPDATE**, richer TLS cases, new extensions / future protocol versions | Roadmap + epic maintenance note |
+| **Transport** is gRPC, not raw TCP + custom framing (documented difference vs some spec sketches) | README |
+
+### 5. Deployment and ownership
+
+| Gap | Source |
+|-----|--------|
+| **Optimistic epic scenario** (each upstream maintains its wrapper + CI) vs **current** “all wrappers live here” | Epic deployment |
+
+### 6. Selectable capabilities, combinations, and user-chosen tests
+
+**Goal (vision):** Wrappers expose capabilities (cipher suites, signature algorithms, groups, …); the framework tests **non–mutually-exclusive** combinations where sensible; users **pick** which tests run and can **add** new ones easily.
+
+| Topic | Current state | Gap |
+|--------|----------------|-----|
+| **Advertised capabilities** | `GetMetadata` already lists `cipher_suites` and `groups` (same `Capability` model as TLS versions). | Driver **only** uses `supported_versions` (+ roles) for skip logic; cipher/group lists are unused for filtering. |
+| **`TlsConfig`** | `cipher_suite` exists in `.proto`. | Wrappers **do not** read it when building CLI commands; ESTABLISH is driven mainly by TLS version, host, port. |
+| **Signature algorithms** | — | Not in metadata or `TlsConfig`; would need schema + wrapper support. |
+| **Combinatorics** | Fixed scenarios in code. | No generator for compatible cipher × group × version tuples; no explicit **compatibility rules** (avoid blind Cartesian product — TLS has many invalid combos). |
+| **User selection** | `--scenario` + Docker matrix of **library pairs**. | No plan file / tags for “which capability axes to run”; scenarios are not **data-driven** yet. |
+
+**Direction:** (1) End-to-end for **one axis** first — wire `cipher_suite` (and add `group` to `TlsConfig` if needed), map to OpenSSL/GnuTLS/NSS CLIs, extend driver skip checks like for TLS 1.2/1.3. (2) **Parametric scenarios** + declarative **test registry** (see near/medium term below). (3) Add **compatibility rules** or curated grids before scaling combinations. (4) Extend proto + metadata for **sig algs** when required.
+
+### 7. Generic driver vs “only three libraries” *(architecture clarification)*
+
+The **driver is already generic at the protocol layer:** it only depends on **gRPC + Protobuf** (`TlsInteropWrapper`); it does **not** import OpenSSL, GnuTLS, or NSS. Any process that implements the same service can be a peer.
+
+**Where the stack is still specific to three backends:**
+
+| Layer | What is hard-coded |
+|--------|-------------------|
+| `deploy/wrapper_launch.sh` | `case` for `openssl` / `gnutls` / `nss` only. |
+| `scripts/run.sh` | `MATRIX_PAIRS`, `_valid_wrapper` — fixed set of names. |
+| `deploy/matrix.yaml` + image | One image recipe with Fedora packages for those three stacks. |
+| Docs / CI | Examples assume the 3×3 matrix. |
+
+**Direction:** Treat wrappers as **plug-ins**: e.g. **registry** (YAML/JSON) mapping `WRAPPER` name → launch command or module; **generate matrix pairs** from that list or from a plan file; document **“how to implement a wrapper”** (contract only, no library names). Optionally run server/client endpoints from **pure config** (`TLS_SERVER_GRPC` / `TLS_CLIENT_GRPC`) so the driver does not need to know wrapper *names* at all — only addresses. Heavier images vs **per-wrapper sidecars** / external processes remain a deployment choice.
 
 ---
 
-## Phase 4: NSS wrapper (full support for three libraries)
+## What to do next (recommended order)
 
-**Goal:** NSS on par with OpenSSL/GnuTLS in the matrix.
+Work is ordered so early items unblock documentation and ergonomics; later items align with architecture/epic without requiring everything at once.
 
-| Step | What | Outcome |
-|------|------|--------|
-| 4.1 | **NSS wrapper** | `wrapper_nss.py`, `selfserv` / `tstclnt`, NSS DB |
-| 4.2 | **GetMetadata for NSS** | Same metadata shape as other wrappers |
-| 4.3 | **Docker / Compose** | Image with `nss-tools`, `matrix.yaml` rows for NSS |
-| 4.4 | **CI** | NSS included in matrix runs |
+### Near term (high value, smaller scope)
 
-**Definition of done:** ✅ Same scenarios across NSS combinations; GnuTLS×NSS env documented in README.
+1. **Command logging in wrappers** — ✅ *Done (baseline):* `wrapper_common.format_executed_command()`; on **ESTABLISH**, wrappers set `OperationResponse.logs` to `cwd=…` plus `shlex`-quoted argv (NSS server: socat + selfserv on two lines). The driver already surfaces `resp.logs` on failures in verbose mode (`message` or `logs` in `_check_response`). *Optional later:* log on more op types or behind a dedicated env flag only.
+2. **Upstream / CI integration guide** — Short doc (e.g. `docs/INTEGRATION.md`): prerequisites, image or compose usage, env vars, how to run a **subset** of the matrix, how to add a **new wrapper** stub. Ties directly to epic success criteria.
+3. **Extract scenario registry** — Keep behaviour identical but move scenario list + names + TLS requirements to a **single module or data structure** so adding a scenario does not require hunting through `driver.py` (step toward “tests as separate artifacts” and **user-selectable** runs).
+4. **Wrapper registry + configurable matrix** — Config file listing wrapper **names** and how to start each process; drive `wrapper_launch.sh` / Compose from it; generate **server×client** pairs from config instead of hard-coding in `run.sh` (implements “driver works with wrappers built from anything” without changing driver code).
+
+### Medium term (architecture + epic)
+
+5. **Wire capability axes end-to-end** — Use `TlsConfig.cipher_suite` in all wrappers; add **group** (and later **sig algs**) to `.proto` + `GetMetadata` where needed; extend driver **skip** logic to require NEGOTIATE (or equivalent) on both sides for chosen cipher/group.
+6. **Parametric runs + compatibility rules** — Same scenario code, parameters from data; curated or rule-based grids for **valid** combinations (not full Cartesian product unless bounded).
+7. **External test scripts (optional HTTP or Python API)** — Let a script drive the same operations the driver uses, or add a thin HTTP **RequestSender** as in the draft spec, so tests are not only embedded in the driver.
+8. **Declarative test plans** — File-based list of scenarios, tags, and/or capability tuples (YAML/TOML) read by `run.sh` or the driver, as a bridge before full fmf/tmt.
+9. **tmt + fmf proof of concept** — Minimal tree: `plans/`, `tests/`, `tmt run` in CI (Fedora container), even if it initially only wraps existing `run.sh` or the driver. Validates the upstream architecture baseline (see libssh-style POC).
+
+### Longer term
+
+10. **Capability / interface specification** — Versioned document (or generated from schema) describing operations, parameters, and capability IDs; keep `.proto` in sync.
+11. **Subject metadata** — Optional fmf/yaml next to a wrapper or consumed by a future runner describing build deps and supported interface version.
+12. **More scenarios and protocol depth** — e.g. KEY_UPDATE, stricter cipher/SNI cases; keep **first-subproject**-style tests in mind where automation is insufficient.
+13. **Split repository layout** — When mature: **tests + plans** (and possibly runner packaging) vs **reference wrappers**, to match the “central tests repository” epic wording.
 
 ---
 
-## Phase 5: Later (when needed)
+## How to use this file
 
-- **RequestSender / HTTP API:** If tests should be scripts that call the driver via HTTP (per spec).
-- **tmt / fmf:** Discoverable “test plans” and metadata.
-- **Control parameters:** Driver-level config for pairs (beyond compose / `run.sh` args).
-- **Session / test / epoch model:** Session-level setup and multiple tests per session.
+- **Done vs next:** The baseline table marks what already matches the epic’s *direction*; the gap analysis is the single checklist derived from **both** comparison documents, **team meeting notes** (§6), and the **generic-driver** note (§7).
+- **README** stays the operational entrypoint; this file tracks **product/architecture** follow-up.
 
----
-
-## Suggested next action
-
-**Next (when useful):** Phase 5 (HTTP API, tmt/fmf, richer session config), or new scenarios (e.g. KEY_UPDATE, stricter TLS cases) if the spec needs them.
+When a line item is completed, update the baseline or remove/shrink the corresponding gap to avoid drift.

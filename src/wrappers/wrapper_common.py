@@ -5,11 +5,13 @@ Sets up repo root on sys.path (dev: ``src/wrappers``; Docker: flat ``/app``).
 import fcntl
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
 import time
 from concurrent import futures
+from proto import interop_pb2, interop_pb2_grpc
 
 import grpc
 
@@ -27,9 +29,6 @@ def _discover_repo_root():
 _REPO_ROOT = _discover_repo_root()
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
-
-from proto import interop_pb2
-from proto import interop_pb2_grpc
 
 FAIL_LOG_TAIL = 600
 
@@ -96,6 +95,17 @@ def standard_library_metadata(component_name, version):
             cap("P-384", r, n),
         ],
     )
+
+
+def format_executed_command(cmd, cwd=None):
+    """
+    Shell-safe one-liner for logs (manual reproduction).
+    ``cmd`` is argv list as passed to Popen/run.
+    """
+    line = shlex.join(str(x) for x in cmd)
+    if cwd is not None:
+        return f"cwd={shlex.quote(os.path.abspath(cwd))} {line}"
+    return line
 
 
 def run_cli_version(argv, timeout=5):
