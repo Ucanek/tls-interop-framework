@@ -4,11 +4,19 @@ import sys
 import threading
 import time
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
+_driver_dir = os.path.dirname(os.path.abspath(__file__))
+_repo_root = os.path.abspath(os.path.join(_driver_dir, "..", ".."))
+# Prefer this repo's ``proto/`` over any third-party top-level ``proto`` on sys.path.
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
+if _driver_dir not in sys.path:
+    sys.path.append(_driver_dir)
 
 import grpc
 from proto import interop_pb2
 from proto import interop_pb2_grpc
+
+import scenarios
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -18,15 +26,6 @@ RESET = "\033[0m"
 SUCCESS = interop_pb2.OperationResponse.SUCCESS
 FAILURE = interop_pb2.OperationResponse.FAILURE
 ERROR = interop_pb2.OperationResponse.ERROR
-
-# scenario name -> TlsConfig.version used by that scenario (mapped to GetMetadata capability names)
-_SCENARIO_TLS_REQUIREMENT = {
-    "establish_transmit_close": "1.3",
-    "establish_transmit_close_tls12": "1.2",
-    "expect_failure_wrong_hostname": "1.3",
-    "expect_failure_wrong_port": "1.3",
-}
-
 
 def _tls_config_version_to_capability_name(version_str):
     """Map driver TlsConfig.version to Capability.name from wrappers (e.g. TLS1.3)."""
@@ -128,7 +127,7 @@ class InteropDriver:
 
     def scenario_skip_reason(self, scenario_name):
         """If scenario should be skipped from GetMetadata, return reason; else None."""
-        need_tls = _SCENARIO_TLS_REQUIREMENT.get(scenario_name)
+        need_tls = scenarios.SCENARIO_TLS_REQUIREMENT.get(scenario_name)
         if need_tls is None or self.server_metadata is None or self.client_metadata is None:
             return None
         cap_name = _tls_config_version_to_capability_name(need_tls)
@@ -357,13 +356,11 @@ class InteropDriver:
 
     def run_scenario(self, name, tls_hostname):
         """Run one scenario. Returns True if passed or skipped (capability filter)."""
-        scenarios = {
-            "establish_transmit_close": self.run_establish_transmit_close,
-            "establish_transmit_close_tls12": self.run_establish_transmit_close_tls12,
-            "expect_failure_wrong_hostname": self.run_expect_failure_wrong_hostname,
-            "expect_failure_wrong_port": self.run_expect_failure_wrong_port,
+        runners = {
+            sid: getattr(self, method)
+            for sid, _, method in scenarios.SCENARIO_REGISTRY
         }
-        if name not in scenarios:
+        if name not in runners:
             print(f"{RED}[Driver] Unknown scenario: {name}{RESET}")
             return False
         skip = self.scenario_skip_reason(name)
@@ -377,13 +374,13 @@ class InteropDriver:
             return True
         self._last_failure = None
         if self._verbose:
-            return scenarios[name](tls_hostname)
+            return runners[name](tls_hostname)
         spinner = None
         if sys.stderr.isatty():
             spinner = _QuietSpinner()
             spinner.start()
         try:
-            ok = scenarios[name](tls_hostname)
+            ok = runners[name](tls_hostname)
         finally:
             if spinner is not None:
                 spinner.stop()
@@ -399,14 +396,8 @@ class InteropDriver:
 
     def run_all_scenarios(self, tls_hostname):
         """Run all scenarios. Returns True iff all passed."""
-        names = [
-            "establish_transmit_close",
-            "establish_transmit_close_tls12",
-            "expect_failure_wrong_hostname",
-            "expect_failure_wrong_port",
-        ]
         results = []
-        for name in names:
+        for name in scenarios.ORDERED_SCENARIO_IDS:
             results.append(self.run_scenario(name, tls_hostname))
         return all(results)
 
@@ -422,13 +413,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--scenario",
         default="all",
-        choices=[
-            "all",
-            "establish_transmit_close",
-            "establish_transmit_close_tls12",
-            "expect_failure_wrong_hostname",
-            "expect_failure_wrong_port",
-        ],
+        choices=scenarios.ARGPARSE_SCENARIO_CHOICES,
         help="Scenario to run (default: all)",
     )
     args = parser.parse_args()

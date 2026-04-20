@@ -105,7 +105,7 @@ Work is ordered so early items unblock documentation and ergonomics; later items
 
 1. **Command logging in wrappers** — ✅ *Done (baseline):* `wrapper_common.format_executed_command()`; on **ESTABLISH**, wrappers set `OperationResponse.logs` to `cwd=…` plus `shlex`-quoted argv (NSS server: socat + selfserv on two lines). The driver already surfaces `resp.logs` on failures in verbose mode (`message` or `logs` in `_check_response`). *Optional later:* log on more op types or behind a dedicated env flag only.
 2. **Upstream / CI integration guide** — Short doc (e.g. `docs/INTEGRATION.md`): prerequisites, image or compose usage, env vars, how to run a **subset** of the matrix, how to add a **new wrapper** stub. Ties directly to epic success criteria.
-3. **Extract scenario registry** — Keep behaviour identical but move scenario list + names + TLS requirements to a **single module or data structure** so adding a scenario does not require hunting through `driver.py` (step toward “tests as separate artifacts” and **user-selectable** runs).
+3. **Extract scenario registry** — ✅ `src/driver/scenarios.py`: `SCENARIO_REGISTRY` (id, TLS requirement, driver method name), `SCENARIO_TLS_REQUIREMENT`, `ORDERED_SCENARIO_IDS`, `ARGPARSE_SCENARIO_CHOICES`. `driver.py` prepends repo root on `sys.path` then appends `src/driver` for `import scenarios`. Docker: both files copied to `/app/`.
 4. **Wrapper registry + configurable matrix** — Config file listing wrapper **names** and how to start each process; drive `wrapper_launch.sh` / Compose from it; generate **server×client** pairs from config instead of hard-coding in `run.sh` (implements “driver works with wrappers built from anything” without changing driver code).
 
 ### Medium term (architecture + epic)
