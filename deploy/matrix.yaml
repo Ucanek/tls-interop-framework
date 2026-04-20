@@ -1,3 +1,4 @@
+# Wrapper names must match deploy/wrappers.json (run.sh / matrix_config.py).
 # Single compose for all server×client pairs. Set wrappers via shell env:
 #   SERVER_WRAPPER=openssl|gnutls|nss   CLIENT_WRAPPER=openssl|gnutls|nss
 # Defaults: openssl / openssl

@@ -12,7 +12,7 @@ COPY proto/ ./proto/
 # Copy wrappers, driver, and NSS DB setup script
 COPY src/wrappers/wrapper_common.py src/wrappers/wrapper_openssl.py src/wrappers/wrapper_gnutls.py src/wrappers/wrapper_nss.py ./
 COPY src/driver/scenarios.py src/driver/driver.py ./
-COPY deploy/wrapper_launch.sh ./wrapper_launch.sh
+COPY deploy/wrapper_entry.py deploy/wrappers.json deploy/wrapper_launch.sh ./
 COPY scripts/setup_nssdb.sh ./
 RUN chmod +x wrapper_launch.sh setup_nssdb.sh
 # Generate certificates and NSS DB (for wrapper_nss.py)
@@ -23,4 +23,4 @@ RUN openssl req -x509 -newkey rsa:2048 -keyout key.pem -out cert.pem -sha256 -da
 EXPOSE 50051
 EXPOSE 5555
 
-CMD ["python3", "wrapper_openssl.py"]
+CMD ["/app/wrapper_launch.sh"]

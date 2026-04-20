@@ -1,0 +1,8 @@
+{
+  "wrappers": ["openssl", "gnutls", "nss"],
+  "launch": {
+    "openssl": "wrapper_openssl.py",
+    "gnutls": "wrapper_gnutls.py",
+    "nss": "wrapper_nss.py"
+  }
+}

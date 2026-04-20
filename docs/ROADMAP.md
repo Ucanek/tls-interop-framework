@@ -88,8 +88,8 @@ The **driver is already generic at the protocol layer:** it only depends on **gR
 
 | Layer | What is hard-coded |
 |--------|-------------------|
-| `deploy/wrapper_launch.sh` | `case` for `openssl` / `gnutls` / `nss` only. |
-| `scripts/run.sh` | `MATRIX_PAIRS`, `_valid_wrapper` — fixed set of names. |
+| `deploy/wrapper_launch.sh` | Delegates to **`wrapper_entry.py`** + **`wrappers.json`** (no per-name `case` in shell). |
+| `scripts/run.sh` | Matrix pairs and valid names from **`deploy/wrappers.json`** via **`matrix_config.py`**. |
 | `deploy/matrix.yaml` + image | One image recipe with Fedora packages for those three stacks. |
 | Docs / CI | Examples assume the 3×3 matrix. |
 
@@ -106,7 +106,7 @@ Work is ordered so early items unblock documentation and ergonomics; later items
 1. **Command logging in wrappers** — ✅ *Done (baseline):* `wrapper_common.format_executed_command()`; on **ESTABLISH**, wrappers set `OperationResponse.logs` to `cwd=…` plus `shlex`-quoted argv (NSS server: socat + selfserv on two lines). The driver already surfaces `resp.logs` on failures in verbose mode (`message` or `logs` in `_check_response`). *Optional later:* log on more op types or behind a dedicated env flag only.
 2. **Upstream / CI integration guide** — Short doc (e.g. `docs/INTEGRATION.md`): prerequisites, image or compose usage, env vars, how to run a **subset** of the matrix, how to add a **new wrapper** stub. Ties directly to epic success criteria.
 3. **Extract scenario registry** — ✅ `src/driver/scenarios.py`: `SCENARIO_REGISTRY` (id, TLS requirement, driver method name), `SCENARIO_TLS_REQUIREMENT`, `ORDERED_SCENARIO_IDS`, `ARGPARSE_SCENARIO_CHOICES`. `driver.py` prepends repo root on `sys.path` then appends `src/driver` for `import scenarios`. Docker: both files copied to `/app/`.
-4. **Wrapper registry + configurable matrix** — Config file listing wrapper **names** and how to start each process; drive `wrapper_launch.sh` / Compose from it; generate **server×client** pairs from config instead of hard-coding in `run.sh` (implements “driver works with wrappers built from anything” without changing driver code).
+4. **Wrapper registry + configurable matrix** — ✅ `deploy/wrappers.json` (`wrappers`, `launch`, `matrix_pairs`); `scripts/matrix_config.py` (`pairs` / `valid`); `deploy/wrapper_entry.py` + `wrapper_launch.sh`; Dockerfile copies JSON + entry; **`matrix_pairs` omitted** ⇒ Cartesian product of `wrappers`. Env **`WRAPPERS_CONFIG`** overrides JSON path for `run.sh`.
 
 ### Medium term (architecture + epic)
 

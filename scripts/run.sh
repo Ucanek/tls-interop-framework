@@ -1,6 +1,6 @@
 #!/bin/bash
 # Entry point: Docker matrix (default), CI-like pipeline, capability self-check.
-# Matrix args (same with or without leading "docker"): no args = all 9 combos;
+# Matrix args (same with or without leading "docker"): no args = all pairs from deploy/wrappers.json;
 # openssl nss | openssl-nss | nss-nss,gnutls-openssl (comma-separated srv-cli).
 # Hidden commands (CI / tooling): protoc, certs, docker.
 
@@ -10,6 +10,7 @@ ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
 MATRIX="deploy/matrix.yaml"
+WRAPPERS_CONFIG="${WRAPPERS_CONFIG:-$ROOT/deploy/wrappers.json}"
 # INTEROP_GNUTLS_NSS_PAIR: gnutls×nss only (see README + src/wrappers/wrapper_common.py).
 
 # Matches driver.py: INTEROP_VERBOSE truthy => show docker compose build output.
@@ -24,7 +25,7 @@ usage() {
   cat <<'EOF'
 ./scripts/run.sh [arguments]
 
-  (no arguments)   All 9 Docker matrix combinations
+  (no arguments)   All Docker matrix combinations (deploy/wrappers.json)
   <srv> <cli>      One combination (e.g. openssl nss)
   <srv>-<cli>      Same (e.g. openssl-nss)
   srv-cli,...      Several combinations, comma-separated
@@ -33,6 +34,9 @@ usage() {
   ci               Full pipeline (protoc, certs, tests, docker matrix)
   -v / --verbose   Detailed driver log + docker build output (or INTEROP_VERBOSE=1); default: quiet + ✓/✗ per scenario
   help             This text
+
+Env:
+  WRAPPERS_CONFIG   Path to matrix/wrapper JSON (default: deploy/wrappers.json under repo root)
 EOF
 }
 
@@ -73,38 +77,32 @@ run_combo() {
   echo ""
   echo "========== $name =========="
   export_matrix_env_for_pair "$srv" "$cli"
-  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
+  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null </dev/null || true
   local build_flags=()
   if ! interop_is_verbose; then
     build_flags=(-q)
   fi
   local rc=1
   # Do not merge stderr into stdout: driver uses stderr for quiet-mode spinner (needs isatty).
-  if docker compose -p "$project" -f "$MATRIX" build "${build_flags[@]}" \
-    && docker compose -p "$project" -f "$MATRIX" run --rm driver; then
+  # stdin must not be the matrix pairs pipe: while read … done < <(_matrix_config_pairs) makes fd 0
+  # that pipe for the whole loop body; docker compose run would drain it and stop the loop after one pair.
+  if docker compose -p "$project" -f "$MATRIX" build "${build_flags[@]}" </dev/null \
+    && docker compose -p "$project" -f "$MATRIX" run --rm -T driver </dev/null; then
     rc=0
   fi
   if [[ "$rc" -eq 0 ]]; then
     PASSED+=("$name")
-    docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
+    docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null </dev/null || true
     return 0
   fi
   FAILED+=("$name")
-  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null || true
+  docker compose -p "$project" -f "$MATRIX" down --remove-orphans 2>/dev/null </dev/null || true
   return 1
 }
 
-MATRIX_PAIRS=(
-  "openssl openssl"
-  "openssl gnutls"
-  "openssl nss"
-  "gnutls openssl"
-  "gnutls gnutls"
-  "gnutls nss"
-  "nss openssl"
-  "nss gnutls"
-  "nss nss"
-)
+_matrix_config_pairs() {
+  python3 "$SCRIPT_DIR/matrix_config.py" pairs "$WRAPPERS_CONFIG"
+}
 
 _trim() {
   local s="$1"
@@ -114,7 +112,7 @@ _trim() {
 }
 
 _valid_wrapper() {
-  case "$1" in openssl | gnutls | nss) return 0 ;; *) return 1 ;; esac
+  python3 "$SCRIPT_DIR/matrix_config.py" valid "$1" "$WRAPPERS_CONFIG"
 }
 
 _matrix_summary() {
@@ -135,7 +133,7 @@ run_matrix_segment() {
   fi
   local srv="${seg%%-*}" cli="${seg#*-}"
   if ! _valid_wrapper "$srv" || ! _valid_wrapper "$cli"; then
-    echo "Unknown wrapper (use openssl, gnutls, nss): '$srv' '$cli'" >&2
+    echo "Unknown wrapper name (see deploy/wrappers.json): '$srv' '$cli'" >&2
     exit 1
   fi
   run_combo "$srv" "$cli" || true
@@ -152,10 +150,11 @@ cmd_docker_matrix() {
   fi
 
   if [[ $# -eq 0 ]]; then
-    for pair in "${MATRIX_PAIRS[@]}"; do
-      set -- $pair
+    while IFS= read -r pair_line || [[ -n "$pair_line" ]]; do
+      [[ -z "${pair_line// }" ]] && continue
+      set -- $pair_line
       run_combo "$1" "$2" || true
-    done
+    done < <(_matrix_config_pairs)
     _matrix_summary && exit 0 || exit 1
   fi
 

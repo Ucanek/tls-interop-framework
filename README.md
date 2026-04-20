@@ -40,7 +40,8 @@ Two logical planes:
 | `src/wrappers/` | `wrapper_common.py` (shared helpers) + OpenSSL / GnuTLS / NSS shims |
 | `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` for CI and manual use |
 | `scripts/` | `gen_certs.sh`, `setup_nssdb.sh`, `test_capability_filter.py` |
-| `deploy/` | `Dockerfile`, `wrapper_launch.sh`, `matrix.yaml` (Docker matrix) |
+| `deploy/` | `Dockerfile`, `wrappers.json` (wrapper names + matrix pairs + launch map), `wrapper_entry.py`, `wrapper_launch.sh`, `matrix.yaml` |
+| `scripts/matrix_config.py` | Reads `deploy/wrappers.json` for `run.sh` matrix iteration and name validation |
 | `docs/` | Roadmap |
 
 Local NSS DB (`./nssdb/`) is created by `scripts/setup_nssdb.sh` or during the Docker image build; it is not versioned.
@@ -53,7 +54,7 @@ Use **`./scripts/run.sh`** (see `./scripts/run.sh help`). Typical flows:
 
 ```bash
 pip install 'grpcio>=1.80.0' 'grpcio-tools>=1.80.0' 'protobuf>=4.21'
-./scripts/run.sh                         # all 9 Docker matrix combos
+./scripts/run.sh                         # all matrix pairs (deploy/wrappers.json)
 ./scripts/run.sh openssl-nss             # one combo (also: openssl nss)
 ./scripts/run.sh ci                      # like GitHub Actions: protoc, certs, tests, matrix
 ./scripts/run.sh capability-test         # capability filter self-check
@@ -63,10 +64,10 @@ For ad hoc steps without the full `ci` pipeline, `./scripts/run.sh protoc` and `
 
 By default the driver runs every registered scenario: TLS 1.3 and **TLS 1.2** happy paths (`establish_transmit_close`, `establish_transmit_close_tls12`), plus negative checks (`expect_failure_wrong_hostname`, `expect_failure_wrong_port`). Use `python3 src/driver/driver.py --scenario <name>` for one scenario; `--scenario all` is the default. **Quiet output:** **`docker compose build`** uses **`-q`**. The driver prints **`✓` / `✗`** and the scenario name after each test; while a scenario runs, a **braille spinner** is drawn on **stderr** (only if stderr is a TTY, e.g. local terminal — not in typical CI). Skips use **`○`**. **`run.sh`** does not merge driver stderr into stdout so the spinner works under Docker. Use **`python3 src/driver/driver.py -v`** (or **`INTEROP_VERBOSE=1`**, **`./scripts/run.sh -v …`**) for full logs and visible image builds.
 
-**Docker matrix:** all pairs use **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. The image runs **`/app/wrapper_launch.sh`**. For GnuTLS×NSS, `INTEROP_GNUTLS_NSS_PAIR` is set automatically by `run.sh` (see [Known limitations](#known-limitations)).
+**Docker matrix:** **`deploy/wrappers.json`** lists **`wrappers`** and per-stack **`launch`** scripts; **`matrix_pairs` is optional** — if omitted (as in the default file), `scripts/matrix_config.py` builds **every** server×client combination from `wrappers` (Cartesian product). Add an explicit **`matrix_pairs`** array only when you want a **subset** (e.g. faster CI). Override the file path with **`WRAPPERS_CONFIG`**. Compose still uses **`deploy/matrix.yaml`** with **`SERVER_WRAPPER`** / **`CLIENT_WRAPPER`**. Containers start TLS via **`/app/wrapper_launch.sh`** → **`wrapper_entry.py`**. For GnuTLS×NSS, `INTEROP_GNUTLS_NSS_PAIR` is set automatically by `run.sh` (see [Known limitations](#known-limitations)).
 
 ```bash
-./scripts/run.sh                          # all 9 combos
+./scripts/run.sh                          # all pairs from wrappers.json
 ./scripts/run.sh openssl nss
 ./scripts/run.sh gnutls-gnutls
 ./scripts/run.sh nss-nss,gnutls-openssl   # several pairs: srv-cli,srv-cli,...
