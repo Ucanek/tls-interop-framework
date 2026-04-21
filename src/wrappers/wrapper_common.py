@@ -1,5 +1,5 @@
 """
-Shared helpers for TLS interop wrappers (OpenSSL, GnuTLS, NSS).
+Shared helpers for TLS interop wrappers (OpenSSL, GnuTLS, NSS, Python ssl).
 Sets up repo root on sys.path (dev: ``src/wrappers``; Docker: flat ``/app``).
 """
 import fcntl
