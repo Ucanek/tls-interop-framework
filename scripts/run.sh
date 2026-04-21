@@ -11,7 +11,7 @@ cd "$ROOT"
 
 MATRIX="deploy/matrix.yaml"
 WRAPPERS_CONFIG="${WRAPPERS_CONFIG:-$ROOT/deploy/wrappers.json}"
-# INTEROP_GNUTLS_NSS_PAIR: gnutls×nss only (see README + src/wrappers/wrapper_common.py).
+# INTEROP_GNUTLS_NSS_PAIR: gnutls×nss only (see README + src/wrappers/wrapper_nss.py).
 
 # Matches driver.py: INTEROP_VERBOSE truthy => show docker compose build output.
 interop_is_verbose() {

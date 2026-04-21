@@ -6,7 +6,6 @@ import fcntl
 import os
 import re
 import shlex
-import socket
 import subprocess
 import sys
 import time
@@ -31,10 +30,6 @@ if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 FAIL_LOG_TAIL = 600
-
-# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
-GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
-_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
 def parse_version_line(out):
@@ -180,27 +175,6 @@ def read_transmit_stdout(proc, role, *, server_poll=False):
         return proc.stdout.read() or b""
     except OSError:
         return b""
-
-
-def gnutls_nss_pair_enabled():
-    """True when Docker matrix sets INTEROP_GNUTLS_NSS_PAIR for gnutls×nss."""
-    return os.environ.get(GNUTLS_NSS_PAIR_ENV, "0").strip().lower() in _TRUTHY_ENV
-
-
-def nss_tstclnt_host_and_extra_argv(hostname, port):
-    """(tstclnt -h value, extra argv after -p). See README (GnuTLS server × NSS client)."""
-    h = hostname or "localhost"
-    p = int(port)
-    if not gnutls_nss_pair_enabled():
-        return h, ["-a", h]
-    try:
-        for fam in (socket.AF_INET, socket.AF_INET6):
-            infos = socket.getaddrinfo(h, p, family=fam, type=socket.SOCK_STREAM)
-            if infos:
-                return str(infos[0][4][0]), []
-    except OSError:
-        pass
-    return h, ["-a", h]
 
 
 def serve_insecure(wrapper_cls, display_name):

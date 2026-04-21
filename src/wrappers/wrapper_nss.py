@@ -2,10 +2,11 @@
 NSS (Network Security Services) wrapper. Uses selfserv (server) and tstclnt (client).
 Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB from scripts/setup_nssdb.sh.
 Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default interop).
-INTEROP_GNUTLS_NSS_PAIR: see wrapper_common / README (GnuTLS server × NSS client).
+INTEROP_GNUTLS_NSS_PAIR: see README (GnuTLS server × NSS client); tstclnt argv helpers below.
 """
 import os
 import shutil
+import socket
 import subprocess
 import time
 
@@ -14,7 +15,6 @@ from proto import interop_pb2, interop_pb2_grpc
 from wrapper_common import (
     format_client_connect_failure,
     format_executed_command,
-    nss_tstclnt_host_and_extra_argv,
     parse_version_line,
     popen_stdio_merged,
     read_transmit_stdout,
@@ -22,6 +22,31 @@ from wrapper_common import (
     standard_library_metadata,
     transmit_payload_bytes,
 )
+
+# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
+_GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
+
+
+def _gnutls_nss_pair_enabled():
+    """True when Docker matrix sets INTEROP_GNUTLS_NSS_PAIR for gnutls×nss."""
+    return os.environ.get(_GNUTLS_NSS_PAIR_ENV, "0").strip().lower() in _TRUTHY_ENV
+
+
+def nss_tstclnt_host_and_extra_argv(hostname, port):
+    """(tstclnt -h value, extra argv after -p). See README (GnuTLS server × NSS client)."""
+    h = hostname or "localhost"
+    p = int(port)
+    if not _gnutls_nss_pair_enabled():
+        return h, ["-a", h]
+    try:
+        for fam in (socket.AF_INET, socket.AF_INET6):
+            infos = socket.getaddrinfo(h, p, family=fam, type=socket.SOCK_STREAM)
+            if infos:
+                return str(infos[0][4][0]), []
+    except OSError:
+        pass
+    return h, ["-a", h]
 
 
 def _nss_tool(name):
