@@ -36,7 +36,8 @@ Two logical planes:
 | Path | Description |
 |------|-------------|
 | `proto/` | `.proto` schema and generated Python (`interop_pb2*.py`; refresh with `./scripts/run.sh protoc`) |
-| `src/driver/` | Central orchestrator (driver) |
+| `src/driver/` | Orchestrator (`driver.py`) + `scenarios.py` (registry) |
+| `src/tests/` | TLS scenario modules (`run(driver, tls_hostname)`); shared steps on ``InteropDriver`` (e.g. ``_run_establish_transmit``); register in `src/driver/scenarios.py` |
 | `src/wrappers/` | `wrapper_common.py` (shared helpers) + OpenSSL / GnuTLS / NSS shims |
 | `scripts/run.sh` | **Main entry:** Docker matrix (default), `ci`, `capability-test`; internal steps `protoc` / `certs` for CI and manual use |
 | `scripts/` | `gen_certs.sh`, `setup_nssdb.sh`, `test_capability_filter.py` |

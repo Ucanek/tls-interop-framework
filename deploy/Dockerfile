@@ -12,6 +12,7 @@ COPY proto/ ./proto/
 # Copy wrappers, driver, and NSS DB setup script
 COPY src/wrappers/wrapper_common.py src/wrappers/wrapper_openssl.py src/wrappers/wrapper_gnutls.py src/wrappers/wrapper_nss.py ./
 COPY src/driver/scenarios.py src/driver/driver.py ./
+COPY src/tests ./tests/
 COPY deploy/wrapper_entry.py deploy/wrappers.json deploy/wrapper_launch.sh ./
 COPY scripts/setup_nssdb.sh ./
 RUN chmod +x wrapper_launch.sh setup_nssdb.sh

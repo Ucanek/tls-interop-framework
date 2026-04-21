@@ -12,6 +12,15 @@ if _repo_root not in sys.path:
 if _driver_dir not in sys.path:
     sys.path.append(_driver_dir)
 
+# TLS scenario modules live in ``src/tests/`` (dev) or ``./tests/`` next to ``driver.py`` (Docker).
+_tests_pkg_dev = os.path.join(_repo_root, "src", "tests")
+_tests_pkg_flat = os.path.join(_driver_dir, "tests")
+if os.path.isdir(_tests_pkg_dev):
+    _src_root = os.path.join(_repo_root, "src")
+    if _src_root not in sys.path:
+        sys.path.insert(0, _src_root)
+# Flat image: ``/app/tests/`` + ``/app/driver.py`` — ``_driver_dir`` is already on ``sys.path``.
+
 import grpc
 from proto import interop_pb2
 from proto import interop_pb2_grpc
@@ -240,126 +249,9 @@ class InteropDriver:
         )
         return False
 
-    def run_establish_transmit_close(self, tls_hostname):
-        """Establish TLS 1.3, transmit, verify. Expect SUCCESS."""
-        try:
-            return self._run_establish_transmit(
-                self._default_config(tls_hostname, "1.3"),
-                "establish → transmit → close (TLS 1.3)",
-            )
-        finally:
-            self._cleanup()
-
-    def run_establish_transmit_close_tls12(self, tls_hostname):
-        """Same as happy path but TLS 1.2 only. Expect SUCCESS."""
-        try:
-            return self._run_establish_transmit(
-                self._default_config(tls_hostname, "1.2"),
-                "establish → transmit → close (TLS 1.2)",
-            )
-        finally:
-            self._cleanup()
-
-    def run_expect_failure_wrong_hostname(self, tls_hostname):
-        """Scenario: server listens; client connects with wrong hostname. Expect client ESTABLISH to fail."""
-        good_conf = self._default_config(tls_hostname)
-        bad_conf = interop_pb2.TlsConfig(
-            version="1.3",
-            server_hostname="wrong-hostname.invalid",
-            port=good_conf.port,
-        )
-        try:
-            self._vprint("[Driver] Scenario: expect failure (wrong hostname)")
-            self._vprint("[Driver] Establishing server...")
-            r = self.server_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.SERVER,
-                    config=good_conf,
-                )
-            )
-            if not self._check_response(r, "ESTABLISH server"):
-                return False
-
-            self._vprint("[Driver] Establishing client (wrong hostname)...")
-            r = self.client_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.CLIENT,
-                    config=bad_conf,
-                )
-            )
-            if r.status == SUCCESS:
-                self._vprint(
-                    f"{RED}>>> SCENARIO FAILED: Expected client to fail, got SUCCESS <<<{RESET}"
-                )
-                self._last_failure = (
-                    "ESTABLISH client",
-                    SUCCESS,
-                    "expected TLS failure (wrong hostname)",
-                )
-                return False
-            self._vprint(
-                f"{GREEN}>>> SCENARIO PASSED: Client failed as expected ({r.message or r.status}) <<<{RESET}"
-            )
-            return True
-        finally:
-            self._cleanup()
-
-    def run_expect_failure_wrong_port(self, tls_hostname):
-        """Server on configured port; client connects to another port. Expect client ESTABLISH to fail."""
-        good_conf = self._default_config(tls_hostname, "1.3")
-        bad_conf = interop_pb2.TlsConfig(
-            version=good_conf.version,
-            server_hostname=good_conf.server_hostname,
-            port=good_conf.port + 1,
-        )
-        try:
-            self._vprint("[Driver] Scenario: expect failure (wrong port)")
-            self._vprint("[Driver] Establishing server...")
-            r = self.server_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.SERVER,
-                    config=good_conf,
-                )
-            )
-            if not self._check_response(r, "ESTABLISH server"):
-                return False
-
-            self._vprint(
-                f"[Driver] Establishing client (port {bad_conf.port}, no listener)..."
-            )
-            r = self.client_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.ESTABLISH,
-                    role=interop_pb2.CLIENT,
-                    config=bad_conf,
-                )
-            )
-            if r.status == SUCCESS:
-                self._vprint(
-                    f"{RED}>>> SCENARIO FAILED: Expected client to fail, got SUCCESS <<<{RESET}"
-                )
-                self._last_failure = (
-                    "ESTABLISH client",
-                    SUCCESS,
-                    "expected TLS failure (wrong port)",
-                )
-                return False
-            self._vprint(
-                f"{GREEN}>>> SCENARIO PASSED: Client failed as expected ({r.message or r.status}) <<<{RESET}"
-            )
-            return True
-        finally:
-            self._cleanup()
-
     def run_scenario(self, name, tls_hostname):
         """Run one scenario. Returns True if passed or skipped (capability filter)."""
-        runners = {
-            sid: getattr(self, method)
-            for sid, _, method in scenarios.SCENARIO_REGISTRY
-        }
+        runners = {sid: fn for sid, _, fn in scenarios.SCENARIO_REGISTRY}
         if name not in runners:
             print(f"{RED}[Driver] Unknown scenario: {name}{RESET}")
             return False
@@ -374,13 +266,13 @@ class InteropDriver:
             return True
         self._last_failure = None
         if self._verbose:
-            return runners[name](tls_hostname)
+            return runners[name](self, tls_hostname)
         spinner = None
         if sys.stderr.isatty():
             spinner = _QuietSpinner()
             spinner.start()
         try:
-            ok = runners[name](tls_hostname)
+            ok = runners[name](self, tls_hostname)
         finally:
             if spinner is not None:
                 spinner.stop()

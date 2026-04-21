@@ -14,6 +14,7 @@ import sys
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(ROOT)
 sys.path.insert(0, ROOT)
+sys.path.insert(0, os.path.join(ROOT, "src"))
 
 _SPEC = importlib.util.spec_from_file_location(
     "interop_driver", os.path.join(ROOT, "src", "driver", "driver.py")
