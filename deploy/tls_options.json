@@ -1,0 +1,42 @@
+{
+  "options": [
+    {
+      "id": "tls_version",
+      "choices": ["1.2", "1.3"],
+      "source": "TlsConfig.version",
+      "description": "TLS version override for default scenario configs."
+    },
+    {
+      "id": "cipher_suite",
+      "choices": [
+        "TLS_AES_256_GCM_SHA384",
+        "TLS_CHACHA20_POLY1305_SHA256",
+        "TLS_AES_128_GCM_SHA256"
+      ],
+      "source": "TlsConfig.cipher_suite",
+      "description": "Cipher suite override for wrappers that map IANA names."
+    },
+    {
+      "id": "tls_port",
+      "source": "TlsConfig.port",
+      "description": "TLS data-plane port override (default scenario value is 5555)."
+    },
+    {
+      "id": "tls_hostname",
+      "source": "TlsConfig.server_hostname",
+      "description": "SNI / hostname override for default scenario configs."
+    },
+    {
+      "id": "server_wrapper",
+      "choices": ["openssl", "gnutls", "nss"],
+      "source": "SERVER_WRAPPER",
+      "description": "Server-side TLS implementation."
+    },
+    {
+      "id": "client_wrapper",
+      "choices": ["openssl", "gnutls", "nss"],
+      "source": "CLIENT_WRAPPER",
+      "description": "Client-side TLS implementation."
+    }
+  ]
+}

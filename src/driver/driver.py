@@ -60,6 +60,16 @@ def _operation_response_detail(resp):
     return m or logs or "no message"
 
 
+def _int_env(name, default=0):
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
 class _QuietSpinner:
     """stderr-only braille frame; cleared on stop. Use only when stderr is a TTY."""
 
@@ -94,7 +104,16 @@ class _QuietSpinner:
 
 
 class InteropDriver:
-    def __init__(self, server_addr, client_addr, verbose=False):
+    def __init__(
+        self,
+        server_addr,
+        client_addr,
+        verbose=False,
+        tls_version_override="",
+        cipher_suite_override="",
+        port_override=0,
+        hostname_override="",
+    ):
         self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(
             grpc.insecure_channel(server_addr)
         )
@@ -105,6 +124,10 @@ class InteropDriver:
         self._last_failure = None
         self.server_metadata = None
         self.client_metadata = None
+        self._tls_version_override = (tls_version_override or "").strip()
+        self._cipher_suite_override = (cipher_suite_override or "").strip()
+        self._port_override = int(port_override or 0)
+        self._hostname_override = (hostname_override or "").strip()
 
     def _vprint(self, *args, **kwargs):
         if self._verbose:
@@ -186,11 +209,17 @@ class InteropDriver:
                     print(f"{RED}FAIL{RESET}  CLOSE {role}: {e}")
 
     def _default_config(self, tls_hostname, version="1.3"):
-        return interop_pb2.TlsConfig(
-            version=version,
-            server_hostname=tls_hostname,
-            port=5555,
+        selected_version = self._tls_version_override or version
+        selected_hostname = self._hostname_override or tls_hostname
+        selected_port = self._port_override or 5555
+        conf = interop_pb2.TlsConfig(
+            version=selected_version,
+            server_hostname=selected_hostname,
+            port=selected_port,
         )
+        if self._cipher_suite_override:
+            conf.cipher_suite = self._cipher_suite_override
+        return conf
 
     def _run_establish_transmit(self, conf, label):
         """Establish TLS 1.x, transmit payload, verify echo on server read. Caller handles cleanup."""
@@ -295,6 +324,10 @@ class InteropDriver:
 
 
 if __name__ == "__main__":
+    env_scenario = (os.environ.get("INTEROP_SCENARIO") or "").strip()
+    default_scenario = (
+        env_scenario if env_scenario in scenarios.ARGPARSE_SCENARIO_CHOICES else "all"
+    )
     parser = argparse.ArgumentParser(description="TLS Interop driver")
     parser.add_argument(
         "-v",
@@ -304,9 +337,30 @@ if __name__ == "__main__":
     )
     parser.add_argument(
         "--scenario",
-        default="all",
+        default=default_scenario,
         choices=scenarios.ARGPARSE_SCENARIO_CHOICES,
-        help="Scenario to run (default: all)",
+        help="Scenario to run (default: all, or INTEROP_SCENARIO when set)",
+    )
+    parser.add_argument(
+        "--tls-version",
+        default=(os.environ.get("INTEROP_TLS_VERSION") or "").strip(),
+        help="Override TlsConfig.version for default scenario configs",
+    )
+    parser.add_argument(
+        "--cipher-suite",
+        default=(os.environ.get("INTEROP_CIPHER_SUITE") or "").strip(),
+        help="Override TlsConfig.cipher_suite for default scenario configs",
+    )
+    parser.add_argument(
+        "--tls-port",
+        type=int,
+        default=_int_env("INTEROP_TLS_PORT", 0),
+        help="Override TlsConfig.port for default scenario configs (0 = scenario default)",
+    )
+    parser.add_argument(
+        "--tls-hostname",
+        default=(os.environ.get("INTEROP_TLS_HOSTNAME") or "").strip(),
+        help="Override TlsConfig.server_hostname for default scenario configs",
     )
     args = parser.parse_args()
     env_verbose = os.environ.get("INTEROP_VERBOSE", "").strip().lower() in (
@@ -320,7 +374,15 @@ if __name__ == "__main__":
     client_grpc = os.environ.get("TLS_CLIENT_GRPC", "localhost:50051")
     tls_hostname = os.environ.get("TLS_HOSTNAME", "localhost")
 
-    driver = InteropDriver(server_grpc, client_grpc, verbose=verbose)
+    driver = InteropDriver(
+        server_grpc,
+        client_grpc,
+        verbose=verbose,
+        tls_version_override=args.tls_version,
+        cipher_suite_override=args.cipher_suite,
+        port_override=args.tls_port,
+        hostname_override=args.tls_hostname,
+    )
 
     if verbose:
         print("[Driver] Fetching metadata...")

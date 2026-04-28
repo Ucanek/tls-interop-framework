@@ -1,6 +1,6 @@
 """
 NSS (Network Security Services) wrapper. Uses selfserv (server) and tstclnt (client).
-Requires: nss-tools (Fedora) / libnss3-tools (Debian), NSS DB from scripts/setup_nssdb.sh.
+Requires: nss-tools (Fedora) / libnss3-tools (Debian). NSS DB is initialized lazily.
 Env: NSSDB (default ./nssdb), GRPC_PORT (default 50051), CERT_NICKNAME (default interop).
 INTEROP_GNUTLS_NSS_PAIR: see README (GnuTLS server × NSS client); tstclnt argv helpers below.
 """
@@ -9,6 +9,7 @@ import shutil
 import socket
 import subprocess
 import time
+import fcntl
 
 import wrapper_common
 from proto import interop_pb2, interop_pb2_grpc
@@ -23,7 +24,7 @@ from wrapper_common import (
     transmit_payload_bytes,
 )
 
-# Must match deploy/matrix.yaml and scripts/run.sh (export_matrix_env_for_pair).
+# Must match deploy/compose.yaml environment wiring.
 _GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
 _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
@@ -57,6 +58,85 @@ def _nss_tool(name):
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return name
+
+
+def _ensure_tool_exists(path, name):
+    if not path or not shutil.which(path):
+        raise RuntimeError(f"NSS setup: required tool not found: {name}")
+    return path
+
+
+def _run_checked(cmd):
+    r = subprocess.run(cmd, capture_output=True, text=True)
+    if r.returncode != 0:
+        detail = (r.stderr or r.stdout or "").strip()
+        raise RuntimeError(f"NSS setup failed: {' '.join(cmd)} | {detail}")
+    return r
+
+
+def _nss_db_has_nickname(certutil, db_spec, nickname):
+    r = subprocess.run(
+        [certutil, "-L", "-d", db_spec, "-n", nickname],
+        capture_output=True,
+        text=True,
+    )
+    return r.returncode == 0
+
+
+def _ensure_nss_db_ready(nssdb_path, cert_nickname):
+    """
+    Ensure NSS DB exists and contains `cert_nickname`.
+    Idempotent: if DB already contains the cert, do nothing.
+    """
+    certutil = _ensure_tool_exists(_nss_tool("certutil"), "certutil")
+    pk12util = _ensure_tool_exists(_nss_tool("pk12util"), "pk12util")
+    openssl = _ensure_tool_exists(shutil.which("openssl"), "openssl")
+    db_abs = os.path.abspath(nssdb_path)
+    db_spec = f"sql:{db_abs}"
+    lock_path = os.path.join(db_abs + ".lock")
+
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    with open(lock_path, "w", encoding="utf-8") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        if _nss_db_has_nickname(certutil, db_spec, cert_nickname):
+            return
+
+        if not (os.path.isfile("cert.pem") and os.path.isfile("key.pem")):
+            raise RuntimeError(
+                "NSS setup: cert.pem/key.pem not found in current working directory"
+            )
+
+        if os.path.isdir(db_abs):
+            shutil.rmtree(db_abs)
+        os.makedirs(db_abs, exist_ok=True)
+
+        _run_checked([certutil, "-N", "-d", db_spec, "--empty-password"])
+
+        p12_path = os.path.join(db_abs, "cert.p12")
+        _run_checked(
+            [
+                openssl,
+                "pkcs12",
+                "-export",
+                "-in",
+                "cert.pem",
+                "-inkey",
+                "key.pem",
+                "-out",
+                p12_path,
+                "-passout",
+                "pass:",
+                "-nodes",
+                "-name",
+                cert_nickname,
+            ]
+        )
+        try:
+            _run_checked([pk12util, "-d", db_spec, "-i", p12_path, "-W", "", "-K", ""])
+            _run_checked([certutil, "-M", "-d", db_spec, "-n", cert_nickname, "-t", "u,u,u"])
+        finally:
+            if os.path.isfile(p12_path):
+                os.remove(p12_path)
 
 
 def _nss_library_version():
@@ -107,6 +187,7 @@ class NSSWrapper(interop_pb2_grpc.TlsInteropWrapperServicer):
         self._nick = os.environ.get("CERT_NICKNAME", "interop")
         self._selfserv = _nss_tool("selfserv")
         self._tstclnt = _nss_tool("tstclnt")
+        _ensure_nss_db_ready(self._nssdb, self._nick)
 
     def GetMetadata(self, request, context):
         version = _nss_library_version() or "unknown"

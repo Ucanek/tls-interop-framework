@@ -1,9 +1,7 @@
 """
 TLS interop scenario registry.
 
-Each row: scenario id, TLS ``version`` string used for GetMetadata/capability
-filtering (see driver ``_tls_config_version_to_capability_name``), and a
-callable ``run(driver, tls_hostname)`` implemented under ``src/tests/``.
+Each row: (scenario_id, TLS version requirement, run_callable).
 """
 
 from tests import establish_transmit_close as m_establish_13
@@ -20,7 +18,5 @@ SCENARIO_REGISTRY = [
 ]
 
 SCENARIO_TLS_REQUIREMENT = {name: ver for name, ver, _ in SCENARIO_REGISTRY}
-
 ORDERED_SCENARIO_IDS = tuple(name for name, _, _ in SCENARIO_REGISTRY)
-
 ARGPARSE_SCENARIO_CHOICES = ["all", *ORDERED_SCENARIO_IDS]
