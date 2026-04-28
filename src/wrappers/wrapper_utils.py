@@ -1,7 +1,9 @@
 """
-Shared helpers for TLS interop wrappers (OpenSSL, GnuTLS, NSS).
-Sets up repo root on sys.path (dev: ``src/wrappers``; Docker: flat ``/app``).
+Shared utility helpers for TLS interop wrappers.
+
+Also ensures repository root is on sys.path (dev: ``src/wrappers``; Docker: ``/app``).
 """
+
 import fcntl
 import os
 import re
@@ -9,10 +11,9 @@ import shlex
 import subprocess
 import sys
 import time
-from concurrent import futures
-from proto import interop_pb2, interop_pb2_grpc
 
-import grpc
+from proto import interop_pb2
+
 
 def _discover_repo_root():
     here = os.path.dirname(os.path.abspath(__file__))
@@ -40,10 +41,6 @@ def parse_version_line(out):
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
-def capability(name, *flags):
-    return interop_pb2.Capability(name=name, flags=list(flags))
-
-
 def tls_mode_12_or_13(config):
     """Map TlsConfig.version to '1.2' or '1.3' (aligned with driver aliases)."""
     if config is None:
@@ -66,52 +63,12 @@ def make_non_blocking(fd):
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
-def standard_library_metadata(component_name, version):
-    """Identical capability advertisement for all stacks in this matrix."""
-    cap = capability
-    r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
-    s = interop_pb2.SET
-    return interop_pb2.LibraryMetadata(
-        component_name=component_name,
-        version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-        supported_versions=[
-            cap("TLS1.2", r, n),
-            cap("TLS1.3", r, s, n),
-        ],
-        cipher_suites=[
-            cap("TLS_AES_256_GCM_SHA384", r, n),
-            cap("TLS_CHACHA20_POLY1305_SHA256", r, n),
-            cap("TLS_AES_128_GCM_SHA256", r, n),
-        ],
-        groups=[
-            cap("X25519", r, n),
-            cap("P-256", r, n),
-            cap("P-384", r, n),
-        ],
-    )
-
-
 def format_executed_command(cmd, cwd=None):
-    """
-    Shell-safe one-liner for logs (manual reproduction).
-    ``cmd`` is argv list as passed to Popen/run.
-    """
+    """Shell-safe one-liner for logs."""
     line = shlex.join(str(x) for x in cmd)
     if cwd is not None:
         return f"cwd={shlex.quote(os.path.abspath(cwd))} {line}"
     return line
-
-
-def run_cli_version(argv, timeout=5):
-    """Run a --version style command; return parsed version or 'unknown'."""
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        if r.returncode == 0:
-            return parse_version_line(r.stdout or r.stderr)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "unknown"
 
 
 def popen_stdio_merged(cmd, *, cwd=None):
@@ -147,7 +104,7 @@ def format_client_connect_failure(
 
 
 def transmit_payload_bytes(payload, role):
-    """Newline suffix; HTTP-like POST prefix when the client sends (matrix / NSS selfserv)."""
+    """Newline suffix; HTTP-like POST prefix when the client sends."""
     data = payload + b"\n"
     if role == interop_pb2.CLIENT:
         data = b"POST / HTTP/1.0\r\n\r\n" + data
@@ -175,14 +132,3 @@ def read_transmit_stdout(proc, role, *, server_poll=False):
         return proc.stdout.read() or b""
     except OSError:
         return b""
-
-
-def serve_insecure(wrapper_cls, display_name):
-    """Start gRPC TlsInteropWrapper on GRPC_PORT (default 50051)."""
-    port = int(os.environ.get("GRPC_PORT", "50051"))
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
-    server.add_insecure_port(f"0.0.0.0:{port}")
-    server.start()
-    print(f"{display_name} wrapper listening on {port}...")
-    server.wait_for_termination()
