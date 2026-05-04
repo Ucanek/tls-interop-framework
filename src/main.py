@@ -10,6 +10,47 @@ import re
 import subprocess
 import sys
 
+MULTI_VALUE_OPTION_IDS = {
+    "supported_groups",
+    "signature_schemes",
+    "signature_schemes_cert",
+    "alpn_protocols",
+    "supported_versions",
+    "psk_modes",
+    "certificate_compression_send",
+    "certificate_compression_receive",
+}
+
+NON_TLS_OPTION_IDS = {"server_wrapper", "client_wrapper"}
+
+PREVIEW_ONLY_OPTION_IDS = MULTI_VALUE_OPTION_IDS | (
+    {
+        "min_tls_version",
+        "max_tls_version",
+        "ticket_cipher",
+        "ticket_lifetime",
+        "max_early_data",
+        "enable_early_data",
+        "prefer_server_ciphers",
+        "use_encrypt_then_mac",
+        "use_extended_master_secret",
+        "require_extended_master_secret",
+        "record_size_limit",
+        "max_fragment_length",
+        "session_tickets_enabled",
+        "ocsp_stapling",
+        "renegotiation",
+        "post_handshake_auth",
+        "verify_peer",
+        "verify_hostname",
+        "ca_file",
+        "ca_path",
+        "keylog_file",
+        "certificate_pem",
+        "private_key_pem",
+    }
+)
+
 
 def _repo_root() -> str:
     return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -57,12 +98,46 @@ def _choices_for_option(path: str, option_id: str) -> list[str]:
     return []
 
 
+def _options_catalog(path: str) -> list[dict]:
+    options = _read_json(path).get("options") or []
+    if not isinstance(options, list):
+        raise ValueError(f"Invalid options list in {path}")
+    ids: set[str] = set()
+    out: list[dict] = []
+    for item in options:
+        if not isinstance(item, dict):
+            raise ValueError(f"Each option item must be a JSON object in {path}")
+        option_id = item.get("id")
+        if not isinstance(option_id, str) or not option_id:
+            raise ValueError(f"Each option must define non-empty string 'id' in {path}")
+        if option_id in ids:
+            raise ValueError(f"Duplicate option id '{option_id}' in {path}")
+        ids.add(option_id)
+        choices = item.get("choices")
+        if choices is not None and (
+            not isinstance(choices, list) or not all(isinstance(x, str) for x in choices)
+        ):
+            raise ValueError(f"Invalid choices for option '{option_id}' in {path}")
+        out.append(item)
+    return out
+
+
 def _print_options(path: str) -> None:
-    data = _read_json(path)
-    for item in data.get("options") or []:
+    for item in _options_catalog(path):
         choices = item.get("choices") or []
         ctext = f" choices={choices}" if choices else ""
         print(f"{item.get('id')}{ctext}")
+
+
+def _parse_csv_values(raw: str, arg_name: str) -> list[str]:
+    if not raw:
+        return []
+    values = [part.strip() for part in raw.split(",")]
+    if any(not v for v in values):
+        raise ValueError(
+            f"{arg_name} must be a comma-separated list of non-empty values"
+        )
+    return values
 
 
 def _validate_args(args: argparse.Namespace, wrappers_path: str, options_path: str) -> None:
@@ -92,6 +167,52 @@ def _validate_args(args: argparse.Namespace, wrappers_path: str, options_path: s
         if any(ch.isspace() for ch in args.tls_hostname):
             raise ValueError("--tls-hostname must not contain whitespace")
         _validate_hostname(args.tls_hostname)
+    preview_used: list[str] = []
+    for item in _options_catalog(options_path):
+        option_id = item["id"]
+        if option_id in NON_TLS_OPTION_IDS:
+            continue
+        value = getattr(args, option_id)
+
+        # Already validated above with dedicated logic.
+        if option_id in {"tls_version", "cipher_suite", "tls_port", "tls_hostname"}:
+            if value not in ("", 0):
+                pass
+            continue
+
+        if not value:
+            continue
+
+        arg_name = f"--{option_id.replace('_', '-')}"
+        choices = item.get("choices") or []
+
+        if option_id in MULTI_VALUE_OPTION_IDS:
+            values = _parse_csv_values(value, arg_name)
+            setattr(args, f"{option_id}_values", values)
+            if choices:
+                unknown = sorted(v for v in values if v not in choices)
+                if unknown:
+                    raise ValueError(
+                        f"{arg_name} unknown value(s): {', '.join(unknown)}. "
+                        f"Known: {', '.join(choices)}"
+                    )
+        elif choices and value not in choices:
+            raise ValueError(f"{arg_name} must be one of: {', '.join(choices)}")
+
+        if option_id == "alpn_protocols":
+            alpn_values = getattr(args, "alpn_protocols_values")
+            alpn_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,255}$")
+            invalid_alpn = sorted(v for v in alpn_values if not alpn_re.fullmatch(v))
+            if invalid_alpn:
+                raise ValueError(
+                    "--alpn-protocols contains invalid token(s): "
+                    f"{', '.join(invalid_alpn)}"
+                )
+
+        if option_id in PREVIEW_ONLY_OPTION_IDS:
+            preview_used.append(option_id)
+
+    args.preview_option_ids = preview_used
 
 
 def _validate_hostname(hostname: str) -> None:
@@ -141,6 +262,12 @@ def _compose_run(args: argparse.Namespace) -> int:
     run = compose + ["run", "--rm", "-T", "driver"]
 
     print(f"========== {args.server}x{args.client} ==========")
+    if args.preview_option_ids:
+        used = ", ".join(sorted(f"--{x.replace('_', '-')}" for x in args.preview_option_ids))
+        print(
+            f"NOTE: {used} {'are' if len(args.preview_option_ids) > 1 else 'is'} "
+            "preview-only and currently used for validation only."
+        )
     if args.dry_run:
         print("DRY-RUN compose commands:")
         print(" ".join(down))
@@ -186,6 +313,30 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Override TlsConfig.server_hostname (SNI hostname)",
     )
+    parser.add_argument(
+        "--supported-groups",
+        default="",
+        help="Preview-only: comma-separated supported groups (validate-only)",
+    )
+    parser.add_argument(
+        "--alpn-protocols",
+        default="",
+        help="Preview-only: comma-separated ALPN protocols (validate-only)",
+    )
+    for item in _options_catalog(_default_options_path()):
+        option_id = item["id"]
+        if option_id in (
+            {"tls_version", "cipher_suite", "tls_port", "tls_hostname"}
+            | NON_TLS_OPTION_IDS
+            | {"supported_groups", "alpn_protocols"}
+        ):
+            continue
+        cli_name = f"--{option_id.replace('_', '-')}"
+        parser.add_argument(
+            cli_name,
+            default="",
+            help="Preview-only option from deploy/tls_options.json (validate-only)",
+        )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     parser.add_argument(
         "--dry-run",
