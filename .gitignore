@@ -35,3 +35,6 @@ sslkeylog*.txt
 .idea/
 .cursorignore
 .cursorindexingignore
+
+# Scenarios
+scenarios/

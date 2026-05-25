@@ -43,6 +43,15 @@ from core.runner import EXIT_SKIP, compose_run
 # Already registered explicitly in ``build_parser`` (not from capabilities catalog loop).
 _PREDEFINED_CLI_OPTION_IDS = frozenset({"tls_port"})
 
+# With ``--suite``, these must not appear on the command line (values come from YAML).
+_SUITE_MATRIX_CLI: dict[str, str] = {
+    "server": "--server",
+    "client": "--client",
+    "cipher_suite": "--cipher-suite",
+    "supported_groups": "--supported-groups",
+    "tls_version": "--tls-version",
+}
+
 _GREEN = "\033[92m"
 _YELLOW = "\033[93m"
 _RED = "\033[91m"
@@ -95,6 +104,13 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
         "--list-options",
         action="store_true",
         help="Print configurable TLS options (union of capabilities) and exit",
+    )
+    groups["basic"].add_argument(
+        "-s",
+        "--suite",
+        metavar="FILE",
+        default=None,
+        help="Cesta k souboru s testovací sadou (.yaml)",
     )
     groups["basic"].add_argument(
         "--server",
@@ -163,6 +179,81 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
     return parser
 
 
+def _matrix_flags_present_on_argv(argv: list[str] | None = None) -> list[str]:
+    """Return matrix option dest names explicitly passed on the CLI (not defaults)."""
+    argsv = argv if argv is not None else sys.argv
+    found: list[str] = []
+    for dest, flag in _SUITE_MATRIX_CLI.items():
+        for token in argsv[1:]:
+            if token == flag or token.startswith(flag + "="):
+                found.append(dest)
+                break
+    return found
+
+
+def _coerce_suite_matrix_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    if isinstance(value, list):
+        parts = [str(x).strip() for x in value if str(x).strip()]
+        return ",".join(parts)
+    if isinstance(value, dict):
+        raise ValueError(
+            "suite matrix values must be scalars or lists, not nested mappings"
+        )
+    return str(value).strip()
+
+
+def apply_suite_file(args: argparse.Namespace, suite_path: Path) -> None:
+    """Load ``matrix:`` from a YAML suite file into ``args`` (CLI-equivalent strings)."""
+    import yaml
+
+    path = suite_path.expanduser()
+    if not path.is_file():
+        raise ValueError(f"Suite file not found: {path}")
+    try:
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as e:
+        raise ValueError(f"Invalid suite YAML {path}: {e}") from e
+    if not isinstance(raw, dict):
+        raise ValueError(f"Suite file must be a YAML mapping: {path}")
+    matrix = raw.get("matrix")
+    if matrix is None:
+        raise ValueError(f"Suite file must contain a top-level 'matrix' key: {path}")
+    if not isinstance(matrix, dict):
+        raise ValueError(f"Suite 'matrix' must be a mapping: {path}")
+
+    for key, value in matrix.items():
+        if not isinstance(key, str) or not key.strip():
+            raise ValueError(f"Invalid matrix key in suite file: {key!r}")
+        dest = key.strip()
+        if not hasattr(args, dest):
+            raise ValueError(
+                f"Unknown matrix key {dest!r} in suite file "
+                f"(not a recognized CLI option)"
+            )
+        setattr(args, dest, _coerce_suite_matrix_value(value))
+
+
+def enforce_suite_cli_exclusivity(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> None:
+    """``--suite`` cannot be combined with matrix flags on the command line."""
+    if not getattr(args, "suite", None):
+        return
+    conflicts = _matrix_flags_present_on_argv()
+    if conflicts:
+        flags = ", ".join(sorted(_SUITE_MATRIX_CLI[d] for d in conflicts))
+        parser.error(
+            f"argument -s/--suite: not allowed with matrix options on the command line "
+            f"({flags}); put them under 'matrix' in the suite file instead"
+        )
+
+
 def _cell_summary_label(cell: dict[str, str]) -> str:
     s, c = cell["server"], cell["client"]
     parts: list[str] = []
@@ -228,8 +319,13 @@ def _run_matrix_cell(
 
 def main() -> int:
     repo = repository_root()
-    args = build_parser(repo).parse_args()
+    parser = build_parser(repo)
+    args = parser.parse_args()
     try:
+        enforce_suite_cli_exclusivity(args, parser)
+        if getattr(args, "suite", None):
+            apply_suite_file(args, Path(args.suite))
+
         if args.list_wrappers:
             for name in discover_wrapper_ids(repo):
                 print(name)
