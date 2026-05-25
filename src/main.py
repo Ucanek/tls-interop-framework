@@ -3,296 +3,89 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# ``src/`` on path so ``core`` imports work before ``ensure_import_paths``.
+_src = Path(__file__).resolve().parent
+if str(_src) not in sys.path:
+    sys.path.insert(0, str(_src))
+
 import argparse
+import copy
+import hashlib
 import json
 import os
-import re
-import subprocess
 import sys
+import tempfile
+from concurrent.futures import ThreadPoolExecutor
+from itertools import product
+from pathlib import Path
+from typing import Any
 
-MULTI_VALUE_OPTION_IDS = {
-    "supported_groups",
-    "signature_schemes",
-    "signature_schemes_cert",
-    "alpn_protocols",
-    "supported_versions",
-    "psk_modes",
-    "certificate_compression_send",
-    "certificate_compression_receive",
-}
-
-NON_TLS_OPTION_IDS = {"server_wrapper", "client_wrapper"}
-
-PREVIEW_ONLY_OPTION_IDS = MULTI_VALUE_OPTION_IDS | (
-    {
-        "min_tls_version",
-        "max_tls_version",
-        "ticket_cipher",
-        "ticket_lifetime",
-        "max_early_data",
-        "enable_early_data",
-        "prefer_server_ciphers",
-        "use_encrypt_then_mac",
-        "use_extended_master_secret",
-        "require_extended_master_secret",
-        "record_size_limit",
-        "max_fragment_length",
-        "session_tickets_enabled",
-        "ocsp_stapling",
-        "renegotiation",
-        "post_handshake_auth",
-        "verify_peer",
-        "verify_hostname",
-        "ca_file",
-        "ca_path",
-        "keylog_file",
-        "certificate_pem",
-        "private_key_pem",
-    }
+from core.catalog import (
+    ASYMMETRIC_HELP_OPTION_IDS,
+    OPTION_GROUPS,
+    cell_capability_skip_reason,
+    discover_wrapper_ids,
+    ensure_import_paths,
+    load_options_catalog,
+    matrix_axis_plan,
+    normalize_cell_tls_micro_params,
+    print_catalog_options,
+    repository_root,
+    validate_run_args,
 )
 
+ensure_import_paths()
+from core.runner import EXIT_SKIP, compose_run
 
-def _repo_root() -> str:
-    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# Already registered explicitly in ``build_parser`` (not from capabilities catalog loop).
+_PREDEFINED_CLI_OPTION_IDS = frozenset({"tls_port"})
 
-
-def _read_json(path: str) -> dict:
-    if not os.path.isfile(path):
-        raise ValueError(f"Config file not found: {path}")
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-    if not isinstance(data, dict):
-        raise ValueError(f"Config file must contain a JSON object: {path}")
-    return data
+_GREEN = "\033[92m"
+_YELLOW = "\033[93m"
+_RED = "\033[91m"
+_RESET = "\033[0m"
 
 
-def _default_wrappers_path() -> str:
-    return os.path.join(_repo_root(), "deploy", "wrappers.json")
+def _status_for_rc(rc: int) -> tuple[str, str]:
+    """Human label and optional ANSI SGR prefix for stdout (TTY only)."""
+    if rc == 0:
+        return "OK", _GREEN
+    if rc == EXIT_SKIP:
+        return "SKIP", _YELLOW
+    return "FAIL", _RED
 
 
-def _default_options_path() -> str:
-    return os.path.join(_repo_root(), "deploy", "tls_options.json")
-
-
-def _known_wrappers(path: str) -> list[str]:
-    wrappers = _read_json(path).get("wrappers") or []
-    if not isinstance(wrappers, list) or not all(isinstance(x, str) for x in wrappers):
-        raise ValueError(f"Invalid wrappers list in {path}")
-    if not wrappers:
-        raise ValueError(f"No wrappers configured in {path}")
-    return list(wrappers)
-
-
-def _choices_for_option(path: str, option_id: str) -> list[str]:
-    options = _read_json(path).get("options") or []
-    if not isinstance(options, list):
-        raise ValueError(f"Invalid options list in {path}")
-    for item in options:
-        if isinstance(item, dict) and item.get("id") == option_id:
-            choices = item.get("choices") or []
-            if not isinstance(choices, list) or not all(
-                isinstance(x, str) for x in choices
-            ):
-                raise ValueError(f"Invalid choices for option '{option_id}' in {path}")
-            return list(choices)
-    return []
-
-
-def _options_catalog(path: str) -> list[dict]:
-    options = _read_json(path).get("options") or []
-    if not isinstance(options, list):
-        raise ValueError(f"Invalid options list in {path}")
-    ids: set[str] = set()
-    out: list[dict] = []
-    for item in options:
-        if not isinstance(item, dict):
-            raise ValueError(f"Each option item must be a JSON object in {path}")
-        option_id = item.get("id")
-        if not isinstance(option_id, str) or not option_id:
-            raise ValueError(f"Each option must define non-empty string 'id' in {path}")
-        if option_id in ids:
-            raise ValueError(f"Duplicate option id '{option_id}' in {path}")
-        ids.add(option_id)
-        choices = item.get("choices")
-        if choices is not None and (
-            not isinstance(choices, list) or not all(isinstance(x, str) for x in choices)
-        ):
-            raise ValueError(f"Invalid choices for option '{option_id}' in {path}")
-        out.append(item)
-    return out
-
-
-def _print_options(path: str) -> None:
-    for item in _options_catalog(path):
-        choices = item.get("choices") or []
-        ctext = f" choices={choices}" if choices else ""
-        print(f"{item.get('id')}{ctext}")
-
-
-def _parse_csv_values(raw: str, arg_name: str) -> list[str]:
-    if not raw:
-        return []
-    values = [part.strip() for part in raw.split(",")]
-    if any(not v for v in values):
-        raise ValueError(
-            f"{arg_name} must be a comma-separated list of non-empty values"
-        )
-    return values
-
-
-def _validate_args(args: argparse.Namespace, wrappers_path: str, options_path: str) -> None:
-    if args.list_wrappers and args.list_options:
-        raise ValueError("Use only one of --list-wrappers or --list-options")
-
-    wrappers = set(_known_wrappers(wrappers_path))
-    if args.server not in wrappers:
-        raise ValueError(f"Unknown --server '{args.server}'. Known: {sorted(wrappers)}")
-    if args.client not in wrappers:
-        raise ValueError(f"Unknown --client '{args.client}'. Known: {sorted(wrappers)}")
-
-    version_choices = _choices_for_option(options_path, "tls_version")
-    if args.tls_version and args.tls_version not in version_choices:
-        raise ValueError(f"--tls-version must be one of: {', '.join(version_choices)}")
-
-    cipher_choices = _choices_for_option(options_path, "cipher_suite")
-    if args.cipher_suite and args.cipher_suite not in cipher_choices:
-        raise ValueError(f"--cipher-suite must be one of: {', '.join(cipher_choices)}")
-
-    if not (0 <= args.tls_port <= 65535):
-        raise ValueError("--tls-port must be in range 0..65535")
-
-    if args.tls_hostname:
-        if args.tls_hostname.strip() != args.tls_hostname:
-            raise ValueError("--tls-hostname must not have leading/trailing spaces")
-        if any(ch.isspace() for ch in args.tls_hostname):
-            raise ValueError("--tls-hostname must not contain whitespace")
-        _validate_hostname(args.tls_hostname)
-    preview_used: list[str] = []
-    for item in _options_catalog(options_path):
-        option_id = item["id"]
-        if option_id in NON_TLS_OPTION_IDS:
-            continue
-        value = getattr(args, option_id)
-
-        # Already validated above with dedicated logic.
-        if option_id in {"tls_version", "cipher_suite", "tls_port", "tls_hostname"}:
-            if value not in ("", 0):
-                pass
-            continue
-
-        if not value:
-            continue
-
-        arg_name = f"--{option_id.replace('_', '-')}"
-        choices = item.get("choices") or []
-
-        if option_id in MULTI_VALUE_OPTION_IDS:
-            values = _parse_csv_values(value, arg_name)
-            setattr(args, f"{option_id}_values", values)
-            if choices:
-                unknown = sorted(v for v in values if v not in choices)
-                if unknown:
-                    raise ValueError(
-                        f"{arg_name} unknown value(s): {', '.join(unknown)}. "
-                        f"Known: {', '.join(choices)}"
-                    )
-        elif choices and value not in choices:
-            raise ValueError(f"{arg_name} must be one of: {', '.join(choices)}")
-
-        if option_id == "alpn_protocols":
-            alpn_values = getattr(args, "alpn_protocols_values")
-            alpn_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,255}$")
-            invalid_alpn = sorted(v for v in alpn_values if not alpn_re.fullmatch(v))
-            if invalid_alpn:
-                raise ValueError(
-                    "--alpn-protocols contains invalid token(s): "
-                    f"{', '.join(invalid_alpn)}"
-                )
-
-        if option_id in PREVIEW_ONLY_OPTION_IDS:
-            preview_used.append(option_id)
-
-    args.preview_option_ids = preview_used
-
-
-def _validate_hostname(hostname: str) -> None:
-    # Allow IPv4 literals.
-    if re.fullmatch(r"(?:\d{1,3}\.){3}\d{1,3}", hostname):
-        parts = [int(x) for x in hostname.split(".")]
-        if all(0 <= p <= 255 for p in parts):
-            return
-        raise ValueError("--tls-hostname IPv4 octets must be in range 0..255")
-
-    # RFC-ish hostname validation for DNS names.
-    if len(hostname) > 253:
-        raise ValueError("--tls-hostname must be <= 253 characters")
-    labels = hostname.split(".")
-    if any(not label for label in labels):
-        raise ValueError("--tls-hostname must not contain empty labels")
-    label_re = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
-    for label in labels:
-        if not label_re.fullmatch(label):
-            raise ValueError(
-                "--tls-hostname must be a valid DNS name label sequence (RFC-style)"
-            )
-
-
-def _compose_run(args: argparse.Namespace) -> int:
-    root = _repo_root()
-    matrix = os.path.join(root, "deploy", "compose.yaml")
-    wrappers_path = _default_wrappers_path()
-    project = f"interop-{args.server}-{args.client}"
-    env = os.environ.copy()
-    env["WRAPPERS_CONFIG"] = wrappers_path
-    env["SERVER_WRAPPER"] = args.server
-    env["CLIENT_WRAPPER"] = args.client
-    env["INTEROP_GNUTLS_NSS_PAIR"] = (
-        "1" if args.server == "gnutls" and args.client == "nss" else "0"
-    )
-    env["INTEROP_SCENARIO"] = "all"
-    env["INTEROP_TLS_VERSION"] = args.tls_version
-    env["INTEROP_CIPHER_SUITE"] = args.cipher_suite
-    env["INTEROP_TLS_PORT"] = str(args.tls_port)
-    env["INTEROP_TLS_HOSTNAME"] = args.tls_hostname
-    env["INTEROP_VERBOSE"] = "1" if args.verbose else "0"
-
-    compose = ["docker", "compose", "-p", project, "-f", matrix]
-    down = compose + ["down", "--remove-orphans"]
-    build = compose + ["build"] + ([] if args.verbose else ["-q"])
-    run = compose + ["run", "--rm", "-T", "driver"]
-
-    print(f"========== {args.server}x{args.client} ==========")
-    if args.preview_option_ids:
-        used = ", ".join(sorted(f"--{x.replace('_', '-')}" for x in args.preview_option_ids))
-        print(
-            f"NOTE: {used} {'are' if len(args.preview_option_ids) > 1 else 'is'} "
-            "preview-only and currently used for validation only."
-        )
-    if args.dry_run:
-        print("DRY-RUN compose commands:")
-        print(" ".join(down))
-        print(" ".join(build))
-        print(" ".join(run))
-        return 0
-
-    subprocess.run(down, cwd=root, env=env, stdin=subprocess.DEVNULL, check=False)
-    rc = 1
-    try:
-        subprocess.run(build, cwd=root, env=env, stdin=subprocess.DEVNULL, check=True)
-        subprocess.run(run, cwd=root, env=env, stdin=subprocess.DEVNULL, check=True)
-        rc = 0
-    except subprocess.CalledProcessError:
-        rc = 1
-    finally:
-        subprocess.run(down, cwd=root, env=env, stdin=subprocess.DEVNULL, check=False)
-    return rc
-
-
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(repo: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="TLS interop runner (single entrypoint). Runs all supported scenarios."
+        description=(
+            "TLS interop runner: writes deploy/.interop.env (INTEROP_*, TLS_*) for the driver "
+            "container. CLI choices are the union of all wrapper capabilities.json files. "
+            "Use comma lists, ALL, or ALL\\ exclusions on --server/--client and choice-backed "
+            "options to run a Cartesian matrix."
+        )
     )
-    list_group = parser.add_mutually_exclusive_group()
+    groups = {
+        "basic": parser.add_argument_group(
+            "Basic", "Runner, compose defaults, and global TLS listen port."
+        ),
+        "crypto": parser.add_argument_group(
+            "Cryptography", "Ciphers, ECDH groups, and signature algorithms."
+        ),
+        "protocol": parser.add_argument_group(
+            "Protocol", "TLS protocol version (TlsConfig.version)."
+        ),
+        "security": parser.add_argument_group(
+            "Security & PKI", "Trust, hostname, and optional inline PEM material."
+        ),
+        "debug": parser.add_argument_group(
+            "Debug / internals", "Diagnostic knobs (e.g. ALPN, key log)."
+        ),
+    }
+
+    list_group = groups["basic"].add_mutually_exclusive_group()
     list_group.add_argument(
         "--list-wrappers",
         action="store_true",
@@ -301,65 +94,188 @@ def build_parser() -> argparse.ArgumentParser:
     list_group.add_argument(
         "--list-options",
         action="store_true",
-        help="Print configurable TLS options and exit",
+        help="Print configurable TLS options (union of capabilities) and exit",
     )
-    parser.add_argument("--server", default="openssl", help="Server wrapper implementation")
-    parser.add_argument("--client", default="openssl", help="Client wrapper implementation")
-    parser.add_argument("--tls-version", default="", help="Override TlsConfig.version")
-    parser.add_argument("--cipher-suite", default="", help="Override TlsConfig.cipher_suite")
-    parser.add_argument("--tls-port", type=int, default=0, help="Override TlsConfig.port")
-    parser.add_argument(
-        "--tls-hostname",
-        default="",
-        help="Override TlsConfig.server_hostname (SNI hostname)",
+    groups["basic"].add_argument(
+        "--server",
+        default="openssl",
+        help="Server wrapper (comma list, ALL, ALL\\a,b to exclude; default: openssl)",
     )
-    parser.add_argument(
-        "--supported-groups",
-        default="",
-        help="Preview-only: comma-separated supported groups (validate-only)",
+    groups["basic"].add_argument(
+        "--client",
+        default="openssl",
+        help="Client wrapper (comma list, ALL, ALL\\a,b to exclude; default: openssl)",
     )
-    parser.add_argument(
-        "--alpn-protocols",
-        default="",
-        help="Preview-only: comma-separated ALPN protocols (validate-only)",
+    groups["basic"].add_argument(
+        "--tls-port",
+        type=int,
+        default=0,
+        help="Override TlsConfig.port (0 = driver default 5555)",
     )
-    for item in _options_catalog(_default_options_path()):
-        option_id = item["id"]
-        if option_id in (
-            {"tls_version", "cipher_suite", "tls_port", "tls_hostname"}
-            | NON_TLS_OPTION_IDS
-            | {"supported_groups", "alpn_protocols"}
-        ):
-            continue
-        cli_name = f"--{option_id.replace('_', '-')}"
-        parser.add_argument(
-            cli_name,
-            default="",
-            help="Preview-only option from deploy/tls_options.json (validate-only)",
-        )
-    parser.add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    parser.add_argument(
+    groups["basic"].add_argument(
+        "-v", "--verbose", action="store_true", help="Verbose output"
+    )
+    groups["basic"].add_argument(
         "--dry-run",
         action="store_true",
         help="Print compose commands instead of running them",
     )
+    groups["basic"].add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help=(
+            "Run up to N matrix cells in parallel (each cell uses its own Compose project and "
+            "dotenv path). Default: 1. With --dry-run, always serial for readable logs."
+        ),
+    )
+
+    for item in sorted(load_options_catalog(repo), key=lambda x: str(x.get("id", ""))):
+        option_id = item["id"]
+        if not isinstance(option_id, str):
+            continue
+        if option_id in _PREDEFINED_CLI_OPTION_IDS:
+            continue
+        gname = OPTION_GROUPS.get(option_id)
+        if not gname:
+            raise ValueError(
+                f"Option id {option_id!r} has no argparse group in OPTION_GROUPS"
+            )
+        cli_name = f"--{option_id.replace('_', '-')}"
+        desc = (item.get("description") or "").strip()
+        asym = (
+            " Use 'SERVER:CLIENT' for asymmetric configuration."
+            if option_id in ASYMMETRIC_HELP_OPTION_IDS
+            else ""
+        )
+        matrix_hint = ""
+        ch = item.get("choices") or []
+        if isinstance(ch, list) and ch:
+            matrix_hint = " Matrix: comma list, ALL, or ALL\\token,token to exclude."
+        help_text = (desc + asym + matrix_hint).strip() or (
+            f"Forwarded to INTEROP_{option_id.upper()} for the driver."
+        )
+        groups[gname].add_argument(
+            cli_name,
+            default="",
+            help=help_text,
+        )
     return parser
 
 
+def _cell_summary_label(cell: dict[str, str]) -> str:
+    s, c = cell["server"], cell["client"]
+    parts: list[str] = []
+    for k in (
+        "cipher_suite",
+        "tls_version",
+        "supported_groups",
+        "signature_schemes",
+    ):
+        v = (cell.get(k) or "").strip()
+        if v:
+            parts.append(v.replace("\n", " "))
+    mid = parts[0] if len(parts) == 1 else " / ".join(parts[:3]) if parts else "-"
+    return f"{s} x {c} | {mid}"
+
+
+def _run_matrix_cell(
+    tup: tuple[Any, ...],
+    *,
+    axis_keys: list[str],
+    args_template: argparse.Namespace,
+    repo: Path,
+    known: frozenset[str],
+) -> tuple[str, int]:
+    cell = {k: str(v) for k, v in zip(axis_keys, tup)}
+    cell = normalize_cell_tls_micro_params(cell, args_template, repo)
+    skip = cell_capability_skip_reason(cell, repo)
+    if skip:
+        label = _cell_summary_label(cell)
+        if args_template.verbose:
+            print(f"SKIP (pre-run): {skip}", file=sys.stderr)
+        else:
+            short = skip[:120].replace("\n", " ")
+            print(f"{label} | SKIP  ({short})")
+        return label, EXIT_SKIP
+
+    cell_ns = copy.copy(args_template)
+    for k in axis_keys:
+        setattr(cell_ns, k, cell[k])
+    validate_run_args(cell_ns, known_wrappers=known, repo=repo)
+
+    slug = hashlib.sha256(
+        json.dumps(cell, sort_keys=True).encode("utf-8")
+    ).hexdigest()[:10]
+    proj = f"interop-{cell['server']}-{cell['client']}-{slug}"
+    fd, tmp = tempfile.mkstemp(prefix="interop-mx-", suffix=".env")
+    os.close(fd)
+    dotp = Path(tmp)
+    try:
+        rc = compose_run(
+            cell_ns,
+            repo,
+            compose_project_override=proj,
+            driver_dotenv_path=dotp,
+        )
+    finally:
+        try:
+            dotp.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return _cell_summary_label(cell), rc
+
+
 def main() -> int:
-    args = build_parser().parse_args()
-    wrappers_path = _default_wrappers_path()
-    options_path = _default_options_path()
+    repo = repository_root()
+    args = build_parser(repo).parse_args()
     try:
         if args.list_wrappers:
-            for name in _known_wrappers(wrappers_path):
+            for name in discover_wrapper_ids(repo):
                 print(name)
             return 0
         if args.list_options:
-            _print_options(options_path)
+            print_catalog_options(repo)
             return 0
-        _validate_args(args, wrappers_path, options_path)
-        return _compose_run(args)
+
+        known = frozenset(discover_wrapper_ids(repo))
+        axis_keys, axis_vals = matrix_axis_plan(
+            args, known_wrappers=known, repo=repo
+        )
+        n_tests = 1
+        for av in axis_vals:
+            n_tests *= len(av)
+        print(f"Running matrix of {n_tests} tests...")
+
+        combos = list(product(*axis_vals))
+        jobs = max(1, int(args.jobs))
+
+        def _one(tup: tuple[Any, ...]) -> tuple[str, int]:
+            return _run_matrix_cell(
+                tup,
+                axis_keys=axis_keys,
+                args_template=args,
+                repo=repo,
+                known=known,
+            )
+
+        if args.dry_run or jobs == 1:
+            results = [_one(t) for t in combos]
+        else:
+            with ThreadPoolExecutor(max_workers=jobs) as ex:
+                results = list(ex.map(_one, combos))
+
+        print("\n--- Results ---")
+        use_color = sys.stdout.isatty()
+        for label, rc in results:
+            text, color = _status_for_rc(rc)
+            if use_color:
+                print(f"{label} | {color}{text}{_RESET}")
+            else:
+                print(f"{label} | {text}")
+        if any(rc not in (0, EXIT_SKIP) for _, rc in results):
+            return 1
+        return 0
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2

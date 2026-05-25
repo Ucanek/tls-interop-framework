@@ -1,0 +1,270 @@
+"""GnuTLS backend: ``gnutls-serv`` / ``gnutls-cli``."""
+
+from __future__ import annotations
+
+import os
+import re
+from collections.abc import Sequence
+from typing import Any
+
+from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
+from core.catalog import cipher_maps_from_capabilities
+from core.identity import (
+    catalog_identity_trust_pem_path,
+    repeated_config_tokens,
+    server_trust_signature_schemes_tokens,
+)
+from wrappers.base import (
+    BaseTemplateWrapper,
+    format_executed_command,
+    popen_stdio_merged,
+    serve_insecure,
+    standard_library_metadata,
+    tls_mode_12_or_13,
+)
+
+CAPABILITIES = load_local_capabilities(__file__)
+
+_EPHEM_CERT = "/tmp/interop_gnutls_cert.pem"
+_EPHEM_KEY = "/tmp/interop_gnutls_key.pem"
+
+
+def _is_server_role(role: Any | None) -> bool:
+    if role is None:
+        return True
+    try:
+        from proto import interop_pb2
+
+        return int(role) == int(interop_pb2.SERVER)
+    except Exception:
+        return True
+
+
+def _profile_key(config: Any, role: Any | None, capabilities: dict[str, Any]) -> str:
+    mode = tls_mode_12_or_13(config)
+    side = "server" if _is_server_role(role) else "client"
+    return f"{side}:{mode}"
+
+
+def _gnutls_join_priority_tokens(
+    items: Sequence[str],
+    token_map: dict[str, str],
+    *,
+    reset: str,
+    entry_template: str,
+    strict: bool,
+    unsupported: list[str],
+    field: str = "token",
+) -> str:
+    parts: list[str] = []
+    if reset:
+        parts.append(reset)
+    for raw in items:
+        key = norm_catalog_token(raw)
+        mapped = token_map.get(key) or token_map.get(raw)
+        if not mapped:
+            if strict:
+                unsupported.append(f"{field}:{raw!r} (unsupported for GnuTLS mapping)")
+            continue
+        parts.append(entry_template.format(value=mapped))
+    if reset:
+        return "".join(parts) if len(parts) > 1 else ""
+    return "".join(parts)
+
+
+def _build_tls_argv(
+    config: Any,
+    *,
+    role: Any | None = None,
+    capabilities: dict[str, Any] | None = None,
+) -> TranslationResult:
+    caps = capabilities if capabilities is not None else CAPABILITIES
+    argv: list[str] = []
+    extras: list[str] = []
+    unsupported: list[str] = []
+    mode = tls_mode_12_or_13(config)
+    cap13, cap12 = cipher_maps_from_capabilities(caps)
+    gprio: list[str] = []
+
+    profiles = caps.get("gnutls_priority_base")
+    if isinstance(profiles, dict):
+        base = profiles.get(_profile_key(config, role, caps))
+        if base:
+            gprio.append(str(base))
+
+    raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
+    if raw_cipher:
+        key = norm_catalog_token(raw_cipher)
+        cap_mode = cap13 if mode == "1.3" else cap12
+        wrap = ":-CIPHER-ALL:{v}"
+        if key in cap_mode:
+            gprio.append(wrap.format(v=cap_mode[key]))
+        else:
+            unsupported.append(
+                f"cipher_suite:{raw_cipher!r} (no GnuTLS priority mapping)"
+            )
+
+    groups_block = caps.get("supported_groups")
+    if isinstance(groups_block, dict) and mode == "1.3":
+        items = repeated_config_tokens(config, "supported_groups")
+        if items:
+            frag = _gnutls_join_priority_tokens(
+                items,
+                groups_block,
+                reset=":-GROUP-ALL",
+                entry_template=":+GROUP-{value}",
+                strict=True,
+                unsupported=unsupported,
+                field="supported_groups",
+            )
+            if frag:
+                gprio.append(frag)
+
+    sig_block = caps.get("signature_schemes")
+    if isinstance(sig_block, dict) and mode == "1.3":
+        items = repeated_config_tokens(config, "signature_schemes")
+        if items:
+            frag = _gnutls_join_priority_tokens(
+                items,
+                sig_block,
+                reset="",
+                entry_template=":+{value}",
+                strict=True,
+                unsupported=unsupported,
+                field="signature_schemes",
+            )
+            if frag:
+                gprio.append(frag)
+
+    for p in repeated_config_tokens(config, "alpn_protocols"):
+        extras.extend(["--alpn", p])
+
+    prio = "".join(gprio)
+    argv.extend(extras)
+    argv.extend(["--priority", prio])
+    return TranslationResult(tuple(argv), tuple(unsupported))
+
+
+def tls_argv_for_config(
+    config: Any,
+    *,
+    role: Any | None = None,
+    capabilities: dict[str, Any] | None = None,
+) -> TranslationResult:
+    return _build_tls_argv(config, role=role, capabilities=capabilities)
+
+
+def _split_priority_argv(argv: list[str]) -> tuple[str, list[str]]:
+    if len(argv) < 2 or argv[-2] != "--priority":
+        return "", argv
+    return argv[-1], argv[:-2]
+
+
+class GnuTLSWrapper(BaseTemplateWrapper):
+    CAPABILITIES = CAPABILITIES
+
+    @property
+    def _component_name(self) -> str:
+        return "GnuTLS"
+
+    @property
+    def _ephemeral_pem_paths(self) -> tuple[str, str]:
+        return (_EPHEM_CERT, _EPHEM_KEY)
+
+    def _version_command(self) -> list[str]:
+        return ["gnutls-cli", "--version"]
+
+    def _build_library_metadata(self, version: str):
+        return standard_library_metadata(
+            self._component_name, version, capabilities=CAPABILITIES
+        )
+
+    def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
+        text = stdout or ""
+        out: dict[str, str] = {}
+        m = re.search(r"Version:\s*(TLS[\d.]+|DTLS[\d.]+)", text, re.IGNORECASE)
+        if m:
+            out["protocol_version"] = m.group(1)
+        m2 = re.search(
+            r"(?:Handshake completed|Simple\s+client\s+mode)\s+.*?(\S+-\S+-\S+)",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if m2:
+            out["cipher_suite"] = m2.group(1).strip()
+        m3 = re.search(r"Group:\s*(\S+)", text, re.IGNORECASE)
+        if m3:
+            out["named_group"] = m3.group(1).strip()
+        return out
+
+    def _client_x509_cafile(self, config) -> str:
+        trust = catalog_identity_trust_pem_path(
+            server_trust_signature_schemes_tokens(config)
+        )
+        if trust and os.path.isfile(trust):
+            return trust
+        for candidate in (os.path.join(os.getcwd(), "cert.pem"), "cert.pem"):
+            if candidate and os.path.isfile(candidate):
+                return candidate
+        return "cert.pem"
+
+    def _start_server(self, config):
+        from proto import interop_pb2
+
+        cert_path, key_path = self._ensure_cert_paths(config)
+        prio, mid = _split_priority_argv(
+            list(_build_tls_argv(config, role=interop_pb2.SERVER).argv)
+        )
+        if not prio:
+            raise RuntimeError("empty GnuTLS priority string")
+        cmd = [
+            "gnutls-serv",
+            "-p",
+            str(config.port),
+            "--x509certfile",
+            cert_path,
+            "--x509keyfile",
+            key_path,
+            "--disable-client-cert",
+            *mid,
+            "--priority",
+            prio,
+            "-q",
+            "--echo",
+        ]
+        cwd = os.getcwd()
+        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
+
+    def _start_client(self, config):
+        from proto import interop_pb2
+
+        host = config.server_hostname or "localhost"
+        prio, mid = _split_priority_argv(
+            list(_build_tls_argv(config, role=interop_pb2.CLIENT).argv)
+        )
+        if not prio:
+            raise RuntimeError("empty GnuTLS priority string")
+        cmd = [
+            "gnutls-cli",
+            "-p",
+            str(config.port),
+            "--disable-sni",
+            "--insecure",
+            "--x509cafile",
+            self._client_x509_cafile(config),
+            *mid,
+            "--priority",
+            prio,
+            host,
+        ]
+        cwd = os.getcwd()
+        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        return proc, format_executed_command(cmd, cwd), "GnuTLS Client connected"
+
+    def _server_transmit_poll(self) -> bool:
+        return True
+
+
+if __name__ == "__main__":
+    serve_insecure(GnuTLSWrapper, "GnuTLS")

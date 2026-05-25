@@ -1,0 +1,40 @@
+{
+  "gnutls_priority_base": {
+    "server:1.3": "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+    "server:1.2": "NORMAL:%COMPAT:-VERS-SSL3.0:-VERS-TLS1.0:-VERS-TLS1.1:-VERS-ALL:+VERS-TLS1.2",
+    "client:1.3": "NORMAL:-VERS-ALL:+VERS-TLS1.3",
+    "client:1.2": "NORMAL:-VERS-ALL:+VERS-TLS1.2"
+  },
+  "tls13": {
+    "cipher_suite": {
+      "aes-256-gcm": "+AES-256-GCM",
+      "aes-128-gcm": "+AES-128-GCM",
+      "chacha20-poly1305": "+CHACHA20-POLY1305"
+    }
+  },
+  "tls12": {
+    "cipher_suite": {
+      "aes-256-gcm": "+AES-256-GCM",
+      "aes-128-gcm": "+AES-128-GCM",
+      "chacha20-poly1305": "+CHACHA20-POLY1305"
+    }
+  },
+  "supported_groups": {
+    "x25519": "X25519",
+    "x448": "X448",
+    "secp-256r1": "SECP256R1",
+    "secp-384r1": "SECP384R1",
+    "secp-521r1": "SECP521R1",
+    "ffdhe-2048": "FFDHE2048",
+    "ffdhe-3072": "FFDHE3072",
+    "ffdhe-4096": "FFDHE4096"
+  },
+  "signature_schemes": {
+    "rsa-pss-rsae-sha256": "SIGN-RSA-PSS-SHA256",
+    "rsa-pss-rsae-sha384": "SIGN-RSA-PSS-SHA384",
+    "rsa-pss-rsae-sha512": "SIGN-RSA-PSS-SHA512",
+    "ecdsa-secp256r1-sha256": "SIGN-ECDSA-SECP256R1-SHA256",
+    "ed25519": "SIGN-EdDSA-Ed25519",
+    "ed448": "SIGN-EdDSA-Ed448"
+  }
+}

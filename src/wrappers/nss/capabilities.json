@@ -1,0 +1,33 @@
+{
+  "tls13": {
+    "cipher_suite": {
+      "aes-256-gcm": ":1302",
+      "aes-128-gcm": ":1301",
+      "chacha20-poly1305": ":1303"
+    }
+  },
+  "tls12": {
+    "cipher_suite": {
+      "aes-256-gcm": ":C030",
+      "aes-128-gcm": ":C02F",
+      "chacha20-poly1305": ":CCA8"
+    }
+  },
+  "supported_groups": {
+    "x25519": "x25519",
+    "secp-256r1": "P256",
+    "secp-384r1": "P384",
+    "secp-521r1": "P521",
+    "ffdhe-2048": "FF2048",
+    "ffdhe-3072": "FF3072",
+    "ffdhe-4096": "FF4096"
+  },
+  "signature_schemes": {
+    "rsa-pss-rsae-sha256": "rsa_pss_rsae_sha256",
+    "rsa-pss-rsae-sha384": "rsa_pss_rsae_sha384",
+    "rsa-pss-rsae-sha512": "rsa_pss_rsae_sha512",
+    "ecdsa-secp256r1-sha256": "ecdsa_secp256r1_sha256",
+    "ed25519": "ed25519",
+    "ed448": "ed448"
+  }
+}

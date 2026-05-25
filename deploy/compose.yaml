@@ -1,8 +1,5 @@
-# Compose file for interop runtime (selected by src/main.py).
-#
-# Wrapper names come from deploy/wrappers.json via:
-#   SERVER_WRAPPER=openssl|gnutls|nss
-#   CLIENT_WRAPPER=openssl|gnutls|nss
+# Used by ``python3 src/main.py`` (writes deploy/.interop.env before ``compose run driver``).
+# SERVER_WRAPPER / CLIENT_WRAPPER select wrapper_<name>.py; ``driver`` loads vars from deploy/.interop.env.
 
 services:
   server_node:
@@ -12,6 +9,7 @@ services:
     image: tls-interop-wrapper
     environment:
       WRAPPER: ${SERVER_WRAPPER:-openssl}
+      GRPC_PORT: "50051"
       NSSDB: /app/nssdb
       INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
     command: ["python3", "/app/wrapper_entry.py"]
@@ -33,14 +31,5 @@ services:
     depends_on:
       - server_node
       - client_node
-    environment:
-      TLS_SERVER_GRPC: "server_node:50051"
-      TLS_CLIENT_GRPC: "client_node:50051"
-      TLS_HOSTNAME: "server_node"
-      INTEROP_VERBOSE: ${INTEROP_VERBOSE:-0}
-      INTEROP_SCENARIO: ${INTEROP_SCENARIO:-}
-      INTEROP_TLS_VERSION: ${INTEROP_TLS_VERSION:-}
-      INTEROP_CIPHER_SUITE: ${INTEROP_CIPHER_SUITE:-}
-      INTEROP_TLS_PORT: ${INTEROP_TLS_PORT:-0}
-      INTEROP_TLS_HOSTNAME: ${INTEROP_TLS_HOSTNAME:-}
-    command: ["sh", "-c", "sleep 5 && PYTHONPATH=/app python3 driver.py"]
+    # INTEROP_* / TLS_* via ``driver.env_file``: ``main.py`` merges a temporary overlay (-f …) pointing at an env path (parallel matrices use unique paths).
+    command: ["python3", "-m", "core.runner"]

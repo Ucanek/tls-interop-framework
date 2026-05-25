@@ -34,6 +34,9 @@ message LibraryMetadata {
 }
 
 // --- Coordinator / operation messages ---
+//
+// TlsConfig aligns with CLI catalog ids (capabilities.json keys and INTEROP_* env aliases).
+// Wrappers consume only subsets; unset fields MUST be ignored until implemented.
 
 message TlsConfig {
   string version = 1;
@@ -42,6 +45,35 @@ message TlsConfig {
   int32 port = 4;
   bytes certificate = 5;
   bytes private_key = 6;
+
+  repeated string supported_groups = 7;
+  repeated string signature_schemes = 8;
+  repeated string signature_schemes_cert = 9;
+  repeated string alpn_protocols = 10;
+  // SupportedVersions-style hints (distinct from LibraryMetadata.supported_versions caps).
+  repeated string supported_versions = 11;
+  reserved 12, 13; // formerly min_version / max_version (not used yet)
+  repeated string psk_modes = 14;
+  string ticket_cipher = 15;
+  int64 ticket_lifetime = 16;
+  int64 max_early_data = 17;
+  bool enable_early_data = 18;
+  bool prefer_server_ciphers = 19;
+  bool use_encrypt_then_mac = 20;
+  bool use_extended_master_secret = 21;
+  bool require_extended_master_secret = 22;
+  int32 record_size_limit = 23;
+  string max_fragment_length = 24;
+  bool session_tickets_enabled = 25;
+  bool ocsp_stapling = 26;
+  string renegotiation = 27;
+  bool post_handshake_auth = 28;
+  reserved 29, 30; // formerly verify_peer / verify_hostname
+  string ca_file = 31;
+  string ca_path = 32;
+  string keylog_file = 33;
+  repeated string certificate_compression_send = 34;
+  repeated string certificate_compression_receive = 35;
 }
 
 message OperationRequest {
@@ -57,6 +89,13 @@ message OperationRequest {
   TlsConfig config = 4;
 }
 
+// Best-effort TLS parameters observed from backend CLI output after handshake.
+message NegotiatedTlsParameters {
+  string protocol_version = 1;
+  string cipher_suite = 2;
+  string named_group = 3;
+}
+
 message OperationResponse {
   enum Status {
     SUCCESS = 0;
@@ -67,6 +106,7 @@ message OperationResponse {
   string message = 2;
   bytes output_data = 3;
   string logs = 4;
+  NegotiatedTlsParameters negotiated = 5;
 }
 
 // --- gRPC service ---
