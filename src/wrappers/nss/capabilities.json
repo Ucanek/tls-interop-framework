@@ -1,16 +1,28 @@
 {
   "tls13": {
     "cipher_suite": {
-      "aes-256-gcm": ":1302",
       "aes-128-gcm": ":1301",
+      "aes-128-ccm": ":1304",
+      "aes-128-ccm-8": ":1305",
+      "aes-256-gcm": ":1302",
       "chacha20-poly1305": ":1303"
     }
   },
   "tls12": {
     "cipher_suite": {
-      "aes-256-gcm": ":C030",
       "aes-128-gcm": ":C02F",
-      "chacha20-poly1305": ":CCA8"
+      "aes-256-gcm": ":C030",
+      "chacha20-poly1305": ":CCA8",
+      "ecdhe-rsa-aes-128-gcm-sha256": ":C02F",
+      "ecdhe-rsa-aes-256-gcm-sha384": ":C030",
+      "ecdhe-rsa-chacha20-poly1305": ":CCA8",
+      "ecdhe-ecdsa-aes-128-gcm-sha256": ":C02B",
+      "ecdhe-ecdsa-aes-256-gcm-sha384": ":C02C",
+      "ecdhe-ecdsa-chacha20-poly1305": ":CCA9",
+      "dhe-rsa-aes-128-gcm-sha256": ":009E",
+      "dhe-rsa-aes-256-gcm-sha384": ":009F",
+      "rsa-aes-128-gcm-sha256": ":009C",
+      "rsa-aes-256-gcm-sha384": ":009D"
     }
   },
   "supported_groups": {

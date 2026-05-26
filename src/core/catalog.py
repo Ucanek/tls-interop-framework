@@ -351,6 +351,50 @@ def all_cipher_suite_ids(capabilities: dict[str, Any]) -> list[str]:
     return sorted(set(m13) | set(m12))
 
 
+def cipher_suite_ids_for_mode(
+    capabilities: dict[str, Any], mode: TlsMode
+) -> list[str]:
+    """Catalog cipher ids declared under ``tls13`` or ``tls12`` for ``mode``."""
+    m13, m12 = cipher_maps_from_capabilities(capabilities)
+    mp = m13 if mode == "1.3" else m12
+    return sorted(str(k) for k in mp.keys() if k)
+
+
+def union_cipher_suite_ids_for_wrappers(
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    wrapper_ids: Sequence[str],
+    *,
+    mode: TlsMode | None = None,
+) -> list[str]:
+    """Union of cipher catalog ids across wrappers, optionally restricted to one TLS mode."""
+    keys: set[str] = set()
+    for wid in wrapper_ids:
+        caps = caps_by_wrapper.get(wid, {})
+        if mode is None:
+            keys.update(all_cipher_suite_ids(caps))
+        else:
+            keys.update(cipher_suite_ids_for_mode(caps, mode))
+    return sorted(keys)
+
+
+def tls_mode_filter_from_args(args: Any) -> TlsMode | None:
+    """
+    When ``args.tls_version`` is a single protocol version, return ``1.2`` or ``1.3``.
+
+    Returns ``None`` if unset or asymmetric (``1.3:1.2``) so cipher expansion stays broad
+    and per-cell skip/normalize handles mismatches.
+    """
+    raw = str(getattr(args, "tls_version", "") or "").strip()
+    if not raw:
+        return None
+    if ":" in raw:
+        left, right = parse_asymmetric(raw)
+        if left and right and tls_mode_from_version(left) == tls_mode_from_version(right):
+            return tls_mode_from_version(left)
+        return None
+    return tls_mode_from_version(raw)
+
+
 def backend_cipher_modes(
     capabilities: dict[str, Any], catalog_id: str
 ) -> set[TlsMode]:
@@ -373,8 +417,15 @@ def backend_supports_cipher(
     return key in mp or catalog_id in mp
 
 
-def dimension_keys(capabilities: dict[str, Any], dimension: str) -> list[str]:
+def dimension_keys(
+    capabilities: dict[str, Any],
+    dimension: str,
+    *,
+    tls_mode: TlsMode | None = None,
+) -> list[str]:
     if dimension == "cipher_suite":
+        if tls_mode is not None:
+            return cipher_suite_ids_for_mode(capabilities, tls_mode)
         return all_cipher_suite_ids(capabilities)
     block = capabilities.get(dimension)
     if not isinstance(block, dict):
@@ -615,15 +666,30 @@ def expand_capability_dimension(
     wrapper_ids: Sequence[str],
     caps_by_wrapper: dict[str, dict[str, Any]],
     catalog_choices: Sequence[str],
+    tls_mode: TlsMode | None = None,
 ) -> list[str]:
     """Expand ALL / lists using per-backend ``capabilities.json`` keys."""
     v = (value or "").strip()
     catalog_tokens = [str(c).strip() for c in catalog_choices if c and str(c).strip()]
+    cipher_mode = tls_mode if dimension == "cipher_suite" else None
 
     if re.match(r"(?is)^ALL\s*$", v):
         keys: set[str] = set()
-        for wid in wrapper_ids:
-            keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension))
+        if dimension == "cipher_suite" and cipher_mode is not None:
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
+        else:
+            for wid in wrapper_ids:
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}),
+                        dimension,
+                        tls_mode=cipher_mode,
+                    )
+                )
         if keys:
             return sorted(keys)
         return list(catalog_tokens)
@@ -632,8 +698,21 @@ def expand_capability_dimension(
     if sub:
         excl = {x.strip() for x in sub.group(1).split(",") if x.strip()}
         keys: set[str] = set()
-        for wid in wrapper_ids:
-            keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension))
+        if dimension == "cipher_suite" and cipher_mode is not None:
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
+        else:
+            for wid in wrapper_ids:
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}),
+                        dimension,
+                        tls_mode=cipher_mode,
+                    )
+                )
         if not keys:
             keys = set(catalog_tokens)
         out = sorted(k for k in keys if k not in excl)
@@ -644,7 +723,15 @@ def expand_capability_dimension(
     if ":" in v:
         return [v]
 
-    return expand_dimension(v, catalog_tokens)
+    expanded = expand_dimension(v, catalog_tokens)
+    if dimension != "cipher_suite" or cipher_mode is None:
+        return expanded
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(
+            caps_by_wrapper, wrapper_ids, mode=cipher_mode
+        )
+    )
+    return [x for x in expanded if x in allowed]
 
 
 def _cell_cipher_id(cell: dict[str, str], *, server: bool) -> str:
@@ -1072,7 +1159,63 @@ def validate_run_args(
             )
 
     coerce_tls_version_for_cipher_capabilities(args, repo)
+    _validate_cipher_suite_for_tls_version(args, known_wrappers=known_wrappers, repo=repo)
     _validate_wrapper_config_conflicts(args, known_wrappers=known_wrappers)
+
+
+def _validate_cipher_suite_for_tls_version(
+    args: Any,
+    *,
+    known_wrappers: frozenset[str],
+    repo: Path | None = None,
+) -> None:
+    """Reject explicit ``--cipher-suite`` tokens that exist only for another TLS version."""
+    mode = tls_mode_filter_from_args(args)
+    if mode is None:
+        return
+    raw = str(getattr(args, "cipher_suite", "") or "").strip()
+    if not raw or re.match(r"(?is)^ALL", raw):
+        return
+
+    root = repo or repository_root()
+    wr = sorted(known_wrappers)
+    active: set[str] = set()
+    for token in (str(args.server or ""), str(args.client or "")):
+        t = token.strip()
+        if not t:
+            continue
+        if re.match(r"(?is)^ALL", t):
+            active |= set(wr)
+        else:
+            for part in expand_dimension(t, wr):
+                if part in known_wrappers:
+                    active.add(part)
+    if not active:
+        active = set(wr)
+
+    caps_cache = load_capabilities_cache(active, root)
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(caps_cache, sorted(active), mode=mode)
+    )
+
+    def _check_part(part: str) -> None:
+        p = (part or "").strip()
+        if not p or p in allowed:
+            return
+        raise ValueError(
+            f"--cipher-suite {p!r} is not available for TLS {mode} "
+            f"(see tls{mode.replace('.', '')} in capabilities.json)"
+        )
+
+    if ":" in raw:
+        left, right = raw.split(":", 1)
+        for part in parse_csv_values(left, "--cipher-suite"):
+            _check_part(part)
+        for part in parse_csv_values(right, "--cipher-suite"):
+            _check_part(part)
+    else:
+        for part in expand_dimension(raw, sorted(allowed)):
+            _check_part(part)
 
 
 def matrix_axis_plan(
@@ -1092,6 +1235,7 @@ def matrix_axis_plan(
     client_vals = expand_dimension(str(args.client), wr)
     vals: list[list[Any]] = [server_vals, client_vals]
     matrix_wrappers = set(server_vals) | set(client_vals)
+    cipher_tls_mode = tls_mode_filter_from_args(args)
 
     for item in sorted(catalog, key=lambda x: str(x.get("id", ""))):
         oid = item["id"]
@@ -1109,6 +1253,9 @@ def matrix_axis_plan(
                     wrapper_ids=sorted(matrix_wrappers),
                     caps_by_wrapper=caps_cache,
                     catalog_choices=tokens,
+                    tls_mode=(
+                        cipher_tls_mode if oid == "cipher_suite" else None
+                    ),
                 )
             )
         elif tokens:
