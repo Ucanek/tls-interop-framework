@@ -13,12 +13,9 @@ if str(_src) not in sys.path:
 
 import argparse
 import copy
-import hashlib
-import json
 import os
+import subprocess
 import sys
-import tempfile
-from concurrent.futures import ThreadPoolExecutor
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -38,7 +35,12 @@ from core.catalog import (
 )
 
 ensure_import_paths()
-from core.runner import EXIT_SKIP, compose_run
+from core.runner import (
+    EXIT_SKIP,
+    PersistentComposeSession,
+    required_backends_from_matrix,
+    run_matrix_cell_grpc,
+)
 
 # Already registered explicitly in ``build_parser`` (not from capabilities catalog loop).
 _PREDEFINED_CLI_OPTION_IDS = frozenset({"tls_port"})
@@ -141,8 +143,8 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
         type=int,
         default=1,
         help=(
-            "Run up to N matrix cells in parallel (each cell uses its own Compose project and "
-            "dotenv path). Default: 1. With --dry-run, always serial for readable logs."
+            "Reserved for future parallel matrix runs (persistent backends run serially). "
+            "Default: 1."
         ),
     )
 
@@ -277,12 +279,13 @@ def _run_matrix_cell(
     args_template: argparse.Namespace,
     repo: Path,
     known: frozenset[str],
+    session: PersistentComposeSession | None,
 ) -> tuple[str, int]:
     cell = {k: str(v) for k, v in zip(axis_keys, tup)}
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
+    label = _cell_summary_label(cell)
     skip = cell_capability_skip_reason(cell, repo)
     if skip:
-        label = _cell_summary_label(cell)
         if args_template.verbose:
             print(f"SKIP (pre-run): {skip}", file=sys.stderr)
         else:
@@ -290,31 +293,15 @@ def _run_matrix_cell(
             print(f"{label} | SKIP  ({short})")
         return label, EXIT_SKIP
 
+    if session is None:
+        return label, 0
+
     cell_ns = copy.copy(args_template)
     for k in axis_keys:
         setattr(cell_ns, k, cell[k])
     validate_run_args(cell_ns, known_wrappers=known, repo=repo)
-
-    slug = hashlib.sha256(
-        json.dumps(cell, sort_keys=True).encode("utf-8")
-    ).hexdigest()[:10]
-    proj = f"interop-{cell['server']}-{cell['client']}-{slug}"
-    fd, tmp = tempfile.mkstemp(prefix="interop-mx-", suffix=".env")
-    os.close(fd)
-    dotp = Path(tmp)
-    try:
-        rc = compose_run(
-            cell_ns,
-            repo,
-            compose_project_override=proj,
-            driver_dotenv_path=dotp,
-        )
-    finally:
-        try:
-            dotp.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return _cell_summary_label(cell), rc
+    rc = run_matrix_cell_grpc(cell, session, verbose=bool(args_template.verbose))
+    return label, rc
 
 
 def main() -> int:
@@ -344,22 +331,70 @@ def main() -> int:
         print(f"Running matrix of {n_tests} tests...")
 
         combos = list(product(*axis_vals))
+        backends, pre_skips = required_backends_from_matrix(
+            axis_keys, combos, args_template=args, repo=repo, known=known
+        )
         jobs = max(1, int(args.jobs))
-
-        def _one(tup: tuple[Any, ...]) -> tuple[str, int]:
-            return _run_matrix_cell(
-                tup,
-                axis_keys=axis_keys,
-                args_template=args,
-                repo=repo,
-                known=known,
+        if jobs > 1:
+            print(
+                "Note: parallel --jobs is disabled with persistent backends; running serially.",
+                file=sys.stderr,
             )
 
-        if args.dry_run or jobs == 1:
-            results = [_one(t) for t in combos]
+        if args.dry_run:
+            svc = ", ".join(sorted(backends)) if backends else "(none)"
+            print(f"DRY-RUN: would start backend service(s): {svc}")
+            compose = repo / "deploy" / "compose.yaml"
+            if backends:
+                print(
+                    "DRY-RUN compose:",
+                    "docker compose",
+                    "-f",
+                    str(compose),
+                    "up -d",
+                    *sorted(backends),
+                )
+            print(f"DRY-RUN: {n_tests} matrix cell(s), {pre_skips} pre-SKIP")
+            results = [
+                _run_matrix_cell(
+                    t,
+                    axis_keys=axis_keys,
+                    args_template=args,
+                    repo=repo,
+                    known=known,
+                    session=None,
+                )
+                for t in combos
+            ]
         else:
-            with ThreadPoolExecutor(max_workers=jobs) as ex:
-                results = list(ex.map(_one, combos))
+            session: PersistentComposeSession | None = None
+            results: list[tuple[str, int]] = []
+            try:
+                if backends:
+                    session = PersistentComposeSession(
+                        repo, backends, verbose=bool(args.verbose)
+                    )
+                    session.start()
+                for tup in combos:
+                    results.append(
+                        _run_matrix_cell(
+                            tup,
+                            axis_keys=axis_keys,
+                            args_template=args,
+                            repo=repo,
+                            known=known,
+                            session=session,
+                        )
+                    )
+            except TimeoutError as e:
+                print(e, file=sys.stderr)
+                return 2
+            except subprocess.CalledProcessError as e:
+                print(f"Compose failed: {e}", file=sys.stderr)
+                return 2
+            finally:
+                if session is not None:
+                    session.stop()
 
         print("\n--- Results ---")
         use_color = sys.stdout.isatty()

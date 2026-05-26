@@ -23,7 +23,7 @@ Two logical planes:
 | Path | Role |
 |------|------|
 | `src/main.py` | Host CLI: matrix expansion, Docker Compose orchestration |
-| `src/core/runner.py` | Host Compose orchestration + container gRPC test driver |
+| `src/core/runner.py` | Persistent Compose (`up -d` per backend) + host-side gRPC matrix driver |
 | `src/core/catalog.py` | Parameters, matrix, capabilities JSON, wrapper loading, CLI validation |
 | `src/core/identity.py` | Identity PEM paths, NSS DB import rows |
 | `src/wrappers/base.py` | Shared gRPC servicer and subprocess helpers for all backends |
@@ -102,7 +102,7 @@ On push/PR to `main`, CI runs `python3 src/main.py --server <matrix.server> --cl
 
 ### GnuTLS server × NSS client (SNI)
 
-When the server is GnuTLS and the client is NSS, `core.runner` sets `INTEROP_GNUTLS_NSS_PAIR=1`. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake. See comments in `src/wrappers/wrapper_nss.py`.
+Compose defines one long-lived service per backend (`openssl`, `gnutls`, `nss`). `src/main.py` starts only the backends required by the matrix, runs all cells over gRPC, then `compose down`. When both GnuTLS and NSS are needed, `INTEROP_GNUTLS_NSS_PAIR=1` is set on the NSS service. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake. See comments in `src/wrappers/wrapper_nss.py`.
 
 ## Known limitations
 

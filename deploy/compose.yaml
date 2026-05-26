@@ -1,35 +1,46 @@
-# Used by ``python3 src/main.py`` (writes deploy/.interop.env before ``compose run driver``).
-# SERVER_WRAPPER / CLIENT_WRAPPER select wrapper_<name>.py; ``driver`` loads vars from deploy/.interop.env.
+# Persistent wrapper services (one container per TLS backend).
+# Host orchestrator: ``docker compose up -d <backend>`` then gRPC from ``src/main.py``.
 
 services:
-  server_node:
+  openssl:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     environment:
-      WRAPPER: ${SERVER_WRAPPER:-openssl}
+      WRAPPER: openssl
       GRPC_PORT: "50051"
-      NSSDB: /app/nssdb
-      INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
+      NSSDB: /app/nssdb/openssl
+    ports:
+      - "127.0.0.1:15051:50051"
+      - "127.0.0.1:15551:5555"
     command: ["python3", "/app/wrapper_entry.py"]
 
-  client_node:
+  gnutls:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     environment:
-      WRAPPER: ${CLIENT_WRAPPER:-openssl}
+      WRAPPER: gnutls
       GRPC_PORT: "50051"
-      NSSDB: /app/nssdb
-      INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
+      NSSDB: /app/nssdb/gnutls
+    ports:
+      - "127.0.0.1:15052:50051"
+      - "127.0.0.1:15552:5555"
     command: ["python3", "/app/wrapper_entry.py"]
 
-  driver:
+  nss:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
-    depends_on:
-      - server_node
-      - client_node
-    # INTEROP_* / TLS_* via ``driver.env_file``: ``main.py`` merges a temporary overlay (-f …) pointing at an env path (parallel matrices use unique paths).
-    command: ["python3", "-m", "core.runner"]
+    environment:
+      WRAPPER: nss
+      GRPC_PORT: "50051"
+      NSSDB: /app/nssdb/nss
+      INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
+    ports:
+      - "127.0.0.1:15053:50051"
+      - "127.0.0.1:15553:5555"
+    command: ["python3", "/app/wrapper_entry.py"]

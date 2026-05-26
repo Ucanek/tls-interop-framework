@@ -7,7 +7,6 @@ import os
 import re
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from pathlib import Path
@@ -17,10 +16,10 @@ import grpc
 
 from core.catalog import (
     FALLBACK_CIPHER_ID_TO_IANA,
-    NON_TLS_OPTION_IDS,
+    cell_capability_skip_reason,
     ensure_import_paths,
-    load_options_catalog,
     norm_token,
+    normalize_cell_tls_micro_params,
     parse_asymmetric,
     repository_root,
     tls_version_to_capability_name,
@@ -41,7 +40,23 @@ YELLOW = "\033[93m"
 RESET = "\033[0m"
 
 
-# --- Docker Compose orchestration ---
+# Published host ports (must match deploy/compose.yaml).
+BACKEND_GRPC_ADDR: dict[str, str] = {
+    "openssl": "127.0.0.1:15051",
+    "gnutls": "127.0.0.1:15052",
+    "nss": "127.0.0.1:15053",
+}
+BACKEND_TLS_HOST_PORT: dict[str, tuple[str, int]] = {
+    "openssl": ("127.0.0.1", 15551),
+    "gnutls": ("127.0.0.1", 15552),
+    "nss": ("127.0.0.1", 15553),
+}
+_COMPOSE_BACKEND_SERVICES: frozenset[str] = frozenset(BACKEND_GRPC_ADDR)
+_DEFAULT_GRPC_STARTUP_S = 90.0
+_GRPC_STARTUP_POLL_S = 0.4
+
+
+# --- Docker Compose orchestration (persistent backends) ---
 
 def interop_dotenv_path(root: Path) -> Path:
     return root / "deploy" / ".interop.env"
@@ -64,154 +79,312 @@ def write_interop_dotenv(path: Path, variables: dict[str, str]) -> None:
     path.chmod(0o600)
 
 
-def compose_driver_overlay_path(dotenv_abs: Path) -> Path:
-    """Small merge file so ``driver`` gets ``env_file`` without ``compose run --env-file``."""
-    dq = str(dotenv_abs).replace("\\", "/").replace('"', '\\"')
-    yaml_text = (
-        "services:\n"
-        "  driver:\n"
-        "    env_file:\n"
-        f'      - "{dq}"\n'
-    )
-    fd, tmp = tempfile.mkstemp(suffix=".interop-driver.yml", prefix="interop-")
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(yaml_text)
-    except BaseException:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return Path(tmp)
-
-
 def sanitize_compose_project(name: str) -> str:
     s = "".join(c if c.isalnum() or c in "-_" else "-" for c in name.lower()).strip("-")
     return (s or "interop")[:63]
 
 
-def compose_run(
-    args: Any,
-    repo: Path,
+def required_backends_from_matrix(
+    axis_keys: list[str],
+    combos: list[tuple[Any, ...]],
     *,
-    compose_project_override: str | None = None,
-    driver_dotenv_path: Path | None = None,
-) -> int:
-    matrix = repo / "deploy" / "compose.yaml"
-    proj_env = (os.environ.get("INTEROP_COMPOSE_PROJECT") or "").strip()
-    if compose_project_override:
-        project = sanitize_compose_project(compose_project_override)
-    elif proj_env:
-        project = sanitize_compose_project(proj_env)
-    else:
-        project = f"interop-{args.server}-{args.client}"
-    env = os.environ.copy()
-    env["SERVER_WRAPPER"] = args.server
-    env["CLIENT_WRAPPER"] = args.client
-    env["INTEROP_GNUTLS_NSS_PAIR"] = (
-        "1" if args.server == "gnutls" and args.client == "nss" else "0"
-    )
-    env.setdefault("TLS_SERVER_GRPC", "server_node:50051")
-    env.setdefault("TLS_CLIENT_GRPC", "client_node:50051")
-    env.setdefault("TLS_HOSTNAME", "server_node")
-    env["INTEROP_VERBOSE"] = "1" if args.verbose else "0"
+    args_template: Any,
+    repo: Path,
+    known: frozenset[str],
+) -> tuple[frozenset[str], int]:
+    """
+    Collect backends needed by non-SKIP matrix cells.
 
-    dotenv_vars: dict[str, str] = {}
-
-    for item in load_options_catalog(repo or repository_root()):
-        oid = item["id"]
-        if oid in NON_TLS_OPTION_IDS:
+    Returns ``(backend_ids, skip_count)``.
+    """
+    needed: set[str] = set()
+    skips = 0
+    for tup in combos:
+        cell = {k: str(v) for k, v in zip(axis_keys, tup)}
+        cell = normalize_cell_tls_micro_params(cell, args_template, repo)
+        if cell_capability_skip_reason(cell, repo):
+            skips += 1
             continue
-        val = getattr(args, oid)
-        if val in (None, "", 0):
-            continue
-        if oid == "tls_port" and val == 0:
-            continue
-        key = f"INTEROP_{oid.upper()}"
-        sval = str(val).strip()
-        dotenv_vars[key] = sval
+        srv = (cell.get("server") or "").strip().lower()
+        cli = (cell.get("client") or "").strip().lower()
+        if srv in known:
+            needed.add(srv)
+        if cli in known:
+            needed.add(cli)
+    return frozenset(needed), skips
 
-    dotenv_vars["TLS_SERVER_GRPC"] = env["TLS_SERVER_GRPC"]
-    dotenv_vars["TLS_CLIENT_GRPC"] = env["TLS_CLIENT_GRPC"]
-    dotenv_vars["TLS_HOSTNAME"] = env["TLS_HOSTNAME"]
-    dotenv_vars["INTEROP_VERBOSE"] = env["INTEROP_VERBOSE"]
 
-    dotenv_raw = (os.environ.get("INTEROP_DRIVER_DOTENV") or "").strip()
-    if driver_dotenv_path is not None:
-        interop_dotenv_abs = driver_dotenv_path.resolve()
-    elif dotenv_raw:
-        raw_p = Path(dotenv_raw)
-        interop_dotenv_abs = (
-            raw_p.resolve() if raw_p.is_absolute() else (repo / raw_p).resolve()
-        )
-    else:
-        interop_dotenv_abs = interop_dotenv_path(repo).resolve()
+def _compose_base_cmd(
+    repo: Path,
+    project: str,
+    *,
+    verbose: bool,
+) -> list[str]:
+    progress: list[str] = [] if verbose else ["--progress", "quiet"]
+    return [
+        "docker",
+        "compose",
+        *progress,
+        "-p",
+        project,
+        "-f",
+        str(repo / "deploy" / "compose.yaml"),
+    ]
 
-    overlay_path: Path | None = None
-    print(f"========== {args.server}x{args.client} ==========")
-    try:
-        overlay_path = compose_driver_overlay_path(interop_dotenv_abs)
-        progress: list[str] = (
-            [] if args.verbose else ["--progress", "quiet"]
-        )
-        compose = [
-            "docker",
-            "compose",
-            *progress,
-            "-p",
-            project,
-            "-f",
-            str(matrix),
-            "-f",
-            str(overlay_path),
-        ]
-        down = compose + ["down", "--remove-orphans"]
-        build = compose + ["build"] + ([] if args.verbose else ["-q"])
-        run_cmd = compose + ["run", "--rm", "-T", "driver"]
 
-        if args.dry_run:
-            print("DRY-RUN compose commands:")
-            if proj_env:
-                print(f"# INTEROP_COMPOSE_PROJECT={proj_env!r}")
-            if dotenv_raw:
-                print(f"# INTEROP_DRIVER_DOTENV={dotenv_raw!r}")
-            print(f"# would write driver env_file {interop_dotenv_abs}")
-            print(f"# merge overlay {overlay_path}")
-            print(" ".join(down))
-            print(" ".join(build))
-            print(" ".join(run_cmd))
-            return 0
+class PersistentComposeSession:
+    """Start selected backend containers once; matrix loop uses gRPC only."""
 
-        write_interop_dotenv(interop_dotenv_abs, dotenv_vars)
+    def __init__(
+        self,
+        repo: Path,
+        backends: frozenset[str],
+        *,
+        verbose: bool = False,
+        project: str | None = None,
+    ) -> None:
+        unknown = backends - _COMPOSE_BACKEND_SERVICES
+        if unknown:
+            raise ValueError(f"Unknown backend service(s): {sorted(unknown)}")
+        self.repo = repo
+        self.backends = sorted(backends)
+        self.verbose = verbose
+        proj_env = (os.environ.get("INTEROP_COMPOSE_PROJECT") or "").strip()
+        if project:
+            self.project = sanitize_compose_project(project)
+        elif proj_env:
+            self.project = sanitize_compose_project(proj_env)
+        else:
+            self.project = sanitize_compose_project(
+                "interop-" + "-".join(self.backends)
+            )
+        self.metadata: dict[str, interop_pb2.LibraryMetadata] = {}
 
-        subprocess.run(down, cwd=repo, env=env, stdin=subprocess.DEVNULL, check=False)
-        rc = 1
+    def grpc_addr(self, backend: str) -> str:
+        key = (backend or "").strip().lower()
         try:
-            subprocess.run(
-                build, cwd=repo, env=env, stdin=subprocess.DEVNULL, check=True
+            return BACKEND_GRPC_ADDR[key]
+        except KeyError as e:
+            raise ValueError(f"no gRPC publish map for backend {backend!r}") from e
+
+    def _compose_env(self) -> dict[str, str]:
+        env = os.environ.copy()
+        if "gnutls" in self.backends and "nss" in self.backends:
+            env["INTEROP_GNUTLS_NSS_PAIR"] = "1"
+        else:
+            env["INTEROP_GNUTLS_NSS_PAIR"] = "0"
+        return env
+
+    def up(self) -> None:
+        """``docker compose build`` then ``up -d`` for selected backends only."""
+        if not self.backends:
+            return
+        compose = _compose_base_cmd(self.repo, self.project, verbose=self.verbose)
+        env = self._compose_env()
+        services = list(self.backends)
+        if self.verbose:
+            print(
+                f"{YELLOW}[Compose] Starting backends: {', '.join(services)}{RESET}"
             )
-            run_res = subprocess.run(
-                run_cmd, cwd=repo, env=env, stdin=subprocess.DEVNULL, check=False
+        subprocess.run(
+            compose + ["build"] + ([] if self.verbose else ["-q"]),
+            cwd=self.repo,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=True,
+        )
+        subprocess.run(
+            compose + ["up", "-d", *services],
+            cwd=self.repo,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            check=True,
+        )
+
+    def down(self) -> None:
+        compose = _compose_base_cmd(self.repo, self.project, verbose=self.verbose)
+        subprocess.run(
+            compose + ["down", "--remove-orphans"],
+            cwd=self.repo,
+            env=self._compose_env(),
+            stdin=subprocess.DEVNULL,
+            check=False,
+        )
+
+    def wait_grpc_ready(
+        self,
+        timeout_s: float = _DEFAULT_GRPC_STARTUP_S,
+    ) -> None:
+        """Retry until every selected backend accepts gRPC on the host-published port."""
+        addrs = sorted({self.grpc_addr(b) for b in self.backends})
+        if not addrs:
+            return
+        deadline = time.monotonic() + timeout_s
+        pending = set(addrs)
+        while time.monotonic() < deadline and pending:
+            for addr in list(pending):
+                if _wait_grpc_channel_ready(
+                    addr, deadline=deadline, verbose=self.verbose
+                ):
+                    pending.discard(addr)
+            if pending:
+                time.sleep(_GRPC_STARTUP_POLL_S)
+        if pending:
+            raise TimeoutError(
+                f"gRPC not reachable within {timeout_s}s: {', '.join(sorted(pending))}"
             )
-            drc = int(run_res.returncode)
-            if drc == 0:
-                rc = 0
-            elif drc == EXIT_SKIP:
-                rc = EXIT_SKIP
-        except subprocess.CalledProcessError:
-            rc = 1
-        finally:
-            subprocess.run(
-                down, cwd=repo, env=env, stdin=subprocess.DEVNULL, check=False
-            )
-        return rc
-    finally:
-        if overlay_path is not None:
+
+    def load_metadata(self) -> None:
+        for backend in self.backends:
+            addr = self.grpc_addr(backend)
+            ch = grpc.insecure_channel(addr)
             try:
-                overlay_path.unlink()
-            except OSError:
-                pass
+                stub = interop_pb2_grpc.TlsInteropWrapperStub(ch)
+                self.metadata[backend] = stub.GetMetadata(interop_pb2.Empty())
+            finally:
+                try:
+                    ch.close()
+                except Exception:
+                    pass
+
+    def start(self) -> None:
+        self.up()
+        self.wait_grpc_ready()
+        self.load_metadata()
+
+    def stop(self) -> None:
+        self.down()
+
+
+def _pick_cell_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
+    raw = (cell.get(field) or "").strip()
+    if not raw:
+        return ""
+    if ":" in raw:
+        left, right = parse_asymmetric(raw)
+        return left if server else right
+    return raw
+
+
+def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
+    raw = (cell.get(field) or "").strip()
+    if not raw:
+        return []
+    if ":" in raw:
+        left, right = split_asymmetric_csv(raw)
+        part = left if server else right
+    else:
+        part = raw
+    return [p.strip() for p in part.split(",") if p.strip()]
+
+
+def tls_config_from_cell(cell: dict[str, str], role: int) -> interop_pb2.TlsConfig:
+    """Build ``TlsConfig`` for one matrix role from a normalized cell dict."""
+    server = role == interop_pb2.SERVER
+    cfg = interop_pb2.TlsConfig()
+    ver = _pick_cell_scalar(cell, "tls_version", server=server)
+    if ver:
+        cfg.version = ver
+    else:
+        cfg.version = "1.3"
+    cs = _pick_cell_scalar(cell, "cipher_suite", server=server)
+    if cs:
+        cfg.cipher_suite = cs
+    port_raw = _pick_cell_scalar(cell, "tls_port", server=server)
+    if port_raw:
+        cfg.port = int(port_raw)
+    elif (cell.get("tls_port") or "").strip() == "":
+        cfg.port = 5555
+    cfg.supported_groups.extend(
+        _pick_cell_list(cell, "supported_groups", server=server)
+    )
+    cfg.signature_schemes.extend(
+        _pick_cell_list(cell, "signature_schemes", server=server)
+    )
+    cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn_protocols", server=server))
+    return cfg
+
+
+def run_matrix_cell_grpc(
+    cell: dict[str, str],
+    session: PersistentComposeSession,
+    *,
+    verbose: bool,
+) -> int:
+    """Run one matrix cell over persistent backends (gRPC only, no Compose)."""
+    server = (cell.get("server") or "").strip().lower()
+    client = (cell.get("client") or "").strip().lower()
+    print(f"========== {server}x{client} ==========")
+
+    server_conf = tls_config_from_cell(cell, interop_pb2.SERVER)
+    client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT)
+    if server == client:
+        client_conf.server_hostname = "localhost"
+    else:
+        client_conf.server_hostname = server
+    if client_conf.port <= 0:
+        client_conf.port = server_conf.port if server_conf.port > 0 else 5555
+
+    tcp_host, tcp_port = BACKEND_TLS_HOST_PORT.get(
+        server, ("127.0.0.1", 15551)
+    )
+    if server_conf.port > 0 and server_conf.port != 5555:
+        if verbose:
+            print(
+                f"{YELLOW}[Driver] Note: persistent mode expects TLS port 5555 inside "
+                f"containers (got {server_conf.port}); host check uses {tcp_port}{RESET}",
+                file=sys.stderr,
+            )
+
+    driver = InteropDriver(
+        session.grpc_addr(server),
+        session.grpc_addr(client),
+        verbose=verbose,
+    )
+    driver.server_metadata = session.metadata.get(server)
+    driver.client_metadata = session.metadata.get(client)
+
+    if skip := driver.scenario_skip_reason_for_configs(server_conf, client_conf):
+        if verbose:
+            print(f"{YELLOW}[Driver] SKIP: {skip}{RESET}")
+        else:
+            short = skip[:120].replace("\n", " ")
+            print(f"{YELLOW}○{RESET}  interop  ({short})")
+        return EXIT_SKIP
+
+    driver._last_skip_reason = None
+    driver._last_failure = None
+    spinner: _QuietSpinner | None = None
+    if not verbose and sys.stderr.isatty():
+        spinner = _QuietSpinner()
+        spinner.start()
+    try:
+        ok = driver.run_test_with_configs(
+            server_conf,
+            client_conf,
+            tcp_host=tcp_host,
+            tcp_port=tcp_port,
+        )
+    finally:
+        if spinner:
+            spinner.stop()
+
+    if driver._last_skip_reason:
+        if verbose:
+            print(f"{YELLOW}[Driver] SKIP: {driver._last_skip_reason}{RESET}")
+            return EXIT_SKIP
+        short = driver._last_skip_reason[:200].replace("\n", " ").strip()
+        print(f"{YELLOW}○{RESET}  interop  ({short})")
+        return EXIT_SKIP
+    if verbose:
+        return 0 if ok else 1
+    detail = ""
+    if not ok and driver._last_failure:
+        detail = (driver._last_failure[2] or "").replace("\n", " ").strip()[:220]
+    suf = f"  ({detail})" if detail else ""
+    mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
+    print(f"{mark}  interop{suf}")
+    return 0 if ok else 1
 
 # --- gRPC test driver ---
 
@@ -447,17 +620,24 @@ class InteropDriver:
         client_addr: str,
         verbose: bool = False,
     ) -> None:
-        self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(
-            grpc.insecure_channel(server_addr)
-        )
-        self.client_stub = interop_pb2_grpc.TlsInteropWrapperStub(
-            grpc.insecure_channel(client_addr)
-        )
         self._verbose = verbose
         self._last_failure: tuple[str, int, str] | None = None
         self._last_skip_reason: str | None = None
         self.server_metadata: interop_pb2.LibraryMetadata | None = None
         self.client_metadata: interop_pb2.LibraryMetadata | None = None
+        self._channels: list[grpc.Channel] = []
+        if server_addr == client_addr:
+            ch = grpc.insecure_channel(server_addr)
+            self._channels.append(ch)
+            stub = interop_pb2_grpc.TlsInteropWrapperStub(ch)
+            self.server_stub = stub
+            self.client_stub = stub
+        else:
+            ch_s = grpc.insecure_channel(server_addr)
+            ch_c = grpc.insecure_channel(client_addr)
+            self._channels.extend([ch_s, ch_c])
+            self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(ch_s)
+            self.client_stub = interop_pb2_grpc.TlsInteropWrapperStub(ch_c)
 
     def _vprint(self, *args: Any, **kwargs: Any) -> None:
         if self._verbose:
@@ -492,12 +672,31 @@ class InteropDriver:
             c.name == capability_name and interop_pb2.NEGOTIATE in c.flags for c in caps
         )
 
+    def scenario_skip_reason_for_configs(
+        self,
+        server_conf: interop_pb2.TlsConfig,
+        client_conf: interop_pb2.TlsConfig,
+    ) -> str | None:
+        """Skip run if peer metadata disagrees with role ``TlsConfig`` values."""
+        if self.server_metadata is None or self.client_metadata is None:
+            return None
+        srv = server_conf
+        cli = client_conf
+        return self._scenario_skip_reason_impl(srv, cli)
+
     def scenario_skip_reason(self, cfg: interop_pb2.TlsConfig) -> str | None:
         """Skip run if peer metadata disagrees with env ``TlsConfig`` (no scenario id)."""
         if self.server_metadata is None or self.client_metadata is None:
             return None
         srv = _role_config(cfg, interop_pb2.SERVER)
         cli = _role_config(cfg, interop_pb2.CLIENT)
+        return self._scenario_skip_reason_impl(srv, cli)
+
+    def _scenario_skip_reason_impl(
+        self,
+        srv: interop_pb2.TlsConfig,
+        cli: interop_pb2.TlsConfig,
+    ) -> str | None:
         cap_srv = tls_version_to_capability_name(srv.version)
         cap_cli = tls_version_to_capability_name(cli.version)
         if not self._metadata_can_negotiate_version(
@@ -604,15 +803,35 @@ class InteropDriver:
                 print(msg if self._verbose else f"{RED}FAIL{RESET}  CLOSE {role}: {e}")
 
     def run_test(self, tls_hostname: str) -> bool:
-        """ESTABLISH server → client → TCP wait → TRANSMIT (payload + echo check)."""
+        """ESTABLISH server → client → TCP wait → TRANSMIT (env-based ``TlsConfig``)."""
         self._last_skip_reason = None
         base_conf = tls_config_from_env()
         _fill_tls_hostname_and_port(base_conf, tls_hostname)
-        ver = (base_conf.version or "").strip() or "default"
         server_conf = _role_config(base_conf, interop_pb2.SERVER)
         client_conf = _role_config(base_conf, interop_pb2.CLIENT)
+        if (base_conf.server_hostname or "").strip():
+            client_conf.server_hostname = base_conf.server_hostname
+        tcp_host, tcp_port = "127.0.0.1", int(server_conf.port or 5555)
+        return self.run_test_with_configs(
+            server_conf,
+            client_conf,
+            tcp_host=tcp_host,
+            tcp_port=tcp_port,
+        )
+
+    def run_test_with_configs(
+        self,
+        server_conf: interop_pb2.TlsConfig,
+        client_conf: interop_pb2.TlsConfig,
+        *,
+        tcp_host: str,
+        tcp_port: int,
+    ) -> bool:
+        """ESTABLISH server → client → host TCP check → TRANSMIT → CLOSE (wrapper idle)."""
+        self._last_skip_reason = None
+        ver = (server_conf.version or "").strip() or "default"
         try:
-            self._vprint(f"[Driver] Round-trip (TLS from env: {ver})")
+            self._vprint(f"[Driver] Round-trip (TLS {ver})")
             self._vprint("[Driver] Establishing connection...")
             r = self._execute_establish(self.server_stub, interop_pb2.SERVER, server_conf)
             if not self._check_response(r, "ESTABLISH server"):
@@ -621,18 +840,17 @@ class InteropDriver:
             if not self._check_response(r, "ESTABLISH client"):
                 return False
 
-            peer = (base_conf.server_hostname or "").strip() or "localhost"
             ok_peer, _ = wait_tcp_connect(
-                peer, int(base_conf.port), timeout_s=_TCP_AFTER_ESTABLISH_S
+                tcp_host, int(tcp_port), timeout_s=_TCP_AFTER_ESTABLISH_S
             )
             if not ok_peer:
                 self._vprint(
-                    f"{RED}[Driver] Timeout waiting for TCP {peer}:{base_conf.port}{RESET}"
+                    f"{RED}[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}{RESET}"
                 )
                 self._last_failure = (
                     "wait_tcp",
                     FAILURE,
-                    f"TCP {peer}:{base_conf.port} not accepting after ESTABLISH",
+                    f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH",
                 )
                 return False
 
