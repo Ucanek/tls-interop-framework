@@ -15,8 +15,6 @@
   },
   "tls12": {
     "cipher_suite": {
-      "aes-128-gcm": ":C02F",
-      "aes-256-gcm": ":C030",
       "chacha20-poly1305": ":CCA8",
       "ecdhe-rsa-aes-128-gcm-sha256": ":C02F",
       "ecdhe-rsa-aes-256-gcm-sha384": ":C030",

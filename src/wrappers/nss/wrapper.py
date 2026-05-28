@@ -22,7 +22,7 @@ from core.identity import (
     identity_kind_from_signature_schemes,
     server_trust_signature_schemes_tokens,
 )
-from wrappers.nss.identity import (
+from wrappers.nss.nss_db import (
     nss_interop_identity_import_rows,
     nss_server_nickname_for_config,
 )

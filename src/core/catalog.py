@@ -17,6 +17,13 @@ TlsMode = Literal["1.2", "1.3"]
 TLS12_TOKENS = frozenset({"1.2", "1.2.0", "tls1.2", "tls1_2"})
 TLS13_TOKENS = frozenset({"1.3", "1.3.0", "tls1.3", "tls1_3"})
 
+# Driver metadata fallback when env cipher id is not in GetMetadata lists.
+FALLBACK_CIPHER_ID_TO_IANA: dict[str, str] = {
+    "aes-256-gcm": "TLS_AES_256_GCM_SHA384",
+    "aes-128-gcm": "TLS_AES_128_GCM_SHA256",
+    "chacha20-poly1305": "TLS_CHACHA20_POLY1305_SHA256",
+}
+
 # Static CLI options (choices for crypto dims come from capabilities union).
 STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -1028,6 +1035,114 @@ def _check_list_dim(
     return None
 
 
+@dataclass(frozen=True)
+class Tls12CipherMetadata:
+    """Metadata extracted from a TLS 1.2 cipher token/name."""
+
+    kx: Literal["ecdhe", "dhe", "static-rsa", "unknown"]
+    au: Literal["rsa", "ecdsa", "unknown"]
+
+
+def _split_cell_list_tokens(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
+    raw = (cell.get(field) or "").strip()
+    if not raw:
+        return []
+    if ":" in raw:
+        left, right = parse_asymmetric(raw)
+        part = left if server else right
+        return [p.strip() for p in part.split(",") if p.strip()]
+    return [p.strip() for p in raw.split(",") if p.strip()]
+
+
+def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
+    """
+    Extract TLS 1.2 semantics from cipher token/name (catalog id or backend literal).
+
+    This parser is intentionally TLS1.2-oriented and must not be used for TLS 1.3 ciphers.
+    """
+    raw = (cipher_name or "").strip().lower()
+    tok = raw.replace("_", "-").replace(" ", "")
+    if not tok or tok.startswith("tls-"):
+        return Tls12CipherMetadata(kx="unknown", au="unknown")
+    if "ecdhe" in tok:
+        kx: Literal["ecdhe", "dhe", "static-rsa", "unknown"] = "ecdhe"
+    elif re.search(r"(^|-)dhe(-|$)", tok):
+        kx = "dhe"
+    elif "rsa" in tok or tok.startswith("aes"):
+        kx = "static-rsa"
+    else:
+        kx = "unknown"
+
+    if "ecdsa" in tok:
+        au: Literal["rsa", "ecdsa", "unknown"] = "ecdsa"
+    elif "rsa" in tok or tok.startswith("aes"):
+        au = "rsa"
+    else:
+        au = "unknown"
+    return Tls12CipherMetadata(kx=kx, au=au)
+
+
+def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "eddsa", "unknown"]:
+    t = (token or "").strip().lower().replace("_", "").replace("-", "")
+    if not t:
+        return "unknown"
+    if t.startswith("rsa") or "rsa" in t:
+        return "rsa"
+    if t.startswith("ecdsa") or "ecdsa" in t:
+        return "ecdsa"
+    if t.startswith("ed25519") or t.startswith("ed448") or t.startswith("eddsa"):
+        return "eddsa"
+    return "unknown"
+
+
+def _group_family(token: str) -> Literal["ec", "ffdhe", "other"]:
+    t = (token or "").strip().lower().replace("_", "-")
+    if not t:
+        return "other"
+    if t.startswith("ffdhe"):
+        return "ffdhe"
+    if t.startswith("secp") or t.startswith("x25519") or t.startswith("x448"):
+        return "ec"
+    return "other"
+
+
+def _tls12_semantic_skip_reason_side(
+    cell: dict[str, str], *, server: bool, mode: TlsMode
+) -> str | None:
+    if mode != "1.2":
+        return None
+    cipher_id = _cell_cipher_id(cell, server=server)
+    if not cipher_id:
+        return None
+    meta = tls12_cipher_metadata_from_name(cipher_id)
+    grp_tokens = _split_cell_list_tokens(cell, "supported_groups", server=server)
+    if grp_tokens and meta.kx == "static-rsa":
+        return "TLS 1.2 static RSA cipher does not support groups"
+    if grp_tokens and meta.kx == "ecdhe":
+        for grp in grp_tokens:
+            fam = _group_family(grp)
+            if fam != "ec":
+                return "TLS 1.2 ECDHE cipher requires EC groups (secp*/x25519/x448)"
+    if grp_tokens and meta.kx == "dhe":
+        for grp in grp_tokens:
+            fam = _group_family(grp)
+            if fam != "ffdhe":
+                return "TLS 1.2 DHE cipher requires FFDHE groups"
+
+    sig_tokens = _split_cell_list_tokens(cell, "signature_schemes", server=server)
+    if not sig_tokens or meta.au == "unknown":
+        return None
+    for sig in sig_tokens:
+        sk = _signature_scheme_auth_kind(sig)
+        if sk == "unknown":
+            continue
+        if meta.au == "rsa" and sk != "rsa":
+            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
+        if meta.au == "ecdsa" and sk != "ecdsa":
+            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
+    return None
+
+
 def cell_capability_skip_reason(
     cell: dict[str, str],
     repo: Path,
@@ -1052,6 +1167,13 @@ def cell_capability_skip_reason(
             mode_srv = tls_mode_from_version(lv)
         if rv:
             mode_cli = tls_mode_from_version(rv)
+
+    sem_srv = _tls12_semantic_skip_reason_side(cell, server=True, mode=mode_srv)
+    if sem_srv:
+        return sem_srv
+    sem_cli = _tls12_semantic_skip_reason_side(cell, server=False, mode=mode_cli)
+    if sem_cli:
+        return sem_cli
 
     for check in (
         _check_cipher_side(

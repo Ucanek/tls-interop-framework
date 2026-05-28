@@ -267,17 +267,17 @@ def enforce_suite_cli_exclusivity(
 
 def _cell_summary_label(cell: dict[str, str]) -> str:
     s, c = cell["server"], cell["client"]
-    parts: list[str] = []
-    for k in (
-        "cipher_suite",
+    ordered = (
         "tls_version",
+        "cipher_suite",
         "supported_groups",
         "signature_schemes",
-    ):
-        v = (cell.get(k) or "").strip()
-        if v:
-            parts.append(v.replace("\n", " "))
-    mid = parts[0] if len(parts) == 1 else " / ".join(parts[:3]) if parts else "-"
+    )
+    parts: list[str] = []
+    for k in ordered:
+        v = (cell.get(k) or "").strip().replace("\n", " ")
+        parts.append(v or "-")
+    mid = " / ".join(parts)
     return f"{s} x {c} | {mid}"
 
 
