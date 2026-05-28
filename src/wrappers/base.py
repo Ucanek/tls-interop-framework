@@ -11,13 +11,13 @@ import shlex
 import socket
 import subprocess
 import time
-from typing import Literal, Mapping, MutableMapping, Sequence, Tuple, Type
+from typing import Any, Literal, Mapping, MutableMapping, Sequence, Tuple, Type
 
 import grpc
 from grpc import ServicerContext
 
 from core.catalog import catalog_parameter_conflicts, metadata_from_capabilities, tls_mode_from_version
-from core.identity import catalog_identity_pem_paths, repeated_config_tokens
+from core.identity import catalog_identity_pem_paths_for_config, repeated_config_tokens
 from proto import interop_pb2
 from proto import interop_pb2_grpc
 
@@ -59,6 +59,15 @@ def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
     if config is None:
         return "1.3"
     return tls_mode_from_version(config.version)
+
+
+def is_server_role(role: Any | None) -> bool:
+    if role is None:
+        return True
+    try:
+        return int(role) == int(interop_pb2.SERVER)
+    except Exception:
+        return True
 
 
 def format_executed_command(
@@ -264,45 +273,20 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                     pass
             self._used_ephemeral_pem = False
 
-        cwd = os.getcwd()
-        schemes = repeated_config_tokens(config, "signature_schemes")
-        sel_cert, sel_key = catalog_identity_pem_paths(schemes)
+        sel_cert, sel_key = catalog_identity_pem_paths_for_config(config)
         if sel_cert and sel_key:
             return sel_cert, sel_key
 
+        cwd = os.getcwd()
         cwd_cert = os.path.join(cwd, "cert.pem")
         cwd_key = os.path.join(cwd, "key.pem")
         if os.path.isfile(cwd_cert) and os.path.isfile(cwd_key):
             return "cert.pem", "key.pem"
 
-        subprocess.run(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                eph_key,
-                "-out",
-                eph_cert,
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                "/CN=localhost",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=90,
-            text=True,
+        raise WrapperSetupError(
+            "No identity PEM for this test (set certificate/private_key, use certs/ "
+            "from scripts/gen_interop_certs.sh, or cert.pem/key.pem in cwd)"
         )
-        try:
-            os.chmod(eph_key, 0o600)
-        except OSError:
-            pass
-        self._used_ephemeral_pem = True
-        return eph_cert, eph_key
 
     def _popen_env(self, config: interop_pb2.TlsConfig) -> dict[str, str] | None:
         """Environment with ``SSLKEYLOGFILE`` when ``TlsConfig.keylog_file`` is set."""

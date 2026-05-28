@@ -13,15 +13,18 @@ import subprocess
 import threading
 import time
 import fcntl
+from pathlib import Path
 
 from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
 from core.catalog import cipher_maps_from_capabilities
 from core.identity import (
     repeated_config_tokens,
     identity_kind_from_signature_schemes,
-    nss_interop_identity_import_rows,
-    nss_server_nickname_for_signature_schemes,
     server_trust_signature_schemes_tokens,
+)
+from wrappers.nss.identity import (
+    nss_interop_identity_import_rows,
+    nss_server_nickname_for_config,
 )
 from wrappers.base import (
     BaseTemplateWrapper,
@@ -128,6 +131,35 @@ def _nss_tool(name):
         if os.path.isfile(path) and os.access(path, os.X_OK):
             return path
     return name
+
+
+def resolve_cli_tool(name: str) -> str | None:
+    """Plugin hook: resolve NSS CLI binaries (including Fedora unsupported-tools path)."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for prefix in ("/usr/lib64/nss/unsupported-tools", "/usr/lib/nss/unsupported-tools"):
+        path = os.path.join(prefix, name)
+        if os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+    return None
+
+
+def orchestration_env(active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+    """Plugin hook: GnuTLS server × NSS client SNI workaround."""
+    if "gnutls" in active_backends and "nss" in active_backends:
+        return {"INTEROP_GNUTLS_NSS_PAIR": "1"}
+    return {"INTEROP_GNUTLS_NSS_PAIR": "0"}
+
+
+def local_wrapper_env(
+    repo: Path,
+    backend_id: str,
+    active_backends: frozenset[str] | set[str],
+) -> dict[str, str]:
+    """Plugin hook: per-backend NSS DB directory."""
+    del active_backends
+    return {"NSSDB": str(repo / "nssdb" / backend_id)}
 
 
 def _ensure_tool_exists(path, name):
@@ -275,6 +307,13 @@ class NSSWrapper(BaseTemplateWrapper):
             _ensure_nss_db_identities(self._nssdb, nss_interop_identity_import_rows())
             self._nss_db_ready = True
 
+    def _cleanup_nss_db(self) -> None:
+        """Drop local NSS DB dir so each test starts from a clean state."""
+        try:
+            shutil.rmtree(os.path.abspath(self._nssdb), ignore_errors=True)
+        finally:
+            self._nss_db_ready = False
+
     @property
     def _component_name(self) -> str:
         return "NSS"
@@ -361,9 +400,7 @@ class NSSWrapper(BaseTemplateWrapper):
             "-d",
             self._db_spec(),
             "-n",
-            nss_server_nickname_for_signature_schemes(
-                server_trust_signature_schemes_tokens(config)
-            ),
+            nss_server_nickname_for_config(config),
             "-p",
             str(inner_port),
             "-V",
@@ -433,6 +470,7 @@ class NSSWrapper(BaseTemplateWrapper):
             except subprocess.TimeoutExpired:
                 self._socat_proc.kill()
         self._socat_proc = None
+        self._cleanup_nss_db()
 
 
 if __name__ == "__main__":

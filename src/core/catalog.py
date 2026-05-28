@@ -17,13 +17,6 @@ TlsMode = Literal["1.2", "1.3"]
 TLS12_TOKENS = frozenset({"1.2", "1.2.0", "tls1.2", "tls1_2"})
 TLS13_TOKENS = frozenset({"1.3", "1.3.0", "tls1.3", "tls1_3"})
 
-# Driver metadata fallback when env cipher id is not in GetMetadata lists.
-FALLBACK_CIPHER_ID_TO_IANA: dict[str, str] = {
-    "aes-256-gcm": "TLS_AES_256_GCM_SHA384",
-    "aes-128-gcm": "TLS_AES_128_GCM_SHA256",
-    "chacha20-poly1305": "TLS_CHACHA20_POLY1305_SHA256",
-}
-
 # Static CLI options (choices for crypto dims come from capabilities union).
 STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -276,6 +269,171 @@ def load_capabilities(backend_name: str, repo: Path | None = None) -> dict[str, 
     if not isinstance(data, dict):
         raise ValueError(f"capabilities.json must be a JSON object: {path}")
     return data
+
+
+_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "grpc_addr": None,
+    "tls_host": "127.0.0.1",
+    "tls_port": 15551,
+    "compose_service": None,
+    "unsupported_tls_fields": (),
+    "local_cli": (),
+}
+
+
+def wrapper_runtime(capabilities: dict[str, Any]) -> dict[str, Any]:
+    """Merged ``capabilities.json`` → ``runtime`` block with defaults."""
+    raw = capabilities.get("runtime")
+    if not isinstance(raw, dict):
+        raw = {}
+    out = dict(_RUNTIME_DEFAULTS)
+    for key in _RUNTIME_DEFAULTS:
+        if key in raw and raw[key] is not None:
+            out[key] = raw[key]
+    return out
+
+
+def wrapper_runtime_config(
+    backend_name: str, repo: Path | None = None
+) -> dict[str, Any]:
+    """Per-wrapper ``runtime`` section from ``capabilities.json``."""
+    return wrapper_runtime(load_capabilities(backend_name, repo))
+
+
+def load_wrapper_module(backend_name: str) -> Any:
+    """Import ``wrappers.<backend>.wrapper`` (optional plugin hooks live there)."""
+    name = (backend_name or "").strip().lower()
+    _ensure_src_importable()
+    return importlib.import_module(f"wrappers.{name}.wrapper")
+
+
+def call_wrapper_hook(
+    backend_name: str,
+    hook: str,
+    /,
+    *args: Any,
+    **kwargs: Any,
+) -> Any:
+    mod = load_wrapper_module(backend_name)
+    fn = getattr(mod, hook, None)
+    if fn is None:
+        return None
+    return fn(*args, **kwargs)
+
+
+def local_cli_requirements(
+    backend_name: str, capabilities: dict[str, Any]
+) -> tuple[str, ...]:
+    req = call_wrapper_hook(backend_name, "local_cli_requirements")
+    if req is not None:
+        return tuple(str(x) for x in req)
+    cli = wrapper_runtime(capabilities).get("local_cli") or ()
+    return tuple(str(x) for x in cli)
+
+
+def resolve_wrapper_cli_tool(backend_name: str, exe: str) -> str | None:
+    resolved = call_wrapper_hook(backend_name, "resolve_cli_tool", exe)
+    if resolved:
+        return str(resolved)
+    import shutil
+
+    return shutil.which(exe)
+
+
+def wrapper_orchestration_env(
+    backend_name: str, active_backends: frozenset[str] | set[str]
+) -> dict[str, str]:
+    out = call_wrapper_hook(backend_name, "orchestration_env", active_backends)
+    return dict(out) if isinstance(out, dict) else {}
+
+
+def wrapper_local_env(
+    backend_name: str,
+    repo: Path,
+    active_backends: frozenset[str] | set[str],
+) -> dict[str, str]:
+    out = call_wrapper_hook(
+        backend_name, "local_wrapper_env", repo, backend_name, active_backends
+    )
+    return dict(out) if isinstance(out, dict) else {}
+
+
+def merged_orchestration_env(active_backends: Iterable[str]) -> dict[str, str]:
+    """Union env fragments from every active wrapper's ``orchestration_env`` hook."""
+    active = frozenset(
+        (b or "").strip().lower() for b in active_backends if (b or "").strip()
+    )
+    merged: dict[str, str] = {}
+    for backend in sorted(active):
+        merged.update(wrapper_orchestration_env(backend, active))
+    return merged
+
+
+def session_wrapper_env(
+    backend_name: str,
+    repo: Path,
+    active_backends: Iterable[str],
+) -> dict[str, str]:
+    """Orchestration + per-wrapper env for one wrapper subprocess."""
+    active = frozenset(
+        (b or "").strip().lower() for b in active_backends if (b or "").strip()
+    )
+    merged = dict(merged_orchestration_env(active))
+    merged.update(wrapper_local_env(backend_name, repo, active))
+    return merged
+
+
+def backend_grpc_addr(backend_name: str, repo: Path | None = None) -> str:
+    rt = wrapper_runtime_config(backend_name, repo)
+    addr = rt.get("grpc_addr")
+    if not isinstance(addr, str) or not addr.strip():
+        raise ValueError(
+            f"capabilities.runtime.grpc_addr missing for backend {backend_name!r}"
+        )
+    return addr.strip()
+
+
+def backend_tls_endpoint(
+    backend_name: str, repo: Path | None = None
+) -> tuple[str, int]:
+    rt = wrapper_runtime_config(backend_name, repo)
+    host = str(rt.get("tls_host") or "127.0.0.1")
+    port = int(rt.get("tls_port") or 15551)
+    return host, port
+
+
+def compose_service_name(backend_name: str, repo: Path | None = None) -> str:
+    rt = wrapper_runtime_config(backend_name, repo)
+    svc = rt.get("compose_service")
+    if isinstance(svc, str) and svc.strip():
+        return svc.strip()
+    return (backend_name or "").strip().lower()
+
+
+def discover_compose_backends(repo: Path | None = None) -> frozenset[str]:
+    """Wrapper ids that declare ``runtime.compose_service`` (Docker Compose services)."""
+    root = repo or repository_root()
+    out: set[str] = set()
+    for wid in discover_wrapper_ids(root):
+        rt = wrapper_runtime_config(wid, root)
+        if rt.get("compose_service"):
+            out.add(wid)
+    return frozenset(out)
+
+
+def check_local_cli_tools(
+    backends: Iterable[str], repo: Path | None = None
+) -> list[str]:
+    """Return human-readable missing-tool messages (delegates to each wrapper)."""
+    missing: list[str] = []
+    root = repo or repository_root()
+    for backend in backends:
+        key = (backend or "").strip().lower()
+        caps = load_capabilities(key, root)
+        for exe in local_cli_requirements(key, caps):
+            if resolve_wrapper_cli_tool(key, exe) is None:
+                missing.append(f"{key}: {exe} not found")
+    return missing
 
 
 def load_backend_component(
@@ -968,28 +1126,24 @@ def _config_has_value(config: Any, field: str) -> bool:
     return bool(str(raw).strip())
 
 
-_BACKEND_EXTRA_UNSUPPORTED: dict[str, tuple[str, ...]] = {
-    "openssl": (),
-    "gnutls": ("ca_file",),
-    "nss": ("certificate", "private_key", "ca_file"),
-}
-
-
-def unsupported_cli_params(config: Any, backend: str) -> list[str]:
+def unsupported_cli_params(
+    config: Any, backend: str, repo: Path | None = None
+) -> list[str]:
     """
     Return unsupported non-empty ``TlsConfig`` fields for a backend CLI.
 
-    Wrappers skip tests when the catalog requests parameters the selected CLI
-    tool cannot control.
+    Declared per wrapper in ``capabilities.json`` → ``runtime.unsupported_tls_fields``.
     """
     key = (backend or "").strip().lower()
-    extra = _BACKEND_EXTRA_UNSUPPORTED.get(key)
-    if extra is None:
+    rt = wrapper_runtime_config(key, repo)
+    extra = rt.get("unsupported_tls_fields") or ()
+    if not isinstance(extra, (list, tuple)):
         return []
     bad: list[str] = []
     for field in extra:
-        if _config_has_value(config, field):
-            bad.append(field)
+        name = str(field).strip()
+        if name and _config_has_value(config, name):
+            bad.append(name)
     return bad
 
 
@@ -999,6 +1153,7 @@ def catalog_parameter_conflicts(
     *,
     role: Any | None = None,
     capabilities: dict[str, Any] | None = None,
+    repo: Path | None = None,
 ) -> list[str]:
     """
     Union of ``unsupported_cli_params`` and capability-translator unsupported
@@ -1006,7 +1161,7 @@ def catalog_parameter_conflicts(
     """
     seen: set[str] = set()
     out: list[str] = []
-    for item in unsupported_cli_params(config, backend):
+    for item in unsupported_cli_params(config, backend, repo):
         if item not in seen:
             seen.add(item)
             out.append(item)

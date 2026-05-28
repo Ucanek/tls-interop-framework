@@ -38,6 +38,7 @@ ensure_import_paths()
 from core.runner import (
     EXIT_SKIP,
     PersistentComposeSession,
+    PersistentLocalSession,
     required_backends_from_matrix,
     run_matrix_cell_grpc,
 )
@@ -72,10 +73,10 @@ def _status_for_rc(rc: int) -> tuple[str, str]:
 def build_parser(repo: Path) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "TLS interop runner: writes deploy/.interop.env (INTEROP_*, TLS_*) for the driver "
-            "container. CLI choices are the union of all wrapper capabilities.json files. "
-            "Use comma lists, ALL, or ALL\\ exclusions on --server/--client and choice-backed "
-            "options to run a Cartesian matrix."
+            "TLS interop runner: starts backend wrappers via Docker Compose (default) or "
+            "--local host subprocesses, then drives tests over gRPC. CLI choices are the "
+            "union of all wrapper capabilities.json files. Use comma lists, ALL, or ALL\\ "
+            "exclusions on --server/--client and choice-backed options for a Cartesian matrix."
         )
     )
     groups = {
@@ -131,12 +132,20 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
         help="Override TlsConfig.port (0 = driver default 5555)",
     )
     groups["basic"].add_argument(
+        "--local",
+        action="store_true",
+        help=(
+            "Run wrappers as local Python subprocesses (no Docker). Requires openssl, "
+            "gnutls-utils, nss-tools on PATH, pip install grpcio, and certs/ (auto-generated)."
+        ),
+    )
+    groups["basic"].add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"
     )
     groups["basic"].add_argument(
         "--dry-run",
         action="store_true",
-        help="Print compose commands instead of running them",
+        help="Expand matrix and print planned backends without starting wrappers",
     )
     groups["basic"].add_argument(
         "--jobs",
@@ -279,7 +288,7 @@ def _run_matrix_cell(
     args_template: argparse.Namespace,
     repo: Path,
     known: frozenset[str],
-    session: PersistentComposeSession | None,
+    session: PersistentComposeSession | PersistentLocalSession | None,
 ) -> tuple[str, int]:
     cell = {k: str(v) for k, v in zip(axis_keys, tup)}
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
@@ -343,9 +352,10 @@ def main() -> int:
 
         if args.dry_run:
             svc = ", ".join(sorted(backends)) if backends else "(none)"
-            print(f"DRY-RUN: would start backend service(s): {svc}")
-            compose = repo / "deploy" / "compose.yaml"
-            if backends:
+            mode = "local subprocesses" if args.local else "docker compose"
+            print(f"DRY-RUN: would start backend(s) via {mode}: {svc}")
+            if backends and not args.local:
+                compose = repo / "deploy" / "compose.yaml"
                 print(
                     "DRY-RUN compose:",
                     "docker compose",
@@ -367,13 +377,18 @@ def main() -> int:
                 for t in combos
             ]
         else:
-            session: PersistentComposeSession | None = None
+            session: PersistentComposeSession | PersistentLocalSession | None = None
             results: list[tuple[str, int]] = []
             try:
                 if backends:
-                    session = PersistentComposeSession(
-                        repo, backends, verbose=bool(args.verbose)
-                    )
+                    if args.local:
+                        session = PersistentLocalSession(
+                            repo, backends, verbose=bool(args.verbose)
+                        )
+                    else:
+                        session = PersistentComposeSession(
+                            repo, backends, verbose=bool(args.verbose)
+                        )
                     session.start()
                 for tup in combos:
                     results.append(
@@ -390,7 +405,10 @@ def main() -> int:
                 print(e, file=sys.stderr)
                 return 2
             except subprocess.CalledProcessError as e:
-                print(f"Compose failed: {e}", file=sys.stderr)
+                print(f"Backend startup failed: {e}", file=sys.stderr)
+                return 2
+            except RuntimeError as e:
+                print(f"Local mode: {e}", file=sys.stderr)
                 return 2
             finally:
                 if session is not None:

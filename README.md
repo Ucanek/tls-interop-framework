@@ -42,11 +42,17 @@ Two logical planes:
 
 ## Running the tests
 
-Install host dependencies (matrix CLI only needs protobuf; full runs need Docker):
+Install host dependencies:
 
 ```bash
+# CLI / dry-run (list wrappers, validate matrix)
 pip install 'protobuf>=4.21'
+
+# Local runs (--local): gRPC driver + generated stubs
+pip install 'grpcio>=1.60' 'protobuf>=4.21'
 ```
+
+Full matrix runs use **Docker Compose** by default. Use **`--local`** to run wrappers as host subprocesses instead (no Docker).
 
 List wrappers and catalog options:
 
@@ -55,10 +61,18 @@ python3 src/main.py --list-wrappers
 python3 src/main.py --list-options
 ```
 
-Run one server×client pair:
+Run one server×client pair (Docker):
 
 ```bash
 python3 src/main.py --server openssl --client gnutls
+```
+
+Run locally on the host (OpenSSL/GnuTLS/NSS CLI tools on `PATH`, ports `15051–15053` / `15551–15553`):
+
+```bash
+# Identity PEMs are created automatically on first run (or: bash scripts/gen_interop_certs.sh)
+PYTHONPATH=src:proto python3 src/main.py --local --server openssl --client openssl
+python3 src/main.py --local --server openssl --client gnutls -v
 ```
 
 Run the full 3×3 matrix (as in CI):
@@ -98,11 +112,22 @@ On push/PR to `main`, CI runs `python3 src/main.py --server <matrix.server> --cl
 | Client | `openssl s_client` | `gnutls-cli`  | `tstclnt`  |
 
 - **NSS DB:** `NSSDB` (default `/app/nssdb` in containers), nickname derived from signature schemes.
-- **Packages:** Fedora `nss-tools`, Debian/Ubuntu `libnss3-tools`.
+- **Packages:** Fedora `nss-tools` and `socat`, Debian/Ubuntu `libnss3-tools` and `socat`. On Fedora 43+, `tstclnt` and `selfserv` live under `/usr/lib64/nss/unsupported-tools/` (resolved automatically; optional: `export PATH="$PATH:/usr/lib64/nss/unsupported-tools"`). NSS server mode forwards the public TLS port to `selfserv` via `socat`.
 
 ### GnuTLS server × NSS client (SNI)
 
-Compose defines one long-lived service per backend (`openssl`, `gnutls`, `nss`). `src/main.py` starts only the backends required by the matrix, runs all cells over gRPC, then `compose down`. When both GnuTLS and NSS are needed, `INTEROP_GNUTLS_NSS_PAIR=1` is set on the NSS service. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake. See comments in `src/wrappers/wrapper_nss.py`.
+Compose defines one long-lived service per backend (`openssl`, `gnutls`, `nss`). `src/main.py` starts only the backends required by the matrix, runs all cells over gRPC, then `compose down`. When both GnuTLS and NSS are needed, the NSS wrapper's `orchestration_env` hook sets `INTEROP_GNUTLS_NSS_PAIR=1`. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake.
+
+### Adding a new wrapper
+
+No changes to `src/core/runner.py` or `src/core/catalog.py` are required for a standard backend:
+
+1. Create `src/wrappers/<id>/wrapper.py` (subclass `BaseTemplateWrapper`) and `capabilities.json`.
+2. Add a `runtime` block in `capabilities.json` (`grpc_addr`, `tls_port`, `compose_service`, `local_cli`, `unsupported_tls_fields`).
+3. Add a matching service in `deploy/compose.yaml` (host ports must match `runtime.grpc_addr` / `tls_port`).
+4. Optionally implement hooks in `wrapper.py`: `resolve_cli_tool`, `orchestration_env`, `local_wrapper_env` (see `core/catalog.py`).
+
+The runner discovers wrappers from the `src/wrappers/*/` directories automatically.
 
 ## Known limitations
 

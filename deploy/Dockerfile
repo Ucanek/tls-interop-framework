@@ -50,7 +50,7 @@ RUN mkdir -p /app/certs \
     && ln -sf certs/cert_rsa.pem /app/cert.pem \
     && ln -sf certs/key_rsa.pem /app/key.pem
 
-EXPOSE 50051
+EXPOSE 50051 50052 50053
 EXPOSE 5555
 
 CMD ["python3", "/app/wrapper_entry.py"]

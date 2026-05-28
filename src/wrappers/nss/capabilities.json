@@ -1,9 +1,14 @@
 {
+  "runtime": {
+    "grpc_addr": "127.0.0.1:15053",
+    "tls_port": 15553,
+    "compose_service": "nss",
+    "unsupported_tls_fields": ["certificate", "private_key", "ca_file"],
+    "local_cli": ["tstclnt", "selfserv", "socat", "stdbuf", "certutil", "pk12util", "openssl"]
+  },
   "tls13": {
     "cipher_suite": {
       "aes-128-gcm": ":1301",
-      "aes-128-ccm": ":1304",
-      "aes-128-ccm-8": ":1305",
       "aes-256-gcm": ":1302",
       "chacha20-poly1305": ":1303"
     }

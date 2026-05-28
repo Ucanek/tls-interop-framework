@@ -1,4 +1,4 @@
-"""TLS identity PEM paths, NSS DB import rows, and related config helpers."""
+"""TLS identity PEM paths and related config helpers."""
 
 from __future__ import annotations
 
@@ -26,17 +26,6 @@ _IDENTITY_KIND_FILES: dict[str, tuple[str, str]] = {
     "ed25519": ("cert_ed25519.pem", "key_ed25519.pem"),
     "ed448": ("cert_ed448.pem", "key_ed448.pem"),
 }
-
-_NSS_NICK_BY_KIND: dict[str, str] = {
-    "rsa": "interop_rsa",
-    "ecdsa": "interop_ecdsa",
-    "ed25519": "interop_ed25519",
-    "ed448": "interop_ed448",
-}
-
-# NSS pk12util cannot import OpenSSL-generated Ed25519/Ed448 PKCS#12 (Mozilla bug 1993638).
-_NSS_SKIP_PKCS12_IMPORT_NICKS: frozenset[str] = frozenset({"interop_ed25519", "interop_ed448"})
-
 
 def repeated_config_tokens(config: Any, field: str) -> list[str]:
     raw = getattr(config, field, None)
@@ -78,14 +67,29 @@ def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
     return "rsa"
 
 
-def catalog_identity_pem_paths(schemes: Sequence[str]) -> tuple[str, str]:
-    """
-    Resolve absolute paths to PEM cert/key for ``signature_schemes`` preference.
+def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
+    """Infer leaf cert kind from catalog ``cipher_suite`` id (e.g. ``ecdhe-ecdsa-*`` → ECDSA)."""
+    c = (cipher_catalog_id or "").strip().lower()
+    if not c:
+        return None
+    if "ecdsa" in c:
+        return "ecdsa"
+    if "rsa" in c:
+        return "rsa"
+    return None
 
-    Prefers ``/app/certs/`` (container), then ``<cwd>/certs/`` for local runs.
-    Returns ``("", "")`` when no known bundle exists on disk.
-    """
-    kind = identity_kind_from_signature_schemes(schemes)
+
+def resolve_identity_kind(config: Any) -> str:
+    """Pick server/client identity material: ``signature_schemes`` first, else cipher hint."""
+    schemes = repeated_config_tokens(config, "signature_schemes")
+    if schemes:
+        return identity_kind_from_signature_schemes(schemes)
+    kind = identity_kind_from_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
+    return kind or "rsa"
+
+
+def catalog_identity_pem_paths_for_kind(kind: str) -> tuple[str, str]:
+    """Resolve absolute paths to PEM cert/key for an identity kind."""
     cert_f, key_f = _IDENTITY_KIND_FILES.get(kind, _IDENTITY_KIND_FILES["rsa"])
     cwd = os.getcwd()
     cert = _first_existing_path(
@@ -99,6 +103,16 @@ def catalog_identity_pem_paths(schemes: Sequence[str]) -> tuple[str, str]:
     if cert and key:
         return cert, key
     return "", ""
+
+
+def catalog_identity_pem_paths(schemes: Sequence[str]) -> tuple[str, str]:
+    """Resolve PEM paths from ``signature_schemes`` preference order."""
+    return catalog_identity_pem_paths_for_kind(identity_kind_from_signature_schemes(schemes))
+
+
+def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
+    """Resolve PEM paths from ``TlsConfig`` (schemes and/or ``cipher_suite``)."""
+    return catalog_identity_pem_paths_for_kind(resolve_identity_kind(config))
 
 
 def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
@@ -125,34 +139,3 @@ def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
     return repeated_config_tokens(config, "signature_schemes")
 
 
-def nss_server_nickname_for_signature_schemes(schemes: Sequence[str]) -> str:
-    kind = identity_kind_from_signature_schemes(schemes)
-    return _NSS_NICK_BY_KIND.get(kind, _NSS_NICK_BY_KIND["rsa"])
-
-
-def nss_interop_identity_import_rows() -> list[tuple[str, str, str]]:
-    """
-    Return ``(nickname, cert_pem_path, key_pem_path)`` for each identity bundle
-    that exists on disk (used to populate NSS DB).
-
-    Ed25519/Ed448 PEM bundles are omitted: ``pk12util`` cannot import them from
-    OpenSSL PKCS#12 until NSS bug 1993638 is fixed in the distro build.
-    """
-    rows: list[tuple[str, str, str]] = []
-    for kind in ("rsa", "ecdsa", "ed25519", "ed448"):
-        nick = _NSS_NICK_BY_KIND[kind]
-        if nick in _NSS_SKIP_PKCS12_IMPORT_NICKS:
-            continue
-        cert_f, key_f = _IDENTITY_KIND_FILES[kind]
-        cwd = os.getcwd()
-        cert = _first_existing_path(
-            os.path.join("/app/certs", cert_f),
-            os.path.join(cwd, "certs", cert_f),
-        )
-        key = _first_existing_path(
-            os.path.join("/app/certs", key_f),
-            os.path.join(cwd, "certs", key_f),
-        )
-        if cert and key:
-            rows.append((nick, cert, key))
-    return rows

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from typing import Any
 
 from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
@@ -11,6 +12,7 @@ from core.catalog import cipher_maps_from_capabilities
 from core.identity import repeated_config_tokens
 from wrappers.base import (
     BaseTemplateWrapper,
+    WrapperSetupError,
     format_executed_command,
     popen_stdio_merged,
     serve_insecure,
@@ -131,6 +133,40 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     @property
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
         return (_EPHEM_CERT, _EPHEM_KEY)
+
+    def _ensure_cert_paths(self, config):
+        try:
+            return super()._ensure_cert_paths(config)
+        except WrapperSetupError:
+            eph_cert, eph_key = self._ephemeral_pem_paths
+            subprocess.run(
+                [
+                    "openssl",
+                    "req",
+                    "-x509",
+                    "-newkey",
+                    "rsa:2048",
+                    "-keyout",
+                    eph_key,
+                    "-out",
+                    eph_cert,
+                    "-days",
+                    "1",
+                    "-nodes",
+                    "-subj",
+                    "/CN=localhost",
+                ],
+                check=True,
+                capture_output=True,
+                timeout=90,
+                text=True,
+            )
+            try:
+                os.chmod(eph_key, 0o600)
+            except OSError:
+                pass
+            self._used_ephemeral_pem = True
+            return eph_cert, eph_key
 
     def _version_command(self) -> list[str]:
         return ["openssl", "version"]
