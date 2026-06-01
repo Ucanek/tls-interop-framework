@@ -25,6 +25,7 @@ from core.catalog import (
     compose_service_name,
     discover_compose_backends,
     ensure_import_paths,
+    load_capabilities,
     merged_orchestration_env,
     norm_token,
     normalize_cell_tls_micro_params,
@@ -61,9 +62,9 @@ def _grpc_host_port(addr: str) -> tuple[str, int]:
 
 
 def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
-    """Create ``certs/*.pem`` when missing (see ``scripts/gen_interop_certs.sh``)."""
+    """Create ``certs/{prefix}.crt`` bundles when missing (``scripts/gen_interop_certs.sh``)."""
     cert_dir = repo / "certs"
-    marker = cert_dir / "cert_rsa.pem"
+    marker = cert_dir / "rsa_default.crt"
     if marker.is_file():
         return
     script = repo / "scripts" / "gen_interop_certs.sh"
@@ -491,7 +492,51 @@ def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[s
     return [p.strip() for p in part.split(",") if p.strip()]
 
 
-def tls_config_from_cell(cell: dict[str, str], role: int) -> interop_pb2.TlsConfig:
+def _server_signature_schemes_from_cell(cell: dict[str, str]) -> list[str]:
+    return _pick_cell_list(cell, "signature_schemes", server=True)
+
+
+def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
+    """False when wrapper uses out-of-band identity (e.g. NSS DB nicknames)."""
+    try:
+        rt = load_capabilities(backend, repo).get("runtime") or {}
+    except (FileNotFoundError, ValueError):
+        return True
+    blocked = frozenset(rt.get("unsupported_tls_fields") or ())
+    return "certificate" not in blocked and "private_key" not in blocked
+
+
+def _attach_cell_server_identity(
+    cfg: interop_pb2.TlsConfig,
+    cell: dict[str, str],
+    *,
+    repo: Path,
+) -> None:
+    """Load server leaf PEM bytes from ``certs/{prefix}.*`` for this cell's sig schemes."""
+    from core.identity import (
+        get_cert_prefix_for_cipher_suite,
+        get_cert_prefix_for_schemes,
+        read_identity_pem_bytes,
+    )
+
+    schemes = _server_signature_schemes_from_cell(cell)
+    if schemes:
+        prefix = get_cert_prefix_for_schemes(schemes)
+    else:
+        cs = _pick_cell_scalar(cell, "cipher_suite", server=True)
+        prefix = get_cert_prefix_for_cipher_suite(cs)
+    cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
+    if cert_b and key_b:
+        cfg.certificate = cert_b
+        cfg.private_key = key_b
+
+
+def tls_config_from_cell(
+    cell: dict[str, str],
+    role: int,
+    *,
+    repo: Path | None = None,
+) -> interop_pb2.TlsConfig:
     """Build ``TlsConfig`` for one matrix role from a normalized cell dict."""
     server = role == interop_pb2.SERVER
     cfg = interop_pb2.TlsConfig()
@@ -515,6 +560,10 @@ def tls_config_from_cell(cell: dict[str, str], role: int) -> interop_pb2.TlsConf
         _pick_cell_list(cell, "signature_schemes", server=server)
     )
     cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn_protocols", server=server))
+    if server and repo is not None:
+        backend = (cell.get("server") or "").strip().lower()
+        if _server_accepts_inline_pem_identity(backend, repo):
+            _attach_cell_server_identity(cfg, cell, repo=repo)
     return cfg
 
 
@@ -529,9 +578,45 @@ def run_matrix_cell_grpc(
     client = (cell.get("client") or "").strip().lower()
     print(f"========== {server}x{client} ==========")
 
-    server_conf = tls_config_from_cell(cell, interop_pb2.SERVER)
-    client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT)
+    repo = session.repo
+    server_conf = tls_config_from_cell(cell, interop_pb2.SERVER, repo=repo)
+    client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT, repo=repo)
     local_mode = bool(getattr(session, "local_mode", False))
+    srv_schemes = _server_signature_schemes_from_cell(cell)
+    prev_srv_sig = os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES")
+    if srv_schemes:
+        os.environ["INTEROP_SERVER_SIGNATURE_SCHEMES"] = ",".join(srv_schemes)
+    try:
+        return _run_matrix_cell_grpc_body(
+            cell,
+            session,
+            server=server,
+            client=client,
+            server_conf=server_conf,
+            client_conf=client_conf,
+            local_mode=local_mode,
+            verbose=verbose,
+        )
+    finally:
+        if srv_schemes:
+            if prev_srv_sig is None:
+                os.environ.pop("INTEROP_SERVER_SIGNATURE_SCHEMES", None)
+            else:
+                os.environ["INTEROP_SERVER_SIGNATURE_SCHEMES"] = prev_srv_sig
+
+
+def _run_matrix_cell_grpc_body(
+    cell: dict[str, str],
+    session: PersistentComposeSession | PersistentLocalSession,
+    *,
+    server: str,
+    client: str,
+    server_conf: interop_pb2.TlsConfig,
+    client_conf: interop_pb2.TlsConfig,
+    local_mode: bool,
+    verbose: bool,
+) -> int:
+    """Inner matrix cell run (after env + TlsConfig are prepared)."""
     tcp_host, tcp_port = apply_matrix_tls_endpoints(
         server,
         client,

@@ -25,30 +25,11 @@ COPY proto/ ./proto/
 COPY src/core ./core
 COPY src/wrappers ./wrappers
 COPY deploy/wrapper_entry.py ./
+COPY scripts/gen_interop_certs.sh ./scripts/
 
-RUN mkdir -p /app/certs \
-    && openssl req -x509 -newkey rsa:2048 \
-        -keyout /app/certs/key_rsa.pem -out /app/certs/cert_rsa.pem -sha256 \
-        -days 365 -nodes \
-        -subj "/CN=server_node/OU=interop-rsa" \
-        -addext "subjectAltName=DNS:server_node" \
-    && openssl ecparam -name prime256v1 -genkey -noout -out /app/certs/key_ecdsa.pem \
-    && openssl req -new -x509 -key /app/certs/key_ecdsa.pem \
-        -out /app/certs/cert_ecdsa.pem -sha256 -days 365 -nodes \
-        -subj "/CN=server_node/OU=interop-ecdsa" \
-        -addext "subjectAltName=DNS:server_node" \
-    && openssl genpkey -algorithm ED25519 -out /app/certs/key_ed25519.pem \
-    && openssl req -new -x509 -key /app/certs/key_ed25519.pem \
-        -out /app/certs/cert_ed25519.pem -days 365 -nodes \
-        -subj "/CN=server_node/OU=interop-ed25519" \
-        -addext "subjectAltName=DNS:server_node" \
-    && openssl genpkey -algorithm ED448 -out /app/certs/key_ed448.pem \
-    && openssl req -new -x509 -key /app/certs/key_ed448.pem \
-        -out /app/certs/cert_ed448.pem -days 365 -nodes \
-        -subj "/CN=server_node/OU=interop-ed448" \
-        -addext "subjectAltName=DNS:server_node" \
-    && ln -sf certs/cert_rsa.pem /app/cert.pem \
-    && ln -sf certs/key_rsa.pem /app/key.pem
+RUN bash ./scripts/gen_interop_certs.sh \
+    && ln -sf certs/rsa_default.crt /app/cert.pem \
+    && ln -sf certs/rsa_default.key /app/key.pem
 
 EXPOSE 50051 50052 50053
 EXPOSE 5555

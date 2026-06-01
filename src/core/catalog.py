@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import re
 import sys
 from collections.abc import Iterable
@@ -1101,7 +1102,15 @@ def _group_family(token: str) -> Literal["ec", "ffdhe", "other"]:
         return "other"
     if t.startswith("ffdhe"):
         return "ffdhe"
-    if t.startswith("secp") or t.startswith("x25519") or t.startswith("x448"):
+    if (
+        t.startswith("secp")
+        or t.startswith("x25519")
+        or t.startswith("x448")
+        or t.startswith("brainpool")
+        or t.startswith("xyber")
+        or t.startswith("mlkem")
+        or "mlkem" in t
+    ):
         return "ec"
     return "other"
 
