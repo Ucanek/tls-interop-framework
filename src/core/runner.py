@@ -560,6 +560,9 @@ def tls_config_from_cell(
         _pick_cell_list(cell, "signature_schemes", server=server)
     )
     cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn_protocols", server=server))
+    from core.catalog import enabled_test_features_from_cell
+
+    cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
     if server and repo is not None:
         backend = (cell.get("server") or "").strip().lower()
         if _server_accepts_inline_pem_identity(backend, repo):

@@ -7,8 +7,14 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
-from core.catalog import cipher_maps_from_capabilities
+from core.catalog import (
+    TranslationResult,
+    cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities,
+    load_local_capabilities,
+    norm_catalog_token,
+    psk_material_from_capabilities,
+)
 from core.identity import (
     catalog_identity_trust_pem_path,
     repeated_config_tokens,
@@ -138,6 +144,19 @@ def _build_tls_argv(
 
     for p in repeated_config_tokens(config, "alpn_protocols"):
         extras.extend(["--alpn", p])
+
+    if (
+        raw_cipher
+        and "psk" in repeated_config_tokens(config, "psk_modes")
+        and cipher_catalog_id_requires_psk(raw_cipher)
+    ):
+        mat = psk_material_from_capabilities(caps, raw_cipher)
+        if mat:
+            extras.extend(["--pskusername", mat[0], "--pskkey", mat[1]])
+        else:
+            unsupported.append(
+                "psk (missing or wrong-length test_features.psk secret_hex_* for cipher)"
+            )
 
     prio = "".join(gprio)
     argv.extend(extras)

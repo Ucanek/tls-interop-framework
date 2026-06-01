@@ -181,5 +181,20 @@
     "dsa-sha256": "SIGN-DSA-SHA256",
     "dsa-sha384": "SIGN-DSA-SHA384",
     "dsa-sha512": "SIGN-DSA-SHA512"
+  },
+  "test_features": {
+    "psk": {
+      "supported": true,
+      "default_enabled": false,
+      "wired": true,
+      "identity": "interop",
+      "secret_hex_128": "0123456789abcdef0123456789abcdef",
+      "secret_hex_256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "anonymous": {
+      "supported": true,
+      "default_enabled": false,
+      "wired": false
+    }
   }
 }

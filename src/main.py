@@ -53,6 +53,7 @@ _SUITE_MATRIX_CLI: dict[str, str] = {
     "cipher_suite": "--cipher-suite",
     "supported_groups": "--supported-groups",
     "tls_version": "--tls-version",
+    "test_features": "--test-features",
 }
 
 _GREEN = "\033[92m"
@@ -202,7 +203,7 @@ def _matrix_flags_present_on_argv(argv: list[str] | None = None) -> list[str]:
     return found
 
 
-def _coerce_suite_matrix_value(value: Any) -> str:
+def _coerce_suite_matrix_value(value: Any, *, key: str = "") -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
@@ -213,6 +214,17 @@ def _coerce_suite_matrix_value(value: Any) -> str:
         parts = [str(x).strip() for x in value if str(x).strip()]
         return ",".join(parts)
     if isinstance(value, dict):
+        if key == "test_features":
+            enabled = [
+                str(k).strip()
+                for k, flag in value.items()
+                if str(k).strip()
+                and (
+                    flag is True
+                    or str(flag).strip().lower() in ("true", "1", "yes", "on")
+                )
+            ]
+            return ",".join(enabled)
         raise ValueError(
             "suite matrix values must be scalars or lists, not nested mappings"
         )
@@ -247,7 +259,7 @@ def apply_suite_file(args: argparse.Namespace, suite_path: Path) -> None:
                 f"Unknown matrix key {dest!r} in suite file "
                 f"(not a recognized CLI option)"
             )
-        setattr(args, dest, _coerce_suite_matrix_value(value))
+        setattr(args, dest, _coerce_suite_matrix_value(value, key=dest))
 
 
 def enforce_suite_cli_exclusivity(

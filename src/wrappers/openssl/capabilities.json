@@ -157,5 +157,20 @@
     "mldsa44": "mldsa44",
     "mldsa65": "mldsa65",
     "mldsa87": "mldsa87"
+  },
+  "test_features": {
+    "psk": {
+      "supported": true,
+      "default_enabled": false,
+      "wired": true,
+      "identity": "interop",
+      "secret_hex_128": "0123456789abcdef0123456789abcdef",
+      "secret_hex_256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    },
+    "anonymous": {
+      "supported": true,
+      "default_enabled": false,
+      "wired": true
+    }
   }
 }

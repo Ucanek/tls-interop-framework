@@ -61,6 +61,14 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
         "description": "Application protocols for ALPN negotiation (e.g. h2, http/1.1).",
     },
     {
+        "id": "test_features",
+        "description": (
+            "Credentials for special ciphers (psk, anonymous). "
+            "cipher_suite ALL lists every cipher; without this, PSK/anon cells run and FAIL. "
+            "Set test_features: psk,anonymous (or YAML map with true values) to enable wiring."
+        ),
+    },
+    {
         "id": "ca_file",
         "description": "Path/identifier for trusted CA bundle file.",
     },
@@ -81,11 +89,14 @@ OPTION_GROUPS: dict[str, str] = {
     "private_key_pem": "security",
     "keylog_file": "debug",
     "alpn_protocols": "debug",
+    "test_features": "crypto",
 }
 
 NON_TLS_OPTION_IDS: frozenset[str] = frozenset({"server_wrapper", "client_wrapper"})
+# Applied once per run (suite/CLI), not Cartesian-expanded with cipher_suite.
+NON_MATRIX_OPTION_IDS: frozenset[str] = frozenset({"test_features"})
 MULTI_VALUE_OPTION_IDS: frozenset[str] = frozenset(
-    {"supported_groups", "signature_schemes", "alpn_protocols"}
+    {"supported_groups", "signature_schemes", "alpn_protocols", "test_features"}
 )
 ASYMMETRIC_SCALAR_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "tls_version"})
 ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset(
@@ -627,10 +638,14 @@ def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -
         cipher.update(all_cipher_suite_ids(caps))
         groups.update(dimension_keys(caps, "supported_groups"))
         sigs.update(dimension_keys(caps, "signature_schemes"))
+    test_feats: set[str] = set()
+    for wid in wrapper_ids:
+        test_feats.update(test_feature_ids(load_capabilities(wid, repo)))
     return {
         "cipher_suite": sorted(cipher),
         "supported_groups": sorted(groups),
         "signature_schemes": sorted(sigs),
+        "test_features": sorted(test_feats),
         "tls_version": ["1.2", "1.3"],
     }
 
@@ -897,7 +912,11 @@ def expand_capability_dimension(
             caps_by_wrapper, wrapper_ids, mode=cipher_mode
         )
     )
-    return [x for x in expanded if x in allowed]
+    filtered = [x for x in expanded if x in allowed]
+    # Explicit cipher requests stay in the matrix (SKIP at run time) instead of 0 tests.
+    if not filtered and v.strip() and not re.match(r"(?is)^ALL", v.strip()):
+        return expanded if expanded else [v.strip()]
+    return filtered
 
 
 def _cell_cipher_id(cell: dict[str, str], *, server: bool) -> str:
@@ -979,11 +998,13 @@ def normalize_cell_tls_micro_params(
                 out["tls_version"] = sv or cv
 
     if effective_cell_tls_mode(out, srv_caps, cli_caps) != "1.2":
+        out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
         return out
     for dim in TLS13_ORTHOGONAL_DIMS:
         user_raw = str(getattr(args_template, dim, "") or "").strip()
         if not user_raw:
             out[dim] = ""
+    out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
     return out
 
 
@@ -1081,6 +1102,138 @@ def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
     else:
         au = "unknown"
     return Tls12CipherMetadata(kx=kx, au=au)
+
+
+def cipher_catalog_id_requires_psk(cipher_id: str) -> bool:
+    """True for catalog ids such as ``psk-aes-128-gcm``, ``rsa-psk-*``, ``dhe-psk-*``."""
+    c = norm_catalog_token(cipher_id)
+    return bool(re.search(r"(^|-)psk(-|$)", c))
+
+
+def cipher_catalog_id_requires_anon(cipher_id: str) -> bool:
+    """True for DH/ECDH anonymous catalog ids (``dh-anon-*``, ``ecdh-anon-*``, …)."""
+    c = norm_catalog_token(cipher_id)
+    return "anon" in c.split("-") or c.startswith("adh-")
+
+
+def cipher_required_test_feature(cipher_id: str) -> str | None:
+    if cipher_catalog_id_requires_psk(cipher_id):
+        return "psk"
+    if cipher_catalog_id_requires_anon(cipher_id):
+        return "anonymous"
+    return None
+
+
+def test_features_block(capabilities: dict[str, Any]) -> dict[str, Any]:
+    block = capabilities.get("test_features")
+    return block if isinstance(block, dict) else {}
+
+
+def test_feature_entry(capabilities: dict[str, Any], name: str) -> dict[str, Any]:
+    entry = test_features_block(capabilities).get(name)
+    return entry if isinstance(entry, dict) else {}
+
+
+def test_feature_ids(capabilities: dict[str, Any]) -> frozenset[str]:
+    out: set[str] = set()
+    for key, entry in test_features_block(capabilities).items():
+        if isinstance(entry, dict) and entry.get("supported", False):
+            out.add(str(key).strip().lower())
+    return frozenset(x for x in out if x)
+
+
+def test_feature_supported(capabilities: dict[str, Any], name: str) -> bool:
+    entry = test_feature_entry(capabilities, name)
+    return bool(entry.get("supported", False))
+
+
+def test_feature_wired(capabilities: dict[str, Any], name: str) -> bool:
+    entry = test_feature_entry(capabilities, name)
+    return bool(entry.get("wired", False))
+
+
+def parse_test_features_enabled(raw: str) -> frozenset[str]:
+    """Parse suite/CLI ``test_features`` into enabled feature names (default: none)."""
+    if not (raw or "").strip():
+        return frozenset()
+    return frozenset(
+        p.strip().lower()
+        for p in str(raw).split(",")
+        if p.strip()
+    )
+
+
+def enabled_test_features_from_cell(cell: dict[str, str]) -> frozenset[str]:
+    return parse_test_features_enabled(str(cell.get("test_features") or ""))
+
+
+def psk_key_bits_for_cipher(cipher_id: str) -> int:
+    """PSK key length implied by catalog cipher id (128-bit vs 256-bit suites)."""
+    c = norm_catalog_token(cipher_id)
+    if "chacha20" in c:
+        return 256
+    if re.search(
+        r"(?:aes|aria|camellia)(?:-)?256|[-/]256[-/](?:gcm|ccm|cbc)|[-]256[-](?:gcm|ccm|cbc)",
+        c,
+    ):
+        return 256
+    return 128
+
+
+def psk_secret_hex_for_cipher(
+    capabilities: dict[str, Any], cipher_id: str
+) -> str | None:
+    entry = test_feature_entry(capabilities, "psk")
+    bits = psk_key_bits_for_cipher(cipher_id)
+    field = "secret_hex_256" if bits >= 256 else "secret_hex_128"
+    secret_hex = str(entry.get(field) or entry.get("secret_hex") or "").strip()
+    if not secret_hex:
+        return None
+    expected = bits // 4
+    if len(secret_hex) != expected:
+        return None
+    return secret_hex
+
+
+def psk_material_from_capabilities(
+    capabilities: dict[str, Any], cipher_id: str
+) -> tuple[str, str] | None:
+    entry = test_feature_entry(capabilities, "psk")
+    identity = str(entry.get("identity") or "interop").strip()
+    secret_hex = psk_secret_hex_for_cipher(capabilities, cipher_id)
+    if not secret_hex:
+        return None
+    return identity, secret_hex
+
+
+def _cell_test_feature_skip_reason(
+    cell: dict[str, str],
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
+    """
+    Pre-run SKIP for PSK/anon suites when a backend cannot wire the feature.
+
+    Missing ``test_features`` in the cell does not SKIP (handshake may FAIL at runtime).
+    """
+    cid = _cell_cipher_id(cell, server=True) or _cell_cipher_id(cell, server=False)
+    if not cid:
+        return None
+    feat = cipher_required_test_feature(cid)
+    if not feat:
+        return None
+    for role_label, caps in (
+        (f"server ({server})", srv_caps),
+        (f"client ({client})", cli_caps),
+    ):
+        if not test_feature_supported(caps, feat):
+            return f"Feature {feat} is not supported in {role_label} wrapper"
+        if not test_feature_wired(caps, feat):
+            return f"Feature {feat} is not wired in {role_label} wrapper"
+    return None
 
 
 def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "eddsa", "unknown"]:
@@ -1183,6 +1336,12 @@ def cell_capability_skip_reason(
     sem_cli = _tls12_semantic_skip_reason_side(cell, server=False, mode=mode_cli)
     if sem_cli:
         return sem_cli
+
+    feat_skip = _cell_test_feature_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
+    if feat_skip:
+        return feat_skip
 
     for check in (
         _check_cipher_side(
@@ -1342,6 +1501,9 @@ def run_args_tls_config_view(
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
         alpn_protocols=pick_list("alpn_protocols"),
+        psk_modes=sorted(
+            parse_test_features_enabled(",".join(pick_list("test_features")))
+        ),
         ca_file=(getattr(args, "ca_file", None) or "") or "",
         certificate=getattr(args, "certificate_pem", None),
         private_key=getattr(args, "private_key_pem", None),
@@ -1525,7 +1687,7 @@ def matrix_axis_plan(
 
     for item in sorted(catalog, key=lambda x: str(x.get("id", ""))):
         oid = item["id"]
-        if oid in NON_TLS_OPTION_IDS or oid == "tls_port":
+        if oid in NON_TLS_OPTION_IDS or oid == "tls_port" or oid in NON_MATRIX_OPTION_IDS:
             continue
         ch = item.get("choices") or []
         keys.append(oid)

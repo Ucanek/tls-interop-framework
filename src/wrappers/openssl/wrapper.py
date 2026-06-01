@@ -7,8 +7,15 @@ import re
 import subprocess
 from typing import Any
 
-from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
-from core.catalog import cipher_maps_from_capabilities
+from core.catalog import (
+    TranslationResult,
+    cipher_catalog_id_requires_anon,
+    cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities,
+    load_local_capabilities,
+    norm_catalog_token,
+    psk_material_from_capabilities,
+)
 from core.identity import repeated_config_tokens
 from wrappers.base import (
     BaseTemplateWrapper,
@@ -69,9 +76,31 @@ def _build_tls_argv(
             else:
                 unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.3 mapping)")
         elif key in cap12:
-            argv.extend(["-cipher", cap12[key]])
+            cipher_val = cap12[key]
+            psk_modes = repeated_config_tokens(config, "psk_modes")
+            if (
+                "anonymous" in psk_modes
+                and cipher_catalog_id_requires_anon(raw_cipher)
+                and ":@SECLEVEL" not in cipher_val
+            ):
+                cipher_val = f"{cipher_val}:@SECLEVEL=0"
+            argv.extend(["-cipher", cipher_val])
         else:
             unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.2 mapping)")
+
+    psk_modes = repeated_config_tokens(config, "psk_modes")
+    if (
+        raw_cipher
+        and "psk" in psk_modes
+        and cipher_catalog_id_requires_psk(raw_cipher)
+    ):
+        mat = psk_material_from_capabilities(caps, raw_cipher)
+        if mat:
+            argv.extend(["-psk_identity", mat[0], "-psk", mat[1]])
+        else:
+            unsupported.append(
+                "psk (missing or wrong-length test_features.psk secret_hex_* for cipher)"
+            )
 
     if mode == "1.3":
         for field, flag in (
