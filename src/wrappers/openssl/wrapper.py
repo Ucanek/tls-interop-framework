@@ -16,7 +16,11 @@ from core.catalog import (
     norm_catalog_token,
     psk_material_from_capabilities,
 )
-from core.identity import repeated_config_tokens
+from core.identity import (
+    catalog_identity_pem_paths_for_prefix,
+    cipher_catalog_id_uses_dsa_auth,
+    repeated_config_tokens,
+)
 from wrappers.base import (
     BaseTemplateWrapper,
     WrapperSetupError,
@@ -34,6 +38,30 @@ _EPHEM_CERT = "/tmp/interop_openssl_cert.pem"
 _EPHEM_KEY = "/tmp/interop_openssl_key.pem"
 
 _DNS_LABEL_OK = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_LEGACY_DSS_CIPHER_RE = re.compile(r"dss|dsh", re.IGNORECASE)
+
+
+def _openssl_cipher_needs_legacy_dss(cipher_suite: str) -> bool:
+    """OpenSSL 3 needs legacy provider + SECLEVEL=0 for DHE-DSS / DH-DSS suites."""
+    c = norm_catalog_token(cipher_suite)
+    if not c:
+        return False
+    if cipher_catalog_id_uses_dsa_auth(c):
+        return True
+    return bool(_LEGACY_DSS_CIPHER_RE.search(c.replace("_", "-")))
+
+
+def _openssl_legacy_provider_argv(config: Any) -> list[str]:
+    raw = (getattr(config, "cipher_suite", None) or "").strip()
+    if not _openssl_cipher_needs_legacy_dss(raw):
+        return []
+    return ["-provider", "legacy", "-provider", "default"]
+
+
+def _append_seclevel_zero(cipher_val: str) -> str:
+    if ":@SECLEVEL" in cipher_val:
+        return cipher_val
+    return f"{cipher_val}:@SECLEVEL=0"
 
 
 def _is_server_role(role: Any | None) -> bool:
@@ -78,12 +106,12 @@ def _build_tls_argv(
                 unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.3 mapping)")
         elif key in cap12:
             cipher_val = cap12[key]
-            if (
-                test_feature_enabled_in_config(config, "anonymous")
-                and cipher_catalog_id_requires_anon(raw_cipher)
-                and ":@SECLEVEL" not in cipher_val
+            if test_feature_enabled_in_config(config, "anonymous") and cipher_catalog_id_requires_anon(
+                raw_cipher
             ):
-                cipher_val = f"{cipher_val}:@SECLEVEL=0"
+                cipher_val = _append_seclevel_zero(cipher_val)
+            elif _openssl_cipher_needs_legacy_dss(raw_cipher):
+                cipher_val = _append_seclevel_zero(cipher_val)
             argv.extend(["-cipher", cipher_val])
         else:
             unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.2 mapping)")
@@ -163,6 +191,19 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return (_EPHEM_CERT, _EPHEM_KEY)
 
     def _ensure_cert_paths(self, config):
+        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+        if _openssl_cipher_needs_legacy_dss(raw_cipher):
+            cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
+            if cert and key:
+                return cert, key
+            cert_b = getattr(config, "certificate", None) or b""
+            key_b = getattr(config, "private_key", None) or b""
+            if cert_b.strip() and key_b.strip():
+                return super()._ensure_cert_paths(config)
+            raise WrapperSetupError(
+                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
+                "(run scripts/gen_interop_certs.sh)"
+            )
         try:
             return super()._ensure_cert_paths(config)
         except WrapperSetupError:
@@ -268,7 +309,16 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     def _start_server(self, config):
         cert_path, key_path = self._ensure_cert_paths(config)
         cmd = (
-            ["openssl", "s_server", "-accept", f"0.0.0.0:{config.port}", "-cert", cert_path, "-key", key_path]
+            ["openssl", "s_server"]
+            + _openssl_legacy_provider_argv(config)
+            + [
+                "-accept",
+                f"0.0.0.0:{config.port}",
+                "-cert",
+                cert_path,
+                "-key",
+                key_path,
+            ]
             + self._build_common_args(config, for_server=True)
         )
         cwd = os.getcwd()
@@ -279,7 +329,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         host = getattr(config, "server_hostname", None) or "localhost"
         tls_flag_pack = self._build_common_args(config, for_server=False)
         cmd = (
-            ["openssl", "s_client", "-connect", f"{host}:{config.port}"]
+            ["openssl", "s_client"]
+            + _openssl_legacy_provider_argv(config)
+            + ["-connect", f"{host}:{config.port}"]
             + self._client_sni_args(config)
             + tls_flag_pack
         )

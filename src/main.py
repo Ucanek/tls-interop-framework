@@ -39,6 +39,7 @@ from core.runner import (
     EXIT_SKIP,
     PersistentComposeSession,
     PersistentLocalSession,
+    ensure_interop_certs,
     required_backends_from_matrix,
     run_matrix_cell_grpc,
 )
@@ -352,6 +353,8 @@ def main() -> int:
         print(f"Running matrix of {n_tests} tests...")
 
         combos = list(product(*axis_vals))
+        if combos:
+            ensure_interop_certs(repo, verbose=bool(args.verbose))
         backends, pre_skips = required_backends_from_matrix(
             axis_keys, combos, args_template=args, repo=repo, known=known
         )

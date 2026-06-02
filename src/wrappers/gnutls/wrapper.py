@@ -19,12 +19,15 @@ from core.catalog import (
     psk_material_from_capabilities,
 )
 from core.identity import (
+    catalog_identity_pem_paths_for_prefix,
     catalog_identity_trust_pem_path,
+    cipher_catalog_id_uses_dsa_auth,
     repeated_config_tokens,
     server_trust_signature_schemes_tokens,
 )
 from wrappers.base import (
     BaseTemplateWrapper,
+    WrapperSetupError,
     format_executed_command,
     popen_stdio_merged,
     serve_insecure,
@@ -192,6 +195,14 @@ def _build_tls_argv(
     ):
         extras.extend(["--dhparams", _interop_dhparams_pem()])
 
+    if (
+        raw_cipher
+        and mode == "1.2"
+        and cipher_catalog_id_uses_dsa_auth(raw_cipher)
+    ):
+        # DHE-DSS / DH-DSS need DSA signature algorithms for the server certificate.
+        gprio.append(":+SIGN-DSA-SHA256:+SIGN-DSA-SHA1")
+
     prio = "".join(gprio)
     argv.extend(extras)
     argv.extend(["--priority", prio])
@@ -250,7 +261,28 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             out["named_group"] = m3.group(1).strip()
         return out
 
+    def _ensure_cert_paths(self, config):
+        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
+            cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
+            if cert and key:
+                return cert, key
+            cert_b = getattr(config, "certificate", None) or b""
+            key_b = getattr(config, "private_key", None) or b""
+            if cert_b.strip() and key_b.strip():
+                return super()._ensure_cert_paths(config)
+            raise WrapperSetupError(
+                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
+                "(run scripts/gen_interop_certs.sh)"
+            )
+        return super()._ensure_cert_paths(config)
+
     def _client_x509_cafile(self, config) -> str:
+        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
+            cert, _ = catalog_identity_pem_paths_for_prefix("dsa_default")
+            if cert and os.path.isfile(cert):
+                return cert
         trust = catalog_identity_trust_pem_path(
             server_trust_signature_schemes_tokens(config)
         )

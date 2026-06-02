@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from typing import Any
 IDENTITY_PREFIXES: tuple[str, ...] = (
     "rsa_default",
     "rsa_pss_pure",
+    "dsa_default",
     "ecdsa_p256",
     "ecdsa_p384",
     "ecdsa_p521",
@@ -23,10 +25,17 @@ _DEFAULT_PREFIX = "rsa_default"
 # Legacy kind → default prefix (NSS / coarse fallbacks).
 _KIND_TO_PREFIX: dict[str, str] = {
     "rsa": "rsa_default",
+    "dsa": "dsa_default",
     "ecdsa": "ecdsa_p256",
     "ed25519": "ed25519",
     "ed448": "ed448",
 }
+
+
+def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
+    """True for ``dhe-dss-*``, ``dh-dss-*``, … (not ECDSA)."""
+    c = (cipher_catalog_id or "").strip().lower().replace("_", "-")
+    return bool(re.search(r"(^|-)dss(-|$)", c))
 
 
 def _split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
@@ -63,6 +72,8 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
         return "ed25519"
     if tok.startswith("ed448") or tok == "ed448":
         return "ed448"
+    if tok.startswith("dsa") or tok == "dsa":
+        return "dsa_default"
     if "ecdsa" in tok:
         if "secp521" in tok or "-p521" in tok or tok.endswith("p521"):
             return "ecdsa_p521"
@@ -89,6 +100,8 @@ def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:
     c = (cipher_catalog_id or "").strip().lower()
     if not c:
         return _DEFAULT_PREFIX
+    if cipher_catalog_id_uses_dsa_auth(c):
+        return "dsa_default"
     if "ecdsa" in c:
         return "ecdsa_p256"
     if "ed25519" in c:
@@ -120,6 +133,12 @@ def interop_certs_dir(repo: Path | None = None) -> Path:
     if (cwd / "certs").is_dir():
         return cwd / "certs"
     return Path("/app/certs")
+
+
+def identity_pem_present(prefix: str, *, repo: Path | None = None) -> bool:
+    """True when both ``certs/{prefix}.crt`` and ``certs/{prefix}.key`` exist."""
+    cert_path, key_path = catalog_identity_pem_paths_for_prefix(prefix, repo=repo)
+    return bool(cert_path and key_path)
 
 
 def catalog_identity_pem_paths_for_prefix(
@@ -174,6 +193,8 @@ def repeated_config_tokens(config: Any, field: str) -> list[str]:
 def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
     """Legacy coarse kind (``rsa`` | ``ecdsa`` | ``ed25519`` | ``ed448``)."""
     prefix = get_cert_prefix_for_schemes(schemes)
+    if prefix == "dsa_default" or prefix.startswith("dsa"):
+        return "dsa"
     if prefix.startswith("ecdsa"):
         return "ecdsa"
     if prefix == "ed25519":
@@ -185,6 +206,8 @@ def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
 
 def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
     prefix = get_cert_prefix_for_cipher_suite(cipher_catalog_id)
+    if prefix == "dsa_default" or prefix.startswith("dsa"):
+        return "dsa"
     if prefix.startswith("ecdsa"):
         return "ecdsa"
     if prefix == "ed25519":

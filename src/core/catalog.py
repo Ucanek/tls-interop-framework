@@ -1063,7 +1063,7 @@ class Tls12CipherMetadata:
     """Metadata extracted from a TLS 1.2 cipher token/name."""
 
     kx: Literal["ecdhe", "dhe", "static-rsa", "unknown"]
-    au: Literal["rsa", "ecdsa", "unknown"]
+    au: Literal["rsa", "ecdsa", "dsa", "unknown"]
 
 
 def _split_cell_list_tokens(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
@@ -1096,8 +1096,10 @@ def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
     else:
         kx = "unknown"
 
-    if "ecdsa" in tok:
-        au: Literal["rsa", "ecdsa", "unknown"] = "ecdsa"
+    if re.search(r"(^|-)dss(-|$)", tok):
+        au: Literal["rsa", "ecdsa", "dsa", "unknown"] = "dsa"
+    elif "ecdsa" in tok:
+        au = "ecdsa"
     elif "rsa" in tok or tok.startswith("aes"):
         au = "rsa"
     else:
@@ -1123,6 +1125,56 @@ def cipher_required_test_feature(cipher_id: str) -> str | None:
     if cipher_catalog_id_requires_anon(cipher_id):
         return "anonymous"
     return None
+
+
+def cipher_catalog_id_requires_identity_pem(cipher_id: str) -> bool:
+    """
+    True when the server must present a leaf certificate matching the cipher auth.
+
+    Excludes anonymous suites and static PSK (``psk-aes-*``); includes RSA/ECDSA/EdDSA
+    ciphers and hybrid ``*-psk`` suites that combine certificates with PSK.
+    """
+    c = norm_catalog_token(cipher_id)
+    if not c:
+        return False
+    if cipher_catalog_id_requires_anon(c):
+        return False
+    if cipher_catalog_id_requires_psk(c):
+        return bool(re.search(r"(^|-)(rsa|dhe|ecdhe)-psk", c))
+    from core.identity import cipher_catalog_id_uses_dsa_auth
+
+    if cipher_catalog_id_uses_dsa_auth(c):
+        return True
+    if "ecdsa" in c or "ed25519" in c or "ed448" in c:
+        return True
+    if re.search(r"(^|-)rsa", c):
+        return True
+    return False
+
+
+def _required_server_identity_prefix(cell: dict[str, str]) -> str | None:
+    """``certs/`` filename prefix the server needs for this matrix cell."""
+    from core.identity import get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes
+
+    schemes = _split_cell_list_tokens(cell, "signature_schemes", server=True)
+    if schemes:
+        return get_cert_prefix_for_schemes(schemes)
+    cipher = _cell_cipher_id(cell, server=True)
+    if not cipher or not cipher_catalog_id_requires_identity_pem(cipher):
+        return None
+    return get_cert_prefix_for_cipher_suite(cipher)
+
+
+def _cell_identity_pem_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
+    """Pre-run SKIP when ``certs/{prefix}.crt`` + ``.key`` are required but missing."""
+    from core.identity import identity_pem_present
+
+    prefix = _required_server_identity_prefix(cell)
+    if not prefix:
+        return None
+    if identity_pem_present(prefix, repo=repo):
+        return None
+    return f"Missing identity PEM: certs/{prefix}.crt and certs/{prefix}.key"
 
 
 def test_features_block(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -1266,10 +1318,14 @@ def _cell_test_feature_skip_reason(
     return None
 
 
-def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "eddsa", "unknown"]:
+def _signature_scheme_auth_kind(
+    token: str,
+) -> Literal["rsa", "ecdsa", "dsa", "eddsa", "unknown"]:
     t = (token or "").strip().lower().replace("_", "").replace("-", "")
     if not t:
         return "unknown"
+    if t.startswith("dsa") or t == "dsa":
+        return "dsa"
     if t.startswith("rsa") or "rsa" in t:
         return "rsa"
     if t.startswith("ecdsa") or "ecdsa" in t:
@@ -1332,6 +1388,8 @@ def _tls12_semantic_skip_reason_side(
             return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
         if meta.au == "ecdsa" and sk != "ecdsa":
             return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
+        if meta.au == "dsa" and sk != "dsa":
+            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
     return None
 
 
@@ -1372,6 +1430,10 @@ def cell_capability_skip_reason(
     )
     if feat_skip:
         return feat_skip
+
+    id_skip = _cell_identity_pem_skip_reason(cell, repo)
+    if id_skip:
+        return id_skip
 
     nss_psk_skip = nss_tls12_static_psk_skip_reason(
         cell, server=server, client=client, mode_srv=mode_srv, mode_cli=mode_cli

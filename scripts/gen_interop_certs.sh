@@ -57,6 +57,17 @@ gen_ed448() {
     "${SAN[@]}"
 }
 
+gen_dsa_default() {
+  local dsap="${CERT_DIR}/dsa_default.dsap.pem"
+  openssl dsaparam -out "${dsap}" 2048
+  openssl gendsa -out "${CERT_DIR}/dsa_default.key" "${dsap}"
+  openssl req -new -x509 -key "${CERT_DIR}/dsa_default.key" \
+    -out "${CERT_DIR}/dsa_default.crt" -sha256 -days 365 -nodes \
+    -subj "${SUBJ_BASE}/OU=interop-dsa-default" \
+    "${SAN[@]}"
+  rm -f "${dsap}"
+}
+
 gen_rsa_default
 gen_rsa_pss_pure
 gen_ecdsa ecdsa_p256 prime256v1 interop-ecdsa-p256
@@ -64,6 +75,7 @@ gen_ecdsa ecdsa_p384 secp384r1 interop-ecdsa-p384
 gen_ecdsa ecdsa_p521 secp521r1 interop-ecdsa-p521
 gen_ed25519
 gen_ed448
+gen_dsa_default
 
 gen_dh2048() {
   local bundled="${ROOT}/src/wrappers/gnutls/dh2048.pem"
@@ -88,4 +100,4 @@ ln -sf ed25519.key "${CERT_DIR}/key_ed25519.pem"
 ln -sf ed448.crt "${CERT_DIR}/cert_ed448.pem"
 ln -sf ed448.key "${CERT_DIR}/key_ed448.pem"
 
-echo "Wrote identity bundles under ${CERT_DIR}/ (7 prefixes)"
+echo "Wrote identity bundles under ${CERT_DIR}/ (8 prefixes)"

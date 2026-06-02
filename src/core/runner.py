@@ -62,18 +62,29 @@ def _grpc_host_port(addr: str) -> tuple[str, int]:
 
 
 def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
-    """Create ``certs/{prefix}.crt`` bundles when missing (``scripts/gen_interop_certs.sh``)."""
+    """Create ``certs/{prefix}.crt`` bundles when any are missing."""
+    from core.identity import IDENTITY_PREFIXES
+
     cert_dir = repo / "certs"
-    marker = cert_dir / "rsa_default.crt"
-    if marker.is_file():
+    missing = [
+        prefix
+        for prefix in IDENTITY_PREFIXES
+        if not (cert_dir / f"{prefix}.crt").is_file()
+        or not (cert_dir / f"{prefix}.key").is_file()
+    ]
+    if not missing:
         return
     script = repo / "scripts" / "gen_interop_certs.sh"
     if not script.is_file():
         raise FileNotFoundError(
-            f"Missing {marker}; run scripts/gen_interop_certs.sh or create certs/ manually"
+            f"Missing certs/ bundles ({', '.join(missing)}); "
+            f"run scripts/gen_interop_certs.sh or create certs/ manually"
         )
     if verbose:
-        print(f"{YELLOW}[Local] Generating identity PEMs via {script}{RESET}")
+        print(
+            f"{YELLOW}[Local] Generating identity PEMs ({', '.join(missing)}) "
+            f"via {script}{RESET}"
+        )
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
 
 
