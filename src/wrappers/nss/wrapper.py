@@ -25,8 +25,8 @@ from core.catalog import (
     psk_material_from_capabilities,
 )
 from core.identity import (
-    repeated_config_tokens,
     identity_kind_from_signature_schemes,
+    repeated_config_tokens,
     server_trust_signature_schemes_tokens,
 )
 from wrappers.nss.nss_db import (
@@ -48,15 +48,27 @@ from wrappers.base import (
 CAPABILITIES = load_local_capabilities(__file__)
 
 
-def _nss_anon_dhe_argv(config) -> list[str]:
-    """``-H 1`` enables DHE for dh-anon-* when anonymous test feature is on."""
+def _nss_repo_root(nssdb_path: str) -> Path:
+    """Interop repo root (``NSSDB`` is ``<repo>/nssdb/<backend>``)."""
+    return Path(nssdb_path).resolve().parent.parent
+
+
+def _nss_anon_argv(config) -> list[str]:
+    """
+    Anonymous suites (``test_features: anonymous``).
+
+    ``-H 1`` enables DHE for ``dh-anon-*``; ``-H 2`` prefers RFC 7919 DH groups where needed.
+    """
     if not test_feature_enabled_in_config(config, "anonymous"):
         return []
     raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
     if not raw_cipher or not cipher_catalog_id_requires_anon(raw_cipher):
         return []
-    if not norm_catalog_token(raw_cipher).startswith("dh-anon"):
-        return []
+    key = norm_catalog_token(raw_cipher)
+    if key.startswith("dh-anon"):
+        return ["-H", "1"]
+    if key.startswith("ecdh-anon"):
+        return ["-H", "2"]
     return ["-H", "1"]
 
 
@@ -130,7 +142,7 @@ def _build_tls_argv(
             if parts:
                 argv.extend([csv_flag, ",".join(parts)])
 
-    argv.extend(_nss_anon_dhe_argv(config))
+    argv.extend(_nss_anon_argv(config))
     argv.extend(_nss_psk_z_argv(config, caps))
 
     return TranslationResult(tuple(argv), tuple(unsupported))
@@ -351,7 +363,11 @@ class NSSWrapper(BaseTemplateWrapper):
         with self._nss_db_lock:
             if self._nss_db_ready:
                 return
-            _ensure_nss_db_identities(self._nssdb, nss_interop_identity_import_rows())
+            repo = _nss_repo_root(self._nssdb)
+            _ensure_nss_db_identities(
+                self._nssdb,
+                nss_interop_identity_import_rows(repo=repo),
+            )
             self._nss_db_ready = True
 
     def _cleanup_nss_db(self) -> None:
@@ -409,6 +425,12 @@ class NSSWrapper(BaseTemplateWrapper):
     def _nss_tls_argv(self, config) -> list[str]:
         return list(_build_tls_argv(config).argv)
 
+    def _nss_repo(self) -> Path:
+        return _nss_repo_root(self._nssdb)
+
+    def _nss_server_nickname(self, config) -> str:
+        return nss_server_nickname_for_config(config, repo=self._nss_repo())
+
     def _skip_if_nss_eddsa_unsupported(self, config, *, server: bool) -> None:
         schemes = (
             server_trust_signature_schemes_tokens(config)
@@ -447,7 +469,7 @@ class NSSWrapper(BaseTemplateWrapper):
             "-d",
             self._db_spec(),
             "-n",
-            nss_server_nickname_for_config(config),
+            self._nss_server_nickname(config),
             "-p",
             str(inner_port),
             "-V",

@@ -8,7 +8,9 @@ from typing import Any
 
 from core.identity import (
     all_identity_import_rows,
+    cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_config,
+    identity_pem_present,
     nss_nickname_for_prefix,
     server_trust_signature_schemes_tokens,
 )
@@ -23,8 +25,20 @@ def nss_server_nickname_for_signature_schemes(schemes: Sequence[str]) -> str:
     return nss_nickname_for_prefix(get_cert_prefix_for_schemes(schemes))
 
 
-def nss_server_nickname_for_config(config: Any) -> str:
+def nss_server_nickname_for_config(
+    config: Any,
+    *,
+    repo: Path | None = None,
+) -> str:
     """``selfserv -n`` nickname from server ``signature_schemes`` / ``cipher_suite``."""
+    raw_cipher = str(getattr(config, "cipher_suite", None) or "").strip()
+    if cipher_catalog_id_uses_dsa_auth(raw_cipher):
+        if not identity_pem_present("dsa_default", repo=repo):
+            raise RuntimeError(
+                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
+                "(run scripts/gen_interop_certs.sh)"
+            )
+        return nss_nickname_for_prefix("dsa_default")
     return nss_nickname_for_prefix(get_cert_prefix_for_config(config))
 
 
