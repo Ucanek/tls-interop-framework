@@ -15,16 +15,6 @@ from typing import Any, Literal, Sequence
 
 TlsMode = Literal["1.2", "1.3"]
 
-TLS12_TOKENS = frozenset({"1.2", "1.2.0", "tls1.2", "tls1_2"})
-TLS13_TOKENS = frozenset({"1.3", "1.3.0", "tls1.3", "tls1_3"})
-
-# Driver metadata fallback when env cipher id is not in GetMetadata lists.
-FALLBACK_CIPHER_ID_TO_IANA: dict[str, str] = {
-    "aes-256-gcm": "TLS_AES_256_GCM_SHA384",
-    "aes-128-gcm": "TLS_AES_128_GCM_SHA256",
-    "chacha20-poly1305": "TLS_CHACHA20_POLY1305_SHA256",
-}
-
 # Static CLI options (choices for crypto dims come from capabilities union).
 STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
     {
@@ -57,10 +47,6 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
         "description": "Advertised TLS signature algorithms.",
     },
     {
-        "id": "alpn_protocols",
-        "description": "Application protocols for ALPN negotiation (e.g. h2, http/1.1).",
-    },
-    {
         "id": "test_features",
         "description": (
             "Credentials for special ciphers (psk, anonymous). "
@@ -89,7 +75,6 @@ OPTION_GROUPS: dict[str, str] = {
     "certificate_pem": "security",
     "private_key_pem": "security",
     "keylog_file": "debug",
-    "alpn_protocols": "debug",
     "test_features": "crypto",
 }
 
@@ -97,7 +82,7 @@ NON_TLS_OPTION_IDS: frozenset[str] = frozenset({"server_wrapper", "client_wrappe
 # Applied once per run (suite/CLI), not Cartesian-expanded with cipher_suite.
 NON_MATRIX_OPTION_IDS: frozenset[str] = frozenset({"test_features"})
 MULTI_VALUE_OPTION_IDS: frozenset[str] = frozenset(
-    {"supported_groups", "signature_schemes", "alpn_protocols", "test_features"}
+    {"supported_groups", "signature_schemes", "test_features"}
 )
 ASYMMETRIC_SCALAR_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "tls_version"})
 ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset(
@@ -219,7 +204,6 @@ def tls_argv_for_config(
 ) -> TranslationResult:
     """Delegate argv translation to ``wrappers.<backend>.wrapper.tls_argv_for_config``."""
     name = (backend or "").strip().lower()
-    _ensure_src_importable()
     mod = importlib.import_module(f"wrappers.{name}.wrapper")
     fn = getattr(mod, "tls_argv_for_config", None)
     if fn is None:
@@ -323,7 +307,6 @@ def wrapper_runtime_config(
 def load_wrapper_module(backend_name: str) -> Any:
     """Import ``wrappers.<backend>.wrapper`` (optional plugin hooks live there)."""
     name = (backend_name or "").strip().lower()
-    _ensure_src_importable()
     return importlib.import_module(f"wrappers.{name}.wrapper")
 
 
@@ -487,24 +470,6 @@ def load_capabilities_cache(
     return {wid: load_capabilities(wid, repo) for wid in wrapper_ids}
 
 
-def _merge_legacy_cipher_maps(caps: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
-    """Support deprecated top-level ``cipher_suite`` with nested tls13/tls12 values."""
-    m13: dict[str, str] = {}
-    m12: dict[str, str] = {}
-    legacy = caps.get("cipher_suite")
-    if not isinstance(legacy, dict):
-        return m13, m12
-    for key, val in legacy.items():
-        if isinstance(val, dict):
-            if val.get("tls13"):
-                m13[str(key)] = str(val["tls13"])
-            if val.get("tls12"):
-                m12[str(key)] = str(val["tls12"])
-        elif isinstance(val, str) and val.strip():
-            m13[str(key)] = val
-    return m13, m12
-
-
 def cipher_maps_from_capabilities(
     capabilities: dict[str, Any],
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -513,11 +478,6 @@ def cipher_maps_from_capabilities(
     t12 = capabilities.get("tls12") if isinstance(capabilities.get("tls12"), dict) else {}
     m13 = dict(t13.get("cipher_suite") or {}) if isinstance(t13.get("cipher_suite"), dict) else {}
     m12 = dict(t12.get("cipher_suite") or {}) if isinstance(t12.get("cipher_suite"), dict) else {}
-    leg13, leg12 = _merge_legacy_cipher_maps(capabilities)
-    for k, v in leg13.items():
-        m13.setdefault(k, v)
-    for k, v in leg12.items():
-        m12.setdefault(k, v)
     return (
         {str(k): str(v) for k, v in m13.items() if v},
         {str(k): str(v) for k, v in m12.items() if v},
@@ -667,6 +627,17 @@ def parse_asymmetric(val: str | None) -> tuple[str, str]:
     return v, v
 
 
+def asymmetric_role_part(val: str | None, *, server: bool) -> str:
+    """Server (left) or client (right) segment from a symmetric or ``server:client`` value."""
+    left, right = parse_asymmetric(val)
+    return left if server else right
+
+
+def split_csv_tokens(part: str) -> list[str]:
+    """Comma-separated catalog tokens (empty segments dropped)."""
+    return [p.strip() for p in (part or "").split(",") if p.strip()]
+
+
 def norm_token(s: str) -> str:
     return (s or "").strip().lower().replace("-", "").replace("_", "")
 
@@ -678,22 +649,16 @@ def norm_catalog_token(raw: str) -> str:
 def tls_mode_from_version(version: str | None) -> TlsMode:
     if not (version or "").strip():
         return "1.3"
-    v = version.strip().lower()
-    if v in TLS12_TOKENS:
-        return "1.2"
-    if v in TLS13_TOKENS:
+    folded = norm_token((version or "").replace(".", ""))
+    if "13" in folded:
         return "1.3"
-    upper = version.strip().upper().replace(" ", "")
-    if upper == "TLS1.2":
+    if "12" in folded:
         return "1.2"
-    if upper == "TLS1.3":
-        return "1.3"
     return "1.3"
 
 
 def tls_version_forces_12(tok: str) -> bool:
-    t = (tok or "").strip().lower().replace(" ", "").replace("_", "")
-    return t in ("1.2", "1.2.0", "tls1.2") or (tok or "").strip().upper() == "TLS1.2"
+    return tls_mode_from_version(tok) == "1.2"
 
 
 def tls_version_to_capability_name(version_str: str | None) -> str:
@@ -1044,14 +1009,9 @@ def _check_list_dim(
         raw = (cell.get(dim) or "").strip()
         if not raw:
             return None
-    raw = (cell.get(dim) or "").strip()
-    if not raw:
+    tokens = _split_cell_list_tokens(cell, dim, server=server)
+    if not tokens:
         return None
-    if ":" in raw:
-        part = raw.split(":", 1)[0 if server else 1].strip()
-        tokens = [p.strip() for p in part.split(",") if p.strip()]
-    else:
-        tokens = [p.strip() for p in raw.split(",") if p.strip()]
     for tok in tokens:
         if not backend_supports_token(caps, dim, tok, mode=mode):
             return f"{wrapper} lacks {dim}={tok!r}"
@@ -1067,14 +1027,7 @@ class Tls12CipherMetadata:
 
 
 def _split_cell_list_tokens(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
-    raw = (cell.get(field) or "").strip()
-    if not raw:
-        return []
-    if ":" in raw:
-        left, right = parse_asymmetric(raw)
-        part = left if server else right
-        return [p.strip() for p in part.split(",") if p.strip()]
-    return [p.strip() for p in raw.split(",") if p.strip()]
+    return split_csv_tokens(asymmetric_role_part(cell.get(field), server=server))
 
 
 def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
@@ -1259,32 +1212,6 @@ def psk_material_from_capabilities(
     return identity, secret_hex
 
 
-def nss_tls12_static_psk_skip_reason(
-    cell: dict[str, str],
-    *,
-    server: str,
-    client: str,
-    mode_srv: TlsMode,
-    mode_cli: TlsMode,
-) -> str | None:
-    """
-    NSS keeps TLS 1.2 PSK suite IDs in sslproto.h for API compat but does not
-    implement them in selfserv/tstclnt (SSL_ERROR_UNKNOWN_CIPHER_SUITE).
-    """
-    if "nss" not in (server, client):
-        return None
-    cid = _cell_cipher_id(cell, server=True) or _cell_cipher_id(cell, server=False)
-    if not cid or not cipher_catalog_id_requires_psk(cid):
-        return None
-    if mode_srv == "1.2" or mode_cli == "1.2":
-        return (
-            "NSS does not implement TLS 1.2 static PSK cipher suites "
-            f"({cid!r}); use tls_version: 1.3 with test_features: psk "
-            "(e.g. cipher_suite: aes-128-gcm)"
-        )
-    return None
-
-
 def _cell_test_feature_skip_reason(
     cell: dict[str, str],
     *,
@@ -1435,12 +1362,6 @@ def cell_capability_skip_reason(
     if id_skip:
         return id_skip
 
-    nss_psk_skip = nss_tls12_static_psk_skip_reason(
-        cell, server=server, client=client, mode_srv=mode_srv, mode_cli=mode_cli
-    )
-    if nss_psk_skip:
-        return nss_psk_skip
-
     for check in (
         _check_cipher_side(
             cell, server=True, wrapper=f"server ({server})", caps=srv_caps, mode=mode_srv
@@ -1584,13 +1505,7 @@ def run_args_tls_config_view(
         raw = getattr(args, field, None)
         if raw in (None, "", 0):
             return []
-        s = str(raw).strip()
-        if ":" in s:
-            left, right = s.split(":", 1)
-            part = left if server else right
-        else:
-            part = s
-        return [p.strip() for p in part.split(",") if p.strip()]
+        return split_csv_tokens(asymmetric_role_part(str(raw), server=server))
 
     version = pick_scalar("tls_version") or "1.3"
     return SimpleNamespace(
@@ -1598,7 +1513,6 @@ def run_args_tls_config_view(
         cipher_suite=pick_scalar("cipher_suite"),
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
-        alpn_protocols=pick_list("alpn_protocols"),
         psk_modes=sorted(
             parse_test_features_enabled(",".join(pick_list("test_features")))
         ),
@@ -1664,7 +1578,7 @@ def validate_run_args(
         if option_id in MULTI_VALUE_OPTION_IDS:
             raw = str(value).strip()
             if ":" in raw:
-                left_s, right_s = raw.split(":", 1)
+                left_s, right_s = parse_asymmetric(raw)
                 values = parse_csv_values(left_s, arg_name) + parse_csv_values(
                     right_s, arg_name
                 )
@@ -1678,16 +1592,6 @@ def validate_run_args(
                         f"{arg_name} unknown value(s): {', '.join(unknown)}. "
                         f"Known: {', '.join(tokens)}"
                     )
-            if option_id == "alpn_protocols":
-                alpn_re = re.compile(r"^[A-Za-z0-9._/+:-]{1,255}$")
-                invalid_alpn = sorted(x for x in values if not alpn_re.fullmatch(x))
-                if invalid_alpn:
-                    raise ValueError(
-                        "--alpn-protocols contains invalid token(s): "
-                        f"{', '.join(invalid_alpn)}"
-                    )
-            continue
-
         if not choices:
             continue
 

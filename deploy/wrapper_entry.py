@@ -28,10 +28,6 @@ def main() -> None:
     try:
         runpy.run_module(module, run_name="__main__", alter_sys=True)
     except ModuleNotFoundError:
-        legacy = os.path.join(_MAIN_DIR, f"wrapper_{raw}.py")
-        if os.path.isfile(legacy):
-            runpy.run_path(legacy, run_name="__main__")
-            return
         print(
             f"wrapper_entry: module not found for WRAPPER={raw!r}: {module}",
             file=sys.stderr,

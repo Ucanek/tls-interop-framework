@@ -3,112 +3,54 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from concurrent import futures
-import fcntl
 import os
-import re
-import shlex
 import socket
 import subprocess
 import time
-from typing import Any, Literal, Mapping, MutableMapping, Sequence, Tuple, Type
+from typing import Tuple
 
 import grpc
 from grpc import ServicerContext
 
-from core.catalog import catalog_parameter_conflicts, metadata_from_capabilities, tls_mode_from_version
-from core.identity import catalog_identity_pem_paths_for_config, repeated_config_tokens
+from core.catalog import catalog_parameter_conflicts
+from core.identity import catalog_identity_pem_paths_for_config
 from proto import interop_pb2
 from proto import interop_pb2_grpc
+from wrappers.utils import (
+    capability,
+    format_executed_command,
+    is_server_role,
+    parse_version_line,
+    popen_stdio_merged,
+    read_nonblocking_stdout,
+    run_cli_version,
+    serve_insecure,
+    split_asymmetric_csv,
+    standard_library_metadata,
+    test_feature_enabled_in_config,
+    tls_mode_12_or_13,
+)
 
 FAIL_LOG_TAIL: int = 600
 
-
-def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    """
-    Split comma-separated tokens per role on the first ``:`` in the raw string.
-
-    With no colon, both sides receive the same parsed list.
-    """
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return (
-            [p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()],
-        )
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
-
-
-def parse_version_line(out: str | None) -> str:
-    """Returns a compact version token from CLI stdout or stderr."""
-    text = (out or "").strip()
-    first_line = text.split("\n")[0].strip() if text else ""
-    match = re.search(r"\d+\.\d+(?:\.\d+)?", first_line)
-    return match.group(0) if match else (first_line[:40] if first_line else "unknown")
-
-
-TlsModeLiteral = Literal["1.2", "1.3"]
-
-
-def test_feature_enabled_in_config(config: Any, feature: str) -> bool:
-    """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
-    return feature.strip().lower() in repeated_config_tokens(config, "psk_modes")
-
-
-def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
-    """Maps ``TlsConfig.version`` to TLS 1.2 or TLS 1.3 mode."""
-    if config is None:
-        return "1.3"
-    return tls_mode_from_version(config.version)
-
-
-def is_server_role(role: Any | None) -> bool:
-    if role is None:
-        return True
-    try:
-        return int(role) == int(interop_pb2.SERVER)
-    except Exception:
-        return True
-
-
-def format_executed_command(
-    cmd: Sequence[object],
-    cwd: str | os.PathLike[str] | None = None,
-) -> str:
-    """Formats argv as a shell-safe log line."""
-    line = shlex.join(str(x) for x in cmd)
-    if cwd is not None:
-        return f"cwd={shlex.quote(os.path.abspath(os.fspath(cwd)))} {line}"
-    return line
-
-
-def _make_non_blocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-
-def popen_stdio_merged(
-    cmd: Sequence[object],
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
-) -> subprocess.Popen[bytes]:
-    """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
-    p = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.fspath(cwd) if cwd is not None else None,
-        env=dict(env) if env is not None else None,
-    )
-    if p.stdout:
-        _make_non_blocking(p.stdout.fileno())
-    return p
+__all__ = [
+    "BaseTemplateWrapper",
+    "FAIL_LOG_TAIL",
+    "WrapperRuntimeError",
+    "WrapperSetupError",
+    "WrapperSkipError",
+    "capability",
+    "format_executed_command",
+    "is_server_role",
+    "parse_version_line",
+    "popen_stdio_merged",
+    "serve_insecure",
+    "split_asymmetric_csv",
+    "standard_library_metadata",
+    "test_feature_enabled_in_config",
+    "tls_mode_12_or_13",
+    "wait_tcp_connect",
+]
 
 
 class WrapperSetupError(Exception):
@@ -125,72 +67,6 @@ class WrapperSkipError(Exception):
 
 def _exc_message(phase: str, exc: BaseException) -> str:
     return f"[{phase}] {type(exc).__name__}: {exc}"
-
-
-def capability(
-    name: str,
-    *flags: interop_pb2.ModifyFlag.ValueType,
-) -> interop_pb2.Capability:
-    return interop_pb2.Capability(name=name, flags=list(flags))
-
-
-def standard_library_metadata(
-    component_name: str,
-    version: str,
-    *,
-    capabilities: dict | None = None,
-) -> interop_pb2.LibraryMetadata:
-    """Returns capability matrix from ``capabilities.json`` when provided."""
-    cap = capability
-    r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
-    s = interop_pb2.SET
-    version_caps: list[tuple[str, bool]] = []
-    cipher_caps: list[str] = []
-    group_caps: list[str] = []
-    try:
-        if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
-                capabilities, component_name=component_name
-            )
-    except Exception:
-        pass
-    version_caps_msg = [
-        cap(name, r, s, n) if can_set else cap(name, r, n)
-        for name, can_set in version_caps
-    ]
-    return interop_pb2.LibraryMetadata(
-        component_name=component_name,
-        version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-        supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps],
-        groups=[cap(name, r, n) for name in group_caps],
-    )
-
-
-def run_cli_version(argv: list[str], timeout: float = 5) -> str:
-    """Runs a ``--version``-style command and returns a short version string."""
-    try:
-        r = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-        if r.returncode == 0:
-            return parse_version_line(r.stdout or r.stderr)
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return "unknown"
-
-
-def serve_insecure(
-    wrapper_cls: Type[BaseTemplateWrapper],
-    display_name: str,
-) -> None:
-    """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
-    port = int(os.environ.get("GRPC_PORT", "50051"))
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
-    server.add_insecure_port(f"0.0.0.0:{port}")
-    server.start()
-    print(f"{display_name} wrapper listening on {port}...")
-    server.wait_for_termination()
 
 
 class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
@@ -392,6 +268,26 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             data = b"POST / HTTP/1.0\r\n\r\n" + data
         return data
 
+    def _transmit_read_timeout_seconds(
+        self,
+        *,
+        role: int,
+        server_poll: bool,
+    ) -> float:
+        """Hook: max time to collect TRANSMIT response bytes from merged stdout."""
+        if server_poll and role == interop_pb2.SERVER:
+            return self._transmit_server_read_timeout_seconds()
+        return self._transmit_client_read_timeout_seconds()
+
+    def _transmit_client_read_timeout_seconds(self) -> float:
+        return 1.0
+
+    def _transmit_server_read_timeout_seconds(self) -> float:
+        return 2.5
+
+    def _transmit_post_write_pause_seconds(self) -> float:
+        return 0.5
+
     def _read_transmit_stdout(
         self,
         proc: subprocess.Popen[bytes],
@@ -399,24 +295,10 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         *,
         server_poll: bool = False,
     ) -> bytes:
-        try:
-            if server_poll and role == interop_pb2.SERVER:
-                time.sleep(0.8)
-                out_data = b""
-                for _ in range(25):
-                    try:
-                        chunk = proc.stdout.read() if proc.stdout else None
-                        if chunk:
-                            out_data += chunk
-                    except (BlockingIOError, OSError):
-                        pass
-                    time.sleep(0.1)
-                return out_data
-            if proc.stdout is None:
-                return b""
-            return proc.stdout.read() or b""
-        except OSError:
-            return b""
+        timeout_s = self._transmit_read_timeout_seconds(
+            role=role, server_poll=server_poll
+        )
+        return read_nonblocking_stdout(proc, timeout_s=timeout_s)
 
     def _post_establish_pause_seconds(self) -> float:
         return 1.0
@@ -432,6 +314,20 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 except OSError:
                     pass
             self._used_ephemeral_pem = False
+
+    def _release_server_aux(self) -> None:
+        """Hook: release server-side proxy/aux processes without touching the client role."""
+
+    def _release_server_before_establish(self) -> None:
+        """Stop a prior server ESTABLISH only (same wrapper may still run the client)."""
+        self._terminate_process_hard(self.server_proc)
+        self.server_proc = None
+        self._release_server_aux()
+
+    def _release_client_before_establish(self) -> None:
+        """Stop a prior client ESTABLISH only (leave an active server intact)."""
+        self._terminate_process_hard(self.client_proc)
+        self.client_proc = None
 
     def _server_listen_host(self, config: interop_pb2.TlsConfig) -> str:
         return "127.0.0.1"
@@ -498,6 +394,134 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             named_group=ng,
         )
 
+    def _handle_establish(
+        self,
+        request: interop_pb2.OperationRequest,
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        if request.role == interop_pb2.SERVER:
+            self._release_server_before_establish()
+        else:
+            self._release_client_before_establish()
+        self._validate_config_supported(request.config, role=request.role)
+        status = interop_pb2.OperationResponse.SUCCESS
+        msg = ""
+        logs = ""
+        negotiated: interop_pb2.NegotiatedTlsParameters | None = None
+
+        if request.role == interop_pb2.SERVER:
+            proc, logs, msg = self._start_server(request.config)
+            self.server_proc = proc
+            if proc is None:
+                raise WrapperSetupError("server subprocess was not started")
+            if proc.poll() is not None:
+                raise WrapperSetupError(
+                    self._tail_merged_output(proc) or "server process exited immediately"
+                )
+            port = int(getattr(request.config, "port", None) or 0)
+            if port <= 0:
+                raise WrapperSetupError(
+                    "TlsConfig.port is missing or invalid for server ESTABLISH"
+                )
+            ok_listen, tcp_err = type(self).wait_tcp_connect(
+                self._server_listen_host(request.config),
+                port,
+                timeout_s=self._server_tcp_ready_timeout_seconds(),
+                proc=proc,
+            )
+            if not ok_listen:
+                detail = self._tail_merged_output(proc)
+                raise WrapperRuntimeError(
+                    f"server did not listen on port {port} ({tcp_err})"
+                    + (f" | {detail}" if detail else "")
+                )
+            self._sleep_after_tcp_ready()
+            negotiated = self._build_negotiated(self.server_proc)
+        else:
+            proc, logs, msg = self._start_client(request.config)
+            self.client_proc = proc
+            if proc is None:
+                raise WrapperSetupError("client subprocess was not started")
+            port = int(getattr(request.config, "port", None) or 0)
+            if port <= 0:
+                raise WrapperSetupError(
+                    "TlsConfig.port is missing or invalid for client ESTABLISH"
+                )
+            if proc.poll() is not None:
+                status = interop_pb2.OperationResponse.FAILURE
+                msg = self._format_client_connect_failure(self.client_proc)
+            else:
+                host = self._client_peer_host(request.config)
+                ok_peer, tcp_err = type(self).wait_tcp_connect(
+                    host,
+                    port,
+                    timeout_s=self._client_tcp_ready_timeout_seconds(),
+                    proc=proc,
+                )
+                if not ok_peer:
+                    detail = self._tail_merged_output(proc)
+                    raise WrapperRuntimeError(
+                        f"no TCP route to peer {host}:{port} ({tcp_err})"
+                        + (f" | {detail}" if detail else "")
+                    )
+                self._sleep_after_tcp_ready()
+                if self.client_proc and self.client_proc.poll() is not None:
+                    status = interop_pb2.OperationResponse.FAILURE
+                    msg = self._format_client_connect_failure(self.client_proc)
+                else:
+                    negotiated = self._build_negotiated(self.client_proc)
+
+        return status, msg, logs, b"", negotiated
+
+    def _handle_transmit(
+        self,
+        request: interop_pb2.OperationRequest,
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        status = interop_pb2.OperationResponse.SUCCESS
+        msg = ""
+        logs = ""
+        out_data = b""
+        target = (
+            self.server_proc if request.role == interop_pb2.SERVER else self.client_proc
+        )
+        if not target:
+            status = interop_pb2.OperationResponse.FAILURE
+            msg = "[TRANSMIT] Process not found (ESTABLISH missing?)"
+        elif target.poll() is not None:
+            status = interop_pb2.OperationResponse.FAILURE
+            msg = "[TRANSMIT] Process already exited"
+        else:
+            if request.payload:
+                data = self._transmit_payload_bytes(request.payload, request.role)
+                try:
+                    if target.stdin:
+                        target.stdin.write(data)
+                        target.stdin.flush()
+                    pause = self._transmit_post_write_pause_seconds()
+                    if pause > 0:
+                        time.sleep(pause)
+                except BrokenPipeError:
+                    status = interop_pb2.OperationResponse.ERROR
+                    msg = "[TRANSMIT] Broken pipe (process may have exited)"
+            if status == interop_pb2.OperationResponse.SUCCESS:
+                server_poll = (
+                    request.role == interop_pb2.SERVER
+                    and self._server_transmit_poll()
+                )
+                out_data = self._read_transmit_stdout(
+                    target,
+                    request.role,
+                    server_poll=server_poll,
+                )
+        return status, msg, logs, out_data, None
+
+    def _handle_close(
+        self,
+        request: interop_pb2.OperationRequest,
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        del request
+        self._cleanup()
+        return interop_pb2.OperationResponse.SUCCESS, "Cleanup successful", "", b"", None
+
     def ExecuteOperation(
         self,
         request: interop_pb2.OperationRequest,
@@ -511,102 +535,11 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
         try:
             if request.type == interop_pb2.OperationRequest.ESTABLISH:
-                self._validate_config_supported(request.config, role=request.role)
-                if request.role == interop_pb2.SERVER:
-                    proc, logs, msg = self._start_server(request.config)
-                    self.server_proc = proc
-                    if proc is None:
-                        raise WrapperSetupError("server subprocess was not started")
-                    if proc.poll() is not None:
-                        raise WrapperSetupError(
-                            self._tail_merged_output(proc) or "server process exited immediately"
-                        )
-                    port = int(getattr(request.config, "port", None) or 0)
-                    if port <= 0:
-                        raise WrapperSetupError(
-                            "TlsConfig.port is missing or invalid for server ESTABLISH"
-                        )
-                    ok_listen, tcp_err = type(self).wait_tcp_connect(
-                        self._server_listen_host(request.config),
-                        port,
-                        timeout_s=self._server_tcp_ready_timeout_seconds(),
-                        proc=proc,
-                    )
-                    if not ok_listen:
-                        detail = self._tail_merged_output(proc)
-                        raise WrapperRuntimeError(
-                            f"server did not listen on port {port} ({tcp_err})"
-                            + (f" | {detail}" if detail else "")
-                        )
-                    self._sleep_after_tcp_ready()
-                    negotiated = self._build_negotiated(self.server_proc)
-                else:
-                    proc, logs, msg = self._start_client(request.config)
-                    self.client_proc = proc
-                    if proc is None:
-                        raise WrapperSetupError("client subprocess was not started")
-                    port = int(getattr(request.config, "port", None) or 0)
-                    if port <= 0:
-                        raise WrapperSetupError(
-                            "TlsConfig.port is missing or invalid for client ESTABLISH"
-                        )
-                    if proc.poll() is not None:
-                        status = interop_pb2.OperationResponse.FAILURE
-                        msg = self._format_client_connect_failure(self.client_proc)
-                    else:
-                        host = self._client_peer_host(request.config)
-                        ok_peer, tcp_err = type(self).wait_tcp_connect(
-                            host,
-                            port,
-                            timeout_s=self._client_tcp_ready_timeout_seconds(),
-                            proc=proc,
-                        )
-                        if not ok_peer:
-                            detail = self._tail_merged_output(proc)
-                            raise WrapperRuntimeError(
-                                f"no TCP route to peer {host}:{port} ({tcp_err})"
-                                + (f" | {detail}" if detail else "")
-                            )
-                        self._sleep_after_tcp_ready()
-                        if self.client_proc and self.client_proc.poll() is not None:
-                            status = interop_pb2.OperationResponse.FAILURE
-                            msg = self._format_client_connect_failure(self.client_proc)
-                        else:
-                            negotiated = self._build_negotiated(self.client_proc)
-
+                status, msg, logs, out_data, negotiated = self._handle_establish(request)
             elif request.type == interop_pb2.OperationRequest.TRANSMIT:
-                target = self.server_proc if request.role == interop_pb2.SERVER else self.client_proc
-                if not target:
-                    status = interop_pb2.OperationResponse.FAILURE
-                    msg = "[TRANSMIT] Process not found (ESTABLISH missing?)"
-                elif target.poll() is not None:
-                    status = interop_pb2.OperationResponse.FAILURE
-                    msg = "[TRANSMIT] Process already exited"
-                else:
-                    if request.payload:
-                        data = self._transmit_payload_bytes(request.payload, request.role)
-                        try:
-                            if target.stdin:
-                                target.stdin.write(data)
-                                target.stdin.flush()
-                            time.sleep(0.5)
-                        except BrokenPipeError:
-                            status = interop_pb2.OperationResponse.ERROR
-                            msg = "[TRANSMIT] Broken pipe (process may have exited)"
-                    if status == interop_pb2.OperationResponse.SUCCESS:
-                        out_data = self._read_transmit_stdout(
-                            target,
-                            request.role,
-                            server_poll=(
-                                request.role == interop_pb2.SERVER
-                                and self._server_transmit_poll()
-                            ),
-                        )
-
+                status, msg, logs, out_data, negotiated = self._handle_transmit(request)
             elif request.type == interop_pb2.OperationRequest.CLOSE:
-                self._cleanup()
-                msg = "Cleanup successful"
-
+                status, msg, logs, out_data, negotiated = self._handle_close(request)
             else:
                 status = interop_pb2.OperationResponse.ERROR
                 msg = f"Unsupported OpType: {request.type}"

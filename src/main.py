@@ -21,12 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from core.catalog import (
-    ASYMMETRIC_HELP_OPTION_IDS,
-    OPTION_GROUPS,
     cell_capability_skip_reason,
     discover_wrapper_ids,
     ensure_import_paths,
-    load_options_catalog,
     matrix_axis_plan,
     normalize_cell_tls_micro_params,
     print_catalog_options,
@@ -37,6 +34,7 @@ from core.catalog import (
 ensure_import_paths()
 from core.runner import (
     EXIT_SKIP,
+    BaseExecutionSession,
     PersistentComposeSession,
     PersistentLocalSession,
     ensure_interop_certs,
@@ -44,8 +42,10 @@ from core.runner import (
     run_matrix_cell_grpc,
 )
 
-# Already registered explicitly in ``build_parser`` (not from capabilities catalog loop).
-_PREDEFINED_CLI_OPTION_IDS = frozenset({"tls_port"})
+GREEN = "\033[92m"
+RED = "\033[91m"
+YELLOW = "\033[93m"
+RESET = "\033[0m"
 
 # With ``--suite``, these must not appear on the command line (values come from YAML).
 _SUITE_MATRIX_CLI: dict[str, str] = {
@@ -57,28 +57,24 @@ _SUITE_MATRIX_CLI: dict[str, str] = {
     "test_features": "--test-features",
 }
 
-_GREEN = "\033[92m"
-_YELLOW = "\033[93m"
-_RED = "\033[91m"
-_RESET = "\033[0m"
-
-
 def _status_for_rc(rc: int) -> tuple[str, str]:
     """Human label and optional ANSI SGR prefix for stdout (TTY only)."""
     if rc == 0:
-        return "OK", _GREEN
+        return "OK", GREEN
     if rc == EXIT_SKIP:
-        return "SKIP", _YELLOW
-    return "FAIL", _RED
+        return "SKIP", YELLOW
+    return "FAIL", RED
 
 
-def build_parser(repo: Path) -> argparse.ArgumentParser:
+def build_parser(_repo: Path) -> argparse.ArgumentParser:
+    _asym = " Use 'SERVER:CLIENT' for asymmetric configuration."
+    _matrix = " Matrix: comma list, ALL, or ALL\\token,token to exclude."
     parser = argparse.ArgumentParser(
         description=(
             "TLS interop runner: starts backend wrappers via Docker Compose (default) or "
-            "--local host subprocesses, then drives tests over gRPC. CLI choices are the "
-            "union of all wrapper capabilities.json files. Use comma lists, ALL, or ALL\\ "
-            "exclusions on --server/--client and choice-backed options for a Cartesian matrix."
+            "--local host subprocesses, then drives tests over gRPC. Use comma lists, ALL, "
+            "or ALL\\ exclusions on --server/--client and matrix TLS options for a Cartesian "
+            "matrix."
         )
     )
     groups = {
@@ -95,7 +91,7 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
             "Security & PKI", "Trust, hostname, and optional inline PEM material."
         ),
         "debug": parser.add_argument_group(
-            "Debug / internals", "Diagnostic knobs (e.g. ALPN, key log)."
+            "Debug / internals", "Diagnostic knobs (e.g. key log)."
         ),
     }
 
@@ -159,36 +155,73 @@ def build_parser(repo: Path) -> argparse.ArgumentParser:
         ),
     )
 
-    for item in sorted(load_options_catalog(repo), key=lambda x: str(x.get("id", ""))):
-        option_id = item["id"]
-        if not isinstance(option_id, str):
-            continue
-        if option_id in _PREDEFINED_CLI_OPTION_IDS:
-            continue
-        gname = OPTION_GROUPS.get(option_id)
-        if not gname:
-            raise ValueError(
-                f"Option id {option_id!r} has no argparse group in OPTION_GROUPS"
-            )
-        cli_name = f"--{option_id.replace('_', '-')}"
-        desc = (item.get("description") or "").strip()
-        asym = (
-            " Use 'SERVER:CLIENT' for asymmetric configuration."
-            if option_id in ASYMMETRIC_HELP_OPTION_IDS
-            else ""
-        )
-        matrix_hint = ""
-        ch = item.get("choices") or []
-        if isinstance(ch, list) and ch:
-            matrix_hint = " Matrix: comma list, ALL, or ALL\\token,token to exclude."
-        help_text = (desc + asym + matrix_hint).strip() or (
-            f"Forwarded to INTEROP_{option_id.upper()} for the driver."
-        )
-        groups[gname].add_argument(
-            cli_name,
-            default="",
-            help=help_text,
-        )
+    groups["crypto"].add_argument(
+        "--cipher-suite",
+        default="",
+        help=(
+            "Cipher suite catalog id (per-backend mapping in capabilities.json)."
+            + _asym
+            + _matrix
+        ),
+    )
+    groups["protocol"].add_argument(
+        "--tls-version",
+        default="",
+        help=(
+            "TLS protocol version for the endpoint (TlsConfig.version)."
+            + _asym
+            + _matrix
+        ),
+    )
+    groups["crypto"].add_argument(
+        "--supported-groups",
+        default="",
+        help=(
+            "Advertised/allowed key exchange groups (supported_groups extension)."
+            + _asym
+            + _matrix
+        ),
+    )
+    groups["crypto"].add_argument(
+        "--signature-schemes",
+        default="",
+        help=(
+            "Advertised TLS signature algorithms."
+            + _asym
+            + _matrix
+        ),
+    )
+    groups["crypto"].add_argument(
+        "--test-features",
+        default="",
+        help=(
+            "Credentials for special ciphers (psk, anonymous). "
+            "cipher_suite ALL includes PSK/anon suites; without enabling a feature here, "
+            "those cells are pre-SKIP (Feature disabled). "
+            "Set test_features: psk,anonymous (or YAML map with true values) to run them."
+            + _matrix
+        ),
+    )
+    groups["security"].add_argument(
+        "--ca-file",
+        default="",
+        help="Path/identifier for trusted CA bundle file.",
+    )
+    groups["security"].add_argument(
+        "--certificate-pem",
+        default="",
+        help="PEM certificate bytes provided to endpoint identity config.",
+    )
+    groups["security"].add_argument(
+        "--private-key-pem",
+        default="",
+        help="PEM private key bytes paired with certificate_pem.",
+    )
+    groups["debug"].add_argument(
+        "--keylog-file",
+        default="",
+        help="NSS/SSLKEYLOGFILE-compatible key log output path.",
+    )
     return parser
 
 
@@ -301,7 +334,7 @@ def _run_matrix_cell(
     args_template: argparse.Namespace,
     repo: Path,
     known: frozenset[str],
-    session: PersistentComposeSession | PersistentLocalSession | None,
+    session: BaseExecutionSession | None,
 ) -> tuple[str, int]:
     cell = {k: str(v) for k, v in zip(axis_keys, tup)}
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
@@ -392,7 +425,7 @@ def main() -> int:
                 for t in combos
             ]
         else:
-            session: PersistentComposeSession | PersistentLocalSession | None = None
+            session: BaseExecutionSession | None = None
             results: list[tuple[str, int]] = []
             try:
                 if backends:
@@ -434,7 +467,7 @@ def main() -> int:
         for label, rc in results:
             text, color = _status_for_rc(rc)
             if use_color:
-                print(f"{label} | {color}{text}{_RESET}")
+                print(f"{label} | {color}{text}{RESET}")
             else:
                 print(f"{label} | {text}")
         if any(rc not in (0, EXIT_SKIP) for _, rc in results):

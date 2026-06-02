@@ -22,15 +22,6 @@ IDENTITY_PREFIXES: tuple[str, ...] = (
 
 _DEFAULT_PREFIX = "rsa_default"
 
-# Legacy kind → default prefix (NSS / coarse fallbacks).
-_KIND_TO_PREFIX: dict[str, str] = {
-    "rsa": "rsa_default",
-    "dsa": "dsa_default",
-    "ecdsa": "ecdsa_p256",
-    "ed25519": "ed25519",
-    "ed448": "ed448",
-}
-
 
 def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
     """True for ``dhe-dss-*``, ``dh-dss-*``, … (not ECDSA)."""
@@ -119,11 +110,6 @@ def get_cert_prefix_for_config(config: Any) -> str:
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
     return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
-
-
-def nss_nickname_for_prefix(prefix: str) -> str:
-    p = (prefix or "").strip() or _DEFAULT_PREFIX
-    return f"interop_{p}"
 
 
 def interop_certs_dir(repo: Path | None = None) -> Path:
@@ -227,21 +213,12 @@ def resolve_identity_kind(config: Any) -> str:
     ) or "rsa"
 
 
-def catalog_identity_pem_paths_for_kind(kind: str) -> tuple[str, str]:
-    prefix = _KIND_TO_PREFIX.get(kind, _DEFAULT_PREFIX)
-    return catalog_identity_pem_paths_for_prefix(prefix)
-
-
-def catalog_identity_pem_paths(schemes: Sequence[str]) -> tuple[str, str]:
-    return catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_schemes(schemes))
-
-
 def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
     return catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
 
 
 def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
-    cert, _ = catalog_identity_pem_paths(schemes)
+    cert, _ = catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_schemes(schemes))
     return cert
 
 
@@ -261,16 +238,3 @@ def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
         left, _ = _split_asymmetric_csv(gsig)
         return left
     return repeated_config_tokens(config, "signature_schemes")
-
-
-def all_identity_import_rows(
-    *,
-    repo: Path | None = None,
-) -> list[tuple[str, str, str]]:
-    """``(nss_nickname, cert_path, key_path)`` for every generated prefix."""
-    rows: list[tuple[str, str, str]] = []
-    for prefix in IDENTITY_PREFIXES:
-        cert, key = catalog_identity_pem_paths_for_prefix(prefix, repo=repo)
-        if cert and key:
-            rows.append((nss_nickname_for_prefix(prefix), cert, key))
-    return rows

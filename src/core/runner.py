@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-import argparse
 import os
+from abc import ABC, abstractmethod
 import re
 import shutil
 import signal
 import subprocess
 import sys
-import threading
 import time
 from pathlib import Path
-from typing import Any, Literal, Mapping, TypeAlias
+from typing import Any, Mapping
 
 import grpc
 
 from core.catalog import (
-    FALLBACK_CIPHER_ID_TO_IANA,
     backend_grpc_addr,
     backend_tls_endpoint,
     cell_capability_skip_reason,
@@ -48,7 +46,6 @@ GREEN = "\033[92m"
 RED = "\033[91m"
 YELLOW = "\033[93m"
 RESET = "\033[0m"
-
 
 _DEFAULT_GRPC_STARTUP_S = 90.0
 _GRPC_STARTUP_POLL_S = 0.4
@@ -194,7 +191,33 @@ def _compose_base_cmd(
     ]
 
 
-class PersistentComposeSession:
+class BaseExecutionSession(ABC):
+    """Shared lifecycle for persistent Compose or local wrapper sessions."""
+
+    repo: Path
+    backends: list[str]
+    verbose: bool
+    local_mode: bool
+    metadata: dict[str, interop_pb2.LibraryMetadata]
+
+    @abstractmethod
+    def start(self) -> None:
+        """Start backends and wait until gRPC (and metadata) are ready."""
+
+    @abstractmethod
+    def stop(self) -> None:
+        """Tear down backends and release resources."""
+
+    @abstractmethod
+    def grpc_addr(self, backend: str) -> str:
+        """Host:port for ``TlsInteropWrapper`` gRPC on this backend."""
+
+    @abstractmethod
+    def tls_endpoint(self, backend: str) -> tuple[str, int]:
+        """Host TCP coordinates for post-ESTABLISH connectivity checks."""
+
+
+class PersistentComposeSession(BaseExecutionSession):
     """Start selected backend containers once; matrix loop uses gRPC only."""
 
     local_mode = False
@@ -317,7 +340,7 @@ class PersistentComposeSession:
         self.down()
 
 
-class PersistentLocalSession:
+class PersistentLocalSession(BaseExecutionSession):
     """Start wrapper gRPC services as host subprocesses (no Docker)."""
 
     local_mode = True
@@ -570,7 +593,6 @@ def tls_config_from_cell(
     cfg.signature_schemes.extend(
         _pick_cell_list(cell, "signature_schemes", server=server)
     )
-    cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn_protocols", server=server))
     from core.catalog import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
@@ -583,7 +605,7 @@ def tls_config_from_cell(
 
 def run_matrix_cell_grpc(
     cell: dict[str, str],
-    session: PersistentComposeSession | PersistentLocalSession,
+    session: BaseExecutionSession,
     *,
     verbose: bool,
 ) -> int:
@@ -595,42 +617,7 @@ def run_matrix_cell_grpc(
     repo = session.repo
     server_conf = tls_config_from_cell(cell, interop_pb2.SERVER, repo=repo)
     client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT, repo=repo)
-    local_mode = bool(getattr(session, "local_mode", False))
-    srv_schemes = _server_signature_schemes_from_cell(cell)
-    prev_srv_sig = os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES")
-    if srv_schemes:
-        os.environ["INTEROP_SERVER_SIGNATURE_SCHEMES"] = ",".join(srv_schemes)
-    try:
-        return _run_matrix_cell_grpc_body(
-            cell,
-            session,
-            server=server,
-            client=client,
-            server_conf=server_conf,
-            client_conf=client_conf,
-            local_mode=local_mode,
-            verbose=verbose,
-        )
-    finally:
-        if srv_schemes:
-            if prev_srv_sig is None:
-                os.environ.pop("INTEROP_SERVER_SIGNATURE_SCHEMES", None)
-            else:
-                os.environ["INTEROP_SERVER_SIGNATURE_SCHEMES"] = prev_srv_sig
-
-
-def _run_matrix_cell_grpc_body(
-    cell: dict[str, str],
-    session: PersistentComposeSession | PersistentLocalSession,
-    *,
-    server: str,
-    client: str,
-    server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig,
-    local_mode: bool,
-    verbose: bool,
-) -> int:
-    """Inner matrix cell run (after env + TlsConfig are prepared)."""
+    local_mode = session.local_mode
     tcp_host, tcp_port = apply_matrix_tls_endpoints(
         server,
         client,
@@ -669,20 +656,12 @@ def _run_matrix_cell_grpc_body(
 
     driver._last_skip_reason = None
     driver._last_failure = None
-    spinner: _QuietSpinner | None = None
-    if not verbose and sys.stderr.isatty():
-        spinner = _QuietSpinner()
-        spinner.start()
-    try:
-        ok = driver.run_test_with_configs(
-            server_conf,
-            client_conf,
-            tcp_host=tcp_host,
-            tcp_port=tcp_port,
-        )
-    finally:
-        if spinner:
-            spinner.stop()
+    ok = driver.run_test_with_configs(
+        server_conf,
+        client_conf,
+        tcp_host=tcp_host,
+        tcp_port=tcp_port,
+    )
 
     if driver._last_skip_reason:
         if verbose:
@@ -708,122 +687,7 @@ FAILURE = interop_pb2.OperationResponse.FAILURE
 
 _TCP_AFTER_ESTABLISH_S = 20.0
 _TRANSMIT_GAP_S = 1.0
-_DEFAULT_GRPC_WAIT_S = 180.0
 _TEST_PAYLOAD = b"INTEROP_SECRET_TOKEN"
-
-# --- TlsConfig from INTEROP_* (catalog ids ↔ capabilities.json keys)
-_FieldKind: TypeAlias = Literal["str", "bool", "int", "list", "bytes"]
-
-_TLS_ENV_FIELDS: dict[str, tuple[str, _FieldKind]] = {
-    "tls_version": ("version", "str"),
-    "cipher_suite": ("cipher_suite", "str"),
-    "tls_port": ("port", "int"),
-    "certificate_pem": ("certificate", "bytes"),
-    "private_key_pem": ("private_key", "bytes"),
-    "ca_file": ("ca_file", "str"),
-    "keylog_file": ("keylog_file", "str"),
-    "supported_groups": ("supported_groups", "list"),
-    "signature_schemes": ("signature_schemes", "list"),
-    "alpn_protocols": ("alpn_protocols", "list"),
-}
-
-
-def _interop_env_raw(option_id: str) -> str:
-    return (os.environ.get(f"INTEROP_{option_id.upper()}", "") or "").strip()
-
-
-def _parse_tls_bool(raw: str) -> bool:
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-def _load_tls_pem_bytes(raw: str) -> bytes:
-    if not raw:
-        return b""
-    if os.path.isfile(raw):
-        with open(raw, "rb") as f:
-            return f.read()
-    return raw.encode("utf-8")
-
-
-_ASYM_LIST_FIELDS = frozenset({"supported_groups", "signature_schemes"})
-_ASYM_STR_FIELDS = frozenset({"cipher_suite", "version"})
-
-
-def _apply_tls_env_field(
-    cfg: interop_pb2.TlsConfig, field: str, kind: _FieldKind, raw: str
-) -> None:
-    if kind == "str":
-        if field in _ASYM_STR_FIELDS and ":" in raw:
-            left, _ = parse_asymmetric(raw)
-            setattr(cfg, field, left)
-        else:
-            setattr(cfg, field, raw)
-    elif kind == "bool":
-        setattr(cfg, field, _parse_tls_bool(raw))
-    elif kind == "int":
-        setattr(cfg, field, int(raw))
-    elif kind == "list":
-        if field in _ASYM_LIST_FIELDS and ":" in raw:
-            left, _ = split_asymmetric_csv(raw)
-            getattr(cfg, field).extend(left)
-        else:
-            getattr(cfg, field).extend([p.strip() for p in raw.split(",") if p.strip()])
-    else:
-        setattr(cfg, field, _load_tls_pem_bytes(raw))
-
-
-def tls_config_from_env() -> interop_pb2.TlsConfig:
-    """Loads ``TlsConfig`` from ``INTEROP_*`` environment variables."""
-    cfg = interop_pb2.TlsConfig()
-    for oid, (field, kind) in _TLS_ENV_FIELDS.items():
-        raw = _interop_env_raw(oid)
-        if not raw:
-            continue
-        _apply_tls_env_field(cfg, field, kind, raw)
-    if not cfg.version.strip():
-        cfg.version = "1.3"
-    if cfg.port <= 0:
-        cfg.port = 5555
-    return cfg
-
-
-def _role_config(base: interop_pb2.TlsConfig, role: int) -> interop_pb2.TlsConfig:
-    cfg = interop_pb2.TlsConfig()
-    cfg.CopyFrom(base)
-    server = role == interop_pb2.SERVER
-
-    def pick_env_str(option_id: str, field: str) -> None:
-        raw = _interop_env_raw(option_id)
-        if not raw:
-            return
-        left, right = parse_asymmetric(raw)
-        setattr(cfg, field, left if server else right)
-
-    def pick_env_list(option_id: str, field: str) -> None:
-        raw = _interop_env_raw(option_id)
-        if not raw:
-            return
-        left, right = split_asymmetric_csv(raw)
-        parts = left if server else right
-        seq = getattr(cfg, field)
-        del seq[:]
-        seq.extend(parts)
-
-    pick_env_str("tls_version", "version")
-    pick_env_str("cipher_suite", "cipher_suite")
-    pick_env_list("supported_groups", "supported_groups")
-    pick_env_list("signature_schemes", "signature_schemes")
-
-    if not (cfg.version or "").strip():
-        cfg.version = "1.3"
-    return cfg
-
-
-def _fill_tls_hostname_and_port(conf: interop_pb2.TlsConfig, tls_hostname: str) -> None:
-    if not (conf.server_hostname or "").strip():
-        conf.server_hostname = (tls_hostname or "localhost").strip() or "localhost"
-    if conf.port <= 0:
-        conf.port = 5555
 
 
 def _wait_grpc_channel_ready(address: str, *, deadline: float, verbose: bool) -> bool:
@@ -845,87 +709,12 @@ def _wait_grpc_channel_ready(address: str, *, deadline: float, verbose: bool) ->
             pass
 
 
-def _wait_grpc_peers(
-    server_grpc: str,
-    client_grpc: str,
-    *,
-    timeout_s: float,
-    verbose: bool,
-) -> None:
-    deadline = time.monotonic() + timeout_s
-    if verbose:
-        print(
-            f"{YELLOW}[Driver] Waiting for gRPC peers (up to {timeout_s:g}s): "
-            f"{server_grpc} and {client_grpc}{RESET}"
-        )
-    got_server = got_client = False
-    while time.monotonic() < deadline and not (got_server and got_client):
-        if not got_server:
-            got_server = _wait_grpc_channel_ready(
-                server_grpc, deadline=deadline, verbose=verbose
-            )
-        if not got_client:
-            got_client = _wait_grpc_channel_ready(
-                client_grpc, deadline=deadline, verbose=verbose
-            )
-        if got_server and got_client:
-            return
-        time.sleep(0.35)
-    missing = [a for ok, a in ((got_server, server_grpc), (got_client, client_grpc)) if not ok]
-    raise TimeoutError(f"gRPC not reachable within {timeout_s}s: {', '.join(missing)}")
-
-
 def _operation_response_detail(resp: interop_pb2.OperationResponse) -> str:
     msg = (resp.message or "").strip()
     logs = (resp.logs or "").strip()
     if msg and logs:
         return f"{msg}\n{logs}"
     return msg or logs or "no message"
-
-
-def _env_float(key: str, default: float) -> float:
-    raw = (os.environ.get(key) or "").strip() or None
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
-def _env_truthy_positive(key: str) -> bool:
-    return os.environ.get(key, "").strip().lower() in ("1", "true", "yes")
-
-
-class _QuietSpinner:
-    _FRAMES = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
-
-    def __init__(self) -> None:
-        self._stop = threading.Event()
-        self._thread: threading.Thread | None = None
-
-    def start(self) -> None:
-        self._stop.clear()
-
-        def loop() -> None:
-            i = 0
-            n = len(self._FRAMES)
-            while not self._stop.is_set():
-                c = self._FRAMES[i % n]
-                sys.stderr.write(f"\r\033[36m{c}\033[0m\033[K")
-                sys.stderr.flush()
-                i += 1
-                time.sleep(0.08)
-
-        self._thread = threading.Thread(target=loop, daemon=True)
-        self._thread.start()
-
-    def stop(self) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=0.35)
-        sys.stderr.write("\r\033[K")
-        sys.stderr.flush()
 
 
 class InteropDriver:
@@ -999,14 +788,6 @@ class InteropDriver:
         cli = client_conf
         return self._scenario_skip_reason_impl(srv, cli)
 
-    def scenario_skip_reason(self, cfg: interop_pb2.TlsConfig) -> str | None:
-        """Skip run if peer metadata disagrees with env ``TlsConfig`` (no scenario id)."""
-        if self.server_metadata is None or self.client_metadata is None:
-            return None
-        srv = _role_config(cfg, interop_pb2.SERVER)
-        cli = _role_config(cfg, interop_pb2.CLIENT)
-        return self._scenario_skip_reason_impl(srv, cli)
-
     def _scenario_skip_reason_impl(
         self,
         srv: interop_pb2.TlsConfig,
@@ -1047,17 +828,12 @@ class InteropDriver:
     ) -> bool:
         if metadata is None or not (catalog_cipher or "").strip():
             return True
-        cat = catalog_cipher.strip().lower().replace(" ", "")
-        iana = (FALLBACK_CIPHER_ID_TO_IANA.get(cat) or "").strip()
-        aliases = {norm_token(catalog_cipher), norm_token(iana)} - {""}
+        cat_fold = norm_token(catalog_cipher)
+        if not cat_fold:
+            return True
         for cap in metadata.cipher_suites:
-            nm_raw = cap.name or ""
-            if norm_token(nm_raw) in aliases:
-                return True
-            iana_fold = iana.upper().replace("_", "").replace("-", "")
-            if iana and iana_fold in nm_raw.upper().replace("_", "").replace("-", ""):
-                return True
-            if nm_raw.upper().startswith("TLS_") and cat in nm_raw.lower().replace("-", ""):
+            native_fold = norm_token(cap.name or "")
+            if native_fold and cat_fold in native_fold:
                 return True
         return False
 
@@ -1116,23 +892,6 @@ class InteropDriver:
             except Exception as e:
                 msg = f"[Driver] CLOSE {role} exception: {e}"
                 print(msg if self._verbose else f"{RED}FAIL{RESET}  CLOSE {role}: {e}")
-
-    def run_test(self, tls_hostname: str) -> bool:
-        """ESTABLISH server → client → TCP wait → TRANSMIT (env-based ``TlsConfig``)."""
-        self._last_skip_reason = None
-        base_conf = tls_config_from_env()
-        _fill_tls_hostname_and_port(base_conf, tls_hostname)
-        server_conf = _role_config(base_conf, interop_pb2.SERVER)
-        client_conf = _role_config(base_conf, interop_pb2.CLIENT)
-        if (base_conf.server_hostname or "").strip():
-            client_conf.server_hostname = base_conf.server_hostname
-        tcp_host, tcp_port = "127.0.0.1", int(server_conf.port or 5555)
-        return self.run_test_with_configs(
-            server_conf,
-            client_conf,
-            tcp_host=tcp_host,
-            tcp_port=tcp_port,
-        )
 
     def run_test_with_configs(
         self,
@@ -1202,86 +961,3 @@ class InteropDriver:
             return False
         finally:
             self._cleanup()
-
-def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="TLS interop driver (configuration from INTEROP_* and TLS_* env)."
-    )
-    parser.add_argument(
-        "-v",
-        "--verbose",
-        action="store_true",
-        help="Verbose logging (compact progress otherwise when stderr is a TTY)",
-    )
-    args = parser.parse_args()
-
-    verbose = args.verbose or _env_truthy_positive("INTEROP_VERBOSE")
-    server_grpc = os.environ.get("TLS_SERVER_GRPC", "localhost:50051")
-    client_grpc = os.environ.get("TLS_CLIENT_GRPC", "localhost:50051")
-    tls_hostname = os.environ.get("TLS_HOSTNAME", "localhost")
-
-    driver = InteropDriver(server_grpc, client_grpc, verbose=verbose)
-
-    try:
-        _wait_grpc_peers(
-            server_grpc,
-            client_grpc,
-            timeout_s=_env_float("INTEROP_GRPC_WAIT_SEC", _DEFAULT_GRPC_WAIT_S),
-            verbose=verbose,
-        )
-    except TimeoutError as e:
-        print(f"{RED}[Driver] {e}{RESET}")
-        return 1
-
-    if verbose:
-        print("[Driver] Fetching metadata...")
-    try:
-        driver.server_metadata = driver.server_stub.GetMetadata(interop_pb2.Empty())
-        driver.client_metadata = driver.client_stub.GetMetadata(interop_pb2.Empty())
-        driver._log_metadata("Server", driver.server_metadata)
-        driver._log_metadata("Client", driver.client_metadata)
-    except Exception as e:
-        print(f"{RED}[Driver] GetMetadata failed: {e}{RESET}")
-        return 1
-
-    cfg = tls_config_from_env()
-    _fill_tls_hostname_and_port(cfg, tls_hostname)
-    if skip := driver.scenario_skip_reason(cfg):
-        if verbose:
-            print(f"{YELLOW}[Driver] SKIP: {skip}{RESET}")
-        else:
-            short = skip[:72]
-            print(f"{YELLOW}○{RESET}  interop{('  (' + short + ')') if short else ''}")
-        return EXIT_SKIP
-
-    driver._last_failure = None
-    spinner: _QuietSpinner | None = None
-    if not verbose and sys.stderr.isatty():
-        spinner = _QuietSpinner()
-        spinner.start()
-    try:
-        ok = driver.run_test(tls_hostname)
-    finally:
-        if spinner:
-            spinner.stop()
-
-    if driver._last_skip_reason:
-        if verbose:
-            print(f"{YELLOW}[Driver] SKIP: {driver._last_skip_reason}{RESET}")
-            return EXIT_SKIP
-        short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-        print(f"{YELLOW}○{RESET}  interop  ({short})")
-        return EXIT_SKIP
-    if verbose:
-        return 0 if ok else 1
-    detail = ""
-    if not ok and driver._last_failure:
-        detail = (driver._last_failure[2] or "").replace("\n", " ").strip()[:220]
-    suf = f"  ({detail})" if detail else ""
-    mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
-    print(f"{mark}  interop{suf}")
-    return 0 if ok else 1
-
-
-if __name__ == "__main__":
-    sys.exit(main())

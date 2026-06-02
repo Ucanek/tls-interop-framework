@@ -7,8 +7,6 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
-from pathlib import Path
-
 from core.catalog import (
     TranslationResult,
     cipher_catalog_id_requires_anon,
@@ -25,12 +23,16 @@ from core.identity import (
     repeated_config_tokens,
     server_trust_signature_schemes_tokens,
 )
+from proto import interop_pb2
 from wrappers.base import (
     BaseTemplateWrapper,
     WrapperSetupError,
     format_executed_command,
     popen_stdio_merged,
     serve_insecure,
+)
+from wrappers.utils import (
+    is_server_role,
     standard_library_metadata,
     test_feature_enabled_in_config,
     tls_mode_12_or_13,
@@ -51,32 +53,20 @@ def _gnutls_psk_passwd_file(identity: str, secret_hex: str) -> str:
 
 
 def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str) -> list[str]:
-    if _is_server_role(role):
+    if is_server_role(role):
         return ["--pskpasswd", _gnutls_psk_passwd_file(identity, secret_hex)]
     return ["--pskusername", identity, "--pskkey", secret_hex]
 
 
 def _interop_dhparams_pem() -> str:
-    bundled = Path(__file__).resolve().parent / "dh2048.pem"
-    if bundled.is_file():
-        return str(bundled)
-    return str(Path(__file__).resolve().parents[3] / "certs" / "dh2048.pem")
+    from core.identity import interop_certs_dir
 
-
-def _is_server_role(role: Any | None) -> bool:
-    if role is None:
-        return True
-    try:
-        from proto import interop_pb2
-
-        return int(role) == int(interop_pb2.SERVER)
-    except Exception:
-        return True
+    return str(interop_certs_dir() / "dh2048.pem")
 
 
 def _profile_key(config: Any, role: Any | None, capabilities: dict[str, Any]) -> str:
     mode = tls_mode_12_or_13(config)
-    side = "server" if _is_server_role(role) else "client"
+    side = "server" if is_server_role(role) else "client"
     return f"{side}:{mode}"
 
 
@@ -170,9 +160,6 @@ def _build_tls_argv(
             if frag:
                 gprio.append(frag)
 
-    for p in repeated_config_tokens(config, "alpn_protocols"):
-        extras.extend(["--alpn", p])
-
     if (
         raw_cipher
         and test_feature_enabled_in_config(config, "psk")
@@ -191,7 +178,7 @@ def _build_tls_argv(
         and test_feature_enabled_in_config(config, "anonymous")
         and cipher_catalog_id_requires_anon(raw_cipher)
         and norm_catalog_token(raw_cipher).startswith("dh-anon")
-        and _is_server_role(role)
+        and is_server_role(role)
     ):
         extras.extend(["--dhparams", _interop_dhparams_pem()])
 
@@ -294,8 +281,6 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         return "cert.pem"
 
     def _start_server(self, config):
-        from proto import interop_pb2
-
         cert_path, key_path = self._ensure_cert_paths(config)
         prio, mid = _split_priority_argv(
             list(_build_tls_argv(config, role=interop_pb2.SERVER).argv)
@@ -322,8 +307,6 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
 
     def _start_client(self, config):
-        from proto import interop_pb2
-
         host = config.server_hostname or "localhost"
         prio, mid = _split_priority_argv(
             list(_build_tls_argv(config, role=interop_pb2.CLIENT).argv)

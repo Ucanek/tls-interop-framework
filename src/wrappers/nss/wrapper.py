@@ -6,13 +6,16 @@ under ``/app/certs/`` (RSA, ECDSA, Ed25519, Ed448) use distinct nicknames. Set
 ``INTEROP_GNUTLS_NSS_PAIR`` when the NSS client peers into a Docker
 network where symbolic hostnames resolve to RFC 1918 addresses (see README).
 """
+
+from __future__ import annotations
+
 import os
+import re
 import shutil
 import socket
 import subprocess
 import threading
 import time
-import fcntl
 from pathlib import Path
 
 from core.catalog import (
@@ -29,23 +32,31 @@ from core.identity import (
     repeated_config_tokens,
     server_trust_signature_schemes_tokens,
 )
-from wrappers.nss.nss_db import (
-    nss_interop_identity_import_rows,
-    nss_server_nickname_for_config,
-)
 from wrappers.base import (
     BaseTemplateWrapper,
     WrapperSkipError,
     format_executed_command,
-    parse_version_line,
     popen_stdio_merged,
     serve_insecure,
+)
+from wrappers.nss.nss_db import (
+    _ensure_nss_db_identities,
+    get_nss_library_version,
+    nss_interop_identity_import_rows,
+    nss_server_nickname_for_config,
+    resolve_cli_tool,
+)
+from wrappers.utils import (
     standard_library_metadata,
     test_feature_enabled_in_config,
     tls_mode_12_or_13,
 )
 
 CAPABILITIES = load_local_capabilities(__file__)
+
+# Must match deploy/compose.yaml environment wiring.
+_GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
+_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
 def _nss_repo_root(nssdb_path: str) -> Path:
@@ -76,8 +87,8 @@ def _nss_psk_z_argv(config, caps: dict) -> list[str]:
     """
     ``-z 0x<hex>[:identity]`` — NSS TLS 1.3 External PSK (selfserv/tstclnt).
 
-    TLS 1.2 static PSK suites (``ecdhe-psk-*``, ``psk-*``, …) are not implemented
-  in NSS; see ``nss_tls12_static_psk_skip_reason`` in catalog.py.
+    TLS 1.2 static PSK suites are omitted from NSS ``capabilities.json`` ``tls12``;
+    use TLS 1.3 + ``test_features: psk`` for NSS PSK interop.
     """
     if not test_feature_enabled_in_config(config, "psk"):
         return []
@@ -156,12 +167,8 @@ def tls_argv_for_config(
 ) -> TranslationResult:
     return _build_tls_argv(config, role=role, capabilities=capabilities)
 
-# Must match deploy/compose.yaml environment wiring.
-_GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
-_TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
-
-def _gnutls_nss_pair_enabled():
+def _gnutls_nss_pair_enabled() -> bool:
     """True when Docker matrix sets INTEROP_GNUTLS_NSS_PAIR for gnutls×nss."""
     return os.environ.get(_GNUTLS_NSS_PAIR_ENV, "0").strip().lower() in _TRUTHY_ENV
 
@@ -182,28 +189,6 @@ def nss_tstclnt_host_and_extra_argv(hostname, port):
     return h, ["-a", h]
 
 
-def _nss_tool(name):
-    if shutil.which(name):
-        return name
-    for prefix in ("/usr/lib64/nss/unsupported-tools", "/usr/lib/nss/unsupported-tools"):
-        path = os.path.join(prefix, name)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return name
-
-
-def resolve_cli_tool(name: str) -> str | None:
-    """Plugin hook: resolve NSS CLI binaries (including Fedora unsupported-tools path)."""
-    found = shutil.which(name)
-    if found:
-        return found
-    for prefix in ("/usr/lib64/nss/unsupported-tools", "/usr/lib/nss/unsupported-tools"):
-        path = os.path.join(prefix, name)
-        if os.path.isfile(path) and os.access(path, os.X_OK):
-            return path
-    return None
-
-
 def orchestration_env(active_backends: frozenset[str] | set[str]) -> dict[str, str]:
     """Plugin hook: GnuTLS server × NSS client SNI workaround."""
     if "gnutls" in active_backends and "nss" in active_backends:
@@ -221,118 +206,6 @@ def local_wrapper_env(
     return {"NSSDB": str(repo / "nssdb" / backend_id)}
 
 
-def _ensure_tool_exists(path, name):
-    if not path or not shutil.which(path):
-        raise RuntimeError(f"NSS setup: required tool not found: {name}")
-    return path
-
-
-def _run_checked(cmd):
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        detail = (r.stderr or r.stdout or "").strip()
-        raise RuntimeError(f"NSS setup failed: {' '.join(cmd)} | {detail}")
-    return r
-
-
-def _nss_db_has_nickname(certutil, db_spec, nickname):
-    r = subprocess.run(
-        [certutil, "-L", "-d", db_spec, "-n", nickname],
-        capture_output=True,
-        text=True,
-    )
-    return r.returncode == 0
-
-
-def _ensure_nss_db_identities(nssdb_path: str, identities: list[tuple[str, str, str]]) -> None:
-    """
-    Ensure NSS DB exists and contains every ``(nickname, cert_pem, key_pem)``.
-
-    Idempotent when all nicknames are already present.
-    """
-    if not identities:
-        raise RuntimeError("NSS setup: no identity bundles to import")
-
-    certutil = _ensure_tool_exists(_nss_tool("certutil"), "certutil")
-    pk12util = _ensure_tool_exists(_nss_tool("pk12util"), "pk12util")
-    openssl = _ensure_tool_exists(shutil.which("openssl"), "openssl")
-    db_abs = os.path.abspath(nssdb_path)
-    db_spec = f"sql:{db_abs}"
-    lock_path = db_abs + ".lock"
-    lock_parent = os.path.dirname(os.path.abspath(lock_path))
-    if lock_parent:
-        os.makedirs(lock_parent, exist_ok=True)
-    with open(lock_path, "w", encoding="utf-8") as lock:
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if all(_nss_db_has_nickname(certutil, db_spec, nick) for nick, _, _ in identities):
-            return
-
-        if os.path.isdir(db_abs):
-            shutil.rmtree(db_abs)
-        os.makedirs(db_abs, exist_ok=True)
-
-        _run_checked([certutil, "-N", "-d", db_spec, "--empty-password"])
-
-        for nickname, cert_pem, key_pem in identities:
-            if not (os.path.isfile(cert_pem) and os.path.isfile(key_pem)):
-                raise RuntimeError(
-                    f"NSS setup: missing PEM for {nickname}: {cert_pem!r} / {key_pem!r}"
-                )
-            p12_path = os.path.join(db_abs, f"{nickname}.p12")
-            _run_checked(
-                [
-                    openssl,
-                    "pkcs12",
-                    "-export",
-                    "-in",
-                    cert_pem,
-                    "-inkey",
-                    key_pem,
-                    "-out",
-                    p12_path,
-                    "-passout",
-                    "pass:",
-                    "-nodes",
-                    "-name",
-                    nickname,
-                ]
-            )
-            try:
-                _run_checked([pk12util, "-d", db_spec, "-i", p12_path, "-W", "", "-K", ""])
-                _run_checked([certutil, "-M", "-d", db_spec, "-n", nickname, "-t", "u,u,u"])
-            finally:
-                if os.path.isfile(p12_path):
-                    os.remove(p12_path)
-
-
-def _nss_library_version():
-    try:
-        if shutil.which("rpm"):
-            r = subprocess.run(
-                ["rpm", "-q", "nss-softokn"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if r.returncode == 0 and (r.stdout or "").strip():
-                return parse_version_line(r.stdout) or ""
-    except (OSError, subprocess.SubprocessError):
-        pass
-    try:
-        if shutil.which("dpkg-query"):
-            r = subprocess.run(
-                ["dpkg-query", "-W", "-f=${Version}\n", "libnss3"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if r.returncode == 0 and (r.stdout or "").strip():
-                return parse_version_line(r.stdout) or ""
-    except (OSError, subprocess.SubprocessError):
-        pass
-    return ""
-
-
 def _tls_version_range(config):
     if config is None:
         return "tls1.2:tls1.3"
@@ -347,12 +220,12 @@ def _tls_version_range(config):
 class NSSWrapper(BaseTemplateWrapper):
     CAPABILITIES = CAPABILITIES
 
-    def __init__(self):
+    def __init__(self) -> None:
         super().__init__()
         self._socat_proc = None
         self._nssdb = os.environ.get("NSSDB", "nssdb")
-        self._selfserv = _nss_tool("selfserv")
-        self._tstclnt = _nss_tool("tstclnt")
+        self._selfserv = resolve_cli_tool("selfserv") or "selfserv"
+        self._tstclnt = resolve_cli_tool("tstclnt") or "tstclnt"
         self._nss_db_ready = False
         self._nss_db_lock = threading.Lock()
 
@@ -387,14 +260,12 @@ class NSSWrapper(BaseTemplateWrapper):
 
     def GetMetadata(self, request, context):
         self._ensure_nss_db_ready()
-        version = _nss_library_version() or "unknown"
+        version = get_nss_library_version() or "unknown"
         return standard_library_metadata(
             self._component_name, version, capabilities=CAPABILITIES
         )
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
-        import re
-
         text = stdout or ""
         out: dict[str, str] = {}
         m = re.search(
@@ -477,9 +348,6 @@ class NSSWrapper(BaseTemplateWrapper):
             *self._nss_tls_argv(config),
             *self._session_ticket_args(config),
         ]
-        # selfserv ``-Q``: enables built-in HTTP/1.1 ALPN (no custom ALPN list in NSS tooling).
-        if repeated_config_tokens(config, "alpn_protocols"):
-            cmd.append("-Q")
         cmd.extend(
             [
                 "-v",
@@ -530,8 +398,7 @@ class NSSWrapper(BaseTemplateWrapper):
     def _server_transmit_poll(self) -> bool:
         return True
 
-    def _extra_cleanup(self) -> None:
-        super()._extra_cleanup()
+    def _terminate_socat_proxy(self) -> None:
         if self._socat_proc:
             self._socat_proc.terminate()
             try:
@@ -539,6 +406,14 @@ class NSSWrapper(BaseTemplateWrapper):
             except subprocess.TimeoutExpired:
                 self._socat_proc.kill()
         self._socat_proc = None
+
+    def _release_server_aux(self) -> None:
+        """Drop socat only; NSS DB stays populated for nss×nss client ESTABLISH."""
+        self._terminate_socat_proxy()
+
+    def _extra_cleanup(self) -> None:
+        super()._extra_cleanup()
+        self._terminate_socat_proxy()
         self._cleanup_nss_db()
 
 

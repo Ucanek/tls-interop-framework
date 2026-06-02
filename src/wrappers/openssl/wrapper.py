@@ -27,6 +27,8 @@ from wrappers.base import (
     format_executed_command,
     popen_stdio_merged,
     serve_insecure,
+)
+from wrappers.utils import (
     standard_library_metadata,
     test_feature_enabled_in_config,
     tls_mode_12_or_13,
@@ -62,17 +64,6 @@ def _append_seclevel_zero(cipher_val: str) -> str:
     if ":@SECLEVEL" in cipher_val:
         return cipher_val
     return f"{cipher_val}:@SECLEVEL=0"
-
-
-def _is_server_role(role: Any | None) -> bool:
-    if role is None:
-        return True
-    try:
-        from proto import interop_pb2
-
-        return int(role) == int(interop_pb2.SERVER)
-    except Exception:
-        return True
 
 
 def _build_tls_argv(
@@ -190,6 +181,39 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
         return (_EPHEM_CERT, _EPHEM_KEY)
 
+    def _generate_fallback_rsa_identity(
+        self, cert_path: str, key_path: str
+    ) -> tuple[str, str]:
+        """One-day RSA leaf when catalog/cwd PEMs are unavailable (ephemeral paths)."""
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-keyout",
+                key_path,
+                "-out",
+                cert_path,
+                "-days",
+                "1",
+                "-nodes",
+                "-subj",
+                "/CN=localhost",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=90,
+            text=True,
+        )
+        try:
+            os.chmod(key_path, 0o600)
+        except OSError:
+            pass
+        self._used_ephemeral_pem = True
+        return cert_path, key_path
+
     def _ensure_cert_paths(self, config):
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         if _openssl_cipher_needs_legacy_dss(raw_cipher):
@@ -207,35 +231,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         try:
             return super()._ensure_cert_paths(config)
         except WrapperSetupError:
-            eph_cert, eph_key = self._ephemeral_pem_paths
-            subprocess.run(
-                [
-                    "openssl",
-                    "req",
-                    "-x509",
-                    "-newkey",
-                    "rsa:2048",
-                    "-keyout",
-                    eph_key,
-                    "-out",
-                    eph_cert,
-                    "-days",
-                    "1",
-                    "-nodes",
-                    "-subj",
-                    "/CN=localhost",
-                ],
-                check=True,
-                capture_output=True,
-                timeout=90,
-                text=True,
-            )
-            try:
-                os.chmod(eph_key, 0o600)
-            except OSError:
-                pass
-            self._used_ephemeral_pem = True
-            return eph_cert, eph_key
+            cert_path, key_path = self._ephemeral_pem_paths
+            return self._generate_fallback_rsa_identity(cert_path, key_path)
 
     def _version_command(self) -> list[str]:
         return ["openssl", "version"]
@@ -284,12 +281,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             out["named_group"] = g.group(1).strip()
         return out
 
-    def _alpn_cli_args(self, config) -> list[str]:
-        parts = repeated_config_tokens(config, "alpn_protocols")
-        if not parts:
-            return []
-        return ["-alpn", ",".join(parts)]
-
     def _build_common_args(self, config, *, for_server: bool) -> list[str]:
         from proto import interop_pb2
 
@@ -297,7 +288,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         args = list(_build_tls_argv(config, role=role).argv)
         if for_server and bool(getattr(config, "session_tickets_enabled", False)):
             args.extend(["-num_tickets", "2"])
-        args.extend(self._alpn_cli_args(config))
         return args
 
     def _client_sni_args(self, config) -> list[str]:

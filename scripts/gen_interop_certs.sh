@@ -78,10 +78,7 @@ gen_ed448
 gen_dsa_default
 
 gen_dh2048() {
-  local bundled="${ROOT}/src/wrappers/gnutls/dh2048.pem"
-  if [[ -f "${bundled}" ]]; then
-    cp -f "${bundled}" "${CERT_DIR}/dh2048.pem"
-  elif [[ ! -f "${CERT_DIR}/dh2048.pem" ]]; then
+  if [[ ! -f "${CERT_DIR}/dh2048.pem" ]]; then
     openssl dhparam -out "${CERT_DIR}/dh2048.pem" 2048
   fi
 }
