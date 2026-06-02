@@ -194,7 +194,7 @@
     "anonymous": {
       "supported": true,
       "default_enabled": false,
-      "wired": false
+      "wired": true
     }
   }
 }

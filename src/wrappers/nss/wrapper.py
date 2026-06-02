@@ -15,8 +15,15 @@ import time
 import fcntl
 from pathlib import Path
 
-from core.catalog import TranslationResult, load_local_capabilities, norm_catalog_token
-from core.catalog import cipher_maps_from_capabilities
+from core.catalog import (
+    TranslationResult,
+    cipher_catalog_id_requires_anon,
+    cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities,
+    load_local_capabilities,
+    norm_catalog_token,
+    psk_material_from_capabilities,
+)
 from core.identity import (
     repeated_config_tokens,
     identity_kind_from_signature_schemes,
@@ -34,10 +41,47 @@ from wrappers.base import (
     popen_stdio_merged,
     serve_insecure,
     standard_library_metadata,
+    test_feature_enabled_in_config,
     tls_mode_12_or_13,
 )
 
 CAPABILITIES = load_local_capabilities(__file__)
+
+
+def _nss_anon_dhe_argv(config) -> list[str]:
+    """``-H 1`` enables DHE for dh-anon-* when anonymous test feature is on."""
+    if not test_feature_enabled_in_config(config, "anonymous"):
+        return []
+    raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
+    if not raw_cipher or not cipher_catalog_id_requires_anon(raw_cipher):
+        return []
+    if not norm_catalog_token(raw_cipher).startswith("dh-anon"):
+        return []
+    return ["-H", "1"]
+
+
+def _nss_psk_z_argv(config, caps: dict) -> list[str]:
+    """
+    ``-z 0x<hex>[:identity]`` — NSS TLS 1.3 External PSK (selfserv/tstclnt).
+
+    TLS 1.2 static PSK suites (``ecdhe-psk-*``, ``psk-*``, …) are not implemented
+  in NSS; see ``nss_tls12_static_psk_skip_reason`` in catalog.py.
+    """
+    if not test_feature_enabled_in_config(config, "psk"):
+        return []
+    if tls_mode_12_or_13(config) != "1.3":
+        return []
+    raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
+    cipher_for_psk = (
+        raw_cipher
+        if raw_cipher and cipher_catalog_id_requires_psk(raw_cipher)
+        else "psk-aes-128-gcm-sha256"
+    )
+    mat = psk_material_from_capabilities(caps, cipher_for_psk)
+    if not mat:
+        return []
+    identity, secret_hex = mat
+    return ["-z", f"0x{secret_hex}:{identity}"]
 
 
 def _build_tls_argv(
@@ -85,6 +129,9 @@ def _build_tls_argv(
                 parts.append(str(v))
             if parts:
                 argv.extend([csv_flag, ",".join(parts)])
+
+    argv.extend(_nss_anon_dhe_argv(config))
+    argv.extend(_nss_psk_z_argv(config, caps))
 
     return TranslationResult(tuple(argv), tuple(unsupported))
 

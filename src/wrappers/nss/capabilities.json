@@ -163,15 +163,15 @@
     "psk": {
       "supported": true,
       "default_enabled": false,
-      "wired": false,
+      "wired": true,
       "identity": "interop",
       "secret_hex_128": "0123456789abcdef0123456789abcdef",
       "secret_hex_256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
     },
     "anonymous": {
-      "supported": true,
+      "supported": false,
       "default_enabled": false,
-      "wired": false
+      "wired": true
     }
   }
 }

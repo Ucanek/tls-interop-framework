@@ -24,6 +24,7 @@ from wrappers.base import (
     popen_stdio_merged,
     serve_insecure,
     standard_library_metadata,
+    test_feature_enabled_in_config,
     tls_mode_12_or_13,
 )
 
@@ -77,9 +78,8 @@ def _build_tls_argv(
                 unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.3 mapping)")
         elif key in cap12:
             cipher_val = cap12[key]
-            psk_modes = repeated_config_tokens(config, "psk_modes")
             if (
-                "anonymous" in psk_modes
+                test_feature_enabled_in_config(config, "anonymous")
                 and cipher_catalog_id_requires_anon(raw_cipher)
                 and ":@SECLEVEL" not in cipher_val
             ):
@@ -88,10 +88,9 @@ def _build_tls_argv(
         else:
             unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.2 mapping)")
 
-    psk_modes = repeated_config_tokens(config, "psk_modes")
     if (
         raw_cipher
-        and "psk" in psk_modes
+        and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
         mat = psk_material_from_capabilities(caps, raw_cipher)

@@ -64,8 +64,9 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
         "id": "test_features",
         "description": (
             "Credentials for special ciphers (psk, anonymous). "
-            "cipher_suite ALL lists every cipher; without this, PSK/anon cells run and FAIL. "
-            "Set test_features: psk,anonymous (or YAML map with true values) to enable wiring."
+            "cipher_suite ALL includes PSK/anon suites; without enabling a feature here, "
+            "those cells are pre-SKIP (Feature disabled). "
+            "Set test_features: psk,anonymous (or YAML map with true values) to run them."
         ),
     },
     {
@@ -1206,6 +1207,32 @@ def psk_material_from_capabilities(
     return identity, secret_hex
 
 
+def nss_tls12_static_psk_skip_reason(
+    cell: dict[str, str],
+    *,
+    server: str,
+    client: str,
+    mode_srv: TlsMode,
+    mode_cli: TlsMode,
+) -> str | None:
+    """
+    NSS keeps TLS 1.2 PSK suite IDs in sslproto.h for API compat but does not
+    implement them in selfserv/tstclnt (SSL_ERROR_UNKNOWN_CIPHER_SUITE).
+    """
+    if "nss" not in (server, client):
+        return None
+    cid = _cell_cipher_id(cell, server=True) or _cell_cipher_id(cell, server=False)
+    if not cid or not cipher_catalog_id_requires_psk(cid):
+        return None
+    if mode_srv == "1.2" or mode_cli == "1.2":
+        return (
+            "NSS does not implement TLS 1.2 static PSK cipher suites "
+            f"({cid!r}); use tls_version: 1.3 with test_features: psk "
+            "(e.g. cipher_suite: aes-128-gcm)"
+        )
+    return None
+
+
 def _cell_test_feature_skip_reason(
     cell: dict[str, str],
     *,
@@ -1215,9 +1242,10 @@ def _cell_test_feature_skip_reason(
     cli_caps: dict[str, Any],
 ) -> str | None:
     """
-    Pre-run SKIP for PSK/anon suites when a backend cannot wire the feature.
+    Pre-run SKIP for PSK/anon cipher suites.
 
-    Missing ``test_features`` in the cell does not SKIP (handshake may FAIL at runtime).
+    Order: feature not enabled in ``test_features`` → ``Feature disabled``;
+    ``wired: false`` in capabilities → ``Not wired``.
     """
     cid = _cell_cipher_id(cell, server=True) or _cell_cipher_id(cell, server=False)
     if not cid:
@@ -1225,14 +1253,16 @@ def _cell_test_feature_skip_reason(
     feat = cipher_required_test_feature(cid)
     if not feat:
         return None
+    if feat not in enabled_test_features_from_cell(cell):
+        return "Feature disabled"
     for role_label, caps in (
         (f"server ({server})", srv_caps),
         (f"client ({client})", cli_caps),
     ):
+        if not test_feature_wired(caps, feat):
+            return "Not wired"
         if not test_feature_supported(caps, feat):
             return f"Feature {feat} is not supported in {role_label} wrapper"
-        if not test_feature_wired(caps, feat):
-            return f"Feature {feat} is not wired in {role_label} wrapper"
     return None
 
 
@@ -1342,6 +1372,12 @@ def cell_capability_skip_reason(
     )
     if feat_skip:
         return feat_skip
+
+    nss_psk_skip = nss_tls12_static_psk_skip_reason(
+        cell, server=server, client=client, mode_srv=mode_srv, mode_cli=mode_cli
+    )
+    if nss_psk_skip:
+        return nss_psk_skip
 
     for check in (
         _check_cipher_side(

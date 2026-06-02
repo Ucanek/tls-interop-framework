@@ -65,6 +65,17 @@ gen_ecdsa ecdsa_p521 secp521r1 interop-ecdsa-p521
 gen_ed25519
 gen_ed448
 
+gen_dh2048() {
+  local bundled="${ROOT}/src/wrappers/gnutls/dh2048.pem"
+  if [[ -f "${bundled}" ]]; then
+    cp -f "${bundled}" "${CERT_DIR}/dh2048.pem"
+  elif [[ ! -f "${CERT_DIR}/dh2048.pem" ]]; then
+    openssl dhparam -out "${CERT_DIR}/dh2048.pem" 2048
+  fi
+}
+
+gen_dh2048
+
 # Legacy symlinks for older paths / default server_node TLS tools.
 ln -sf rsa_default.crt "${CERT_DIR}/cert.pem"
 ln -sf rsa_default.key "${CERT_DIR}/key.pem"

@@ -7,8 +7,11 @@ import re
 from collections.abc import Sequence
 from typing import Any
 
+from pathlib import Path
+
 from core.catalog import (
     TranslationResult,
+    cipher_catalog_id_requires_anon,
     cipher_catalog_id_requires_psk,
     cipher_maps_from_capabilities,
     load_local_capabilities,
@@ -26,6 +29,7 @@ from wrappers.base import (
     popen_stdio_merged,
     serve_insecure,
     standard_library_metadata,
+    test_feature_enabled_in_config,
     tls_mode_12_or_13,
 )
 
@@ -33,6 +37,27 @@ CAPABILITIES = load_local_capabilities(__file__)
 
 _EPHEM_CERT = "/tmp/interop_gnutls_cert.pem"
 _EPHEM_KEY = "/tmp/interop_gnutls_key.pem"
+_INTEROP_PSK_PASSWD = "/tmp/interop_gnutls_pskpasswd.txt"
+
+
+def _gnutls_psk_passwd_file(identity: str, secret_hex: str) -> str:
+    """``gnutls-serv`` reads PSK credentials from ``identity:hexkey`` lines."""
+    with open(_INTEROP_PSK_PASSWD, "w", encoding="ascii") as f:
+        f.write(f"{identity}:{secret_hex}\n")
+    return _INTEROP_PSK_PASSWD
+
+
+def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str) -> list[str]:
+    if _is_server_role(role):
+        return ["--pskpasswd", _gnutls_psk_passwd_file(identity, secret_hex)]
+    return ["--pskusername", identity, "--pskkey", secret_hex]
+
+
+def _interop_dhparams_pem() -> str:
+    bundled = Path(__file__).resolve().parent / "dh2048.pem"
+    if bundled.is_file():
+        return str(bundled)
+    return str(Path(__file__).resolve().parents[3] / "certs" / "dh2048.pem")
 
 
 def _is_server_role(role: Any | None) -> bool:
@@ -147,16 +172,25 @@ def _build_tls_argv(
 
     if (
         raw_cipher
-        and "psk" in repeated_config_tokens(config, "psk_modes")
+        and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
         mat = psk_material_from_capabilities(caps, raw_cipher)
         if mat:
-            extras.extend(["--pskusername", mat[0], "--pskkey", mat[1]])
+            extras.extend(_gnutls_psk_argv(role, mat[0], mat[1]))
         else:
             unsupported.append(
                 "psk (missing or wrong-length test_features.psk secret_hex_* for cipher)"
             )
+
+    if (
+        raw_cipher
+        and test_feature_enabled_in_config(config, "anonymous")
+        and cipher_catalog_id_requires_anon(raw_cipher)
+        and norm_catalog_token(raw_cipher).startswith("dh-anon")
+        and _is_server_role(role)
+    ):
+        extras.extend(["--dhparams", _interop_dhparams_pem()])
 
     prio = "".join(gprio)
     argv.extend(extras)
