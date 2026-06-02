@@ -1,6 +1,6 @@
 """NSS-backed interop wrapper (``selfserv`` / ``tstclnt``).
 
-The SQLite NSS DB under ``NSSDB`` is populated on first gRPC use (not in ``__init__``)
+The SQLite NSS DB under ``NSSDB`` (default ``wrappers/nss/nssdb/<backend>``) is populated on first gRPC use (not in ``__init__``)
 so the wrapper process can bind :50051 before heavy ``pk12util`` imports. Bundles
 under ``/app/certs/`` (RSA, ECDSA, Ed25519, Ed448) use distinct nicknames. Set
 ``INTEROP_GNUTLS_NSS_PAIR`` when the NSS client peers into a Docker
@@ -59,9 +59,18 @@ _GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
 _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
-def _nss_repo_root(nssdb_path: str) -> Path:
-    """Interop repo root (``NSSDB`` is ``<repo>/nssdb/<backend>``)."""
-    return Path(nssdb_path).resolve().parent.parent
+def nss_db_directory(repo: Path, backend_id: str = "nss") -> Path:
+    """Per-backend NSS SQL DB path: ``<repo>/src/wrappers/nss/nssdb/<backend_id>`` (or ``/app/wrappers/...`` in images)."""
+    from core.catalog import wrappers_plugin_dir
+
+    return wrappers_plugin_dir(repo) / "nss" / "nssdb" / backend_id
+
+
+def _nss_repo_root(_nssdb_path: str) -> Path:
+    """Interop repo root (for ``certs/`` and identity import rows)."""
+    from core.catalog import repository_root
+
+    return repository_root()
 
 
 def _nss_anon_argv(config) -> list[str]:
@@ -203,7 +212,7 @@ def local_wrapper_env(
 ) -> dict[str, str]:
     """Plugin hook: per-backend NSS DB directory."""
     del active_backends
-    return {"NSSDB": str(repo / "nssdb" / backend_id)}
+    return {"NSSDB": str(nss_db_directory(repo, backend_id))}
 
 
 def _tls_version_range(config):
@@ -223,7 +232,12 @@ class NSSWrapper(BaseTemplateWrapper):
     def __init__(self) -> None:
         super().__init__()
         self._socat_proc = None
-        self._nssdb = os.environ.get("NSSDB", "nssdb")
+        from core.catalog import repository_root
+
+        self._nssdb = os.environ.get(
+            "NSSDB",
+            str(nss_db_directory(repository_root(), "nss")),
+        )
         self._selfserv = resolve_cli_tool("selfserv") or "selfserv"
         self._tstclnt = resolve_cli_tool("tstclnt") or "tstclnt"
         self._nss_db_ready = False

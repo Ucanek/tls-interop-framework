@@ -12,7 +12,6 @@ services:
     environment:
       WRAPPER: openssl
       GRPC_PORT: "50051"
-      NSSDB: /app/nssdb/openssl
     ports:
       - "127.0.0.1:15051:50051"
       - "127.0.0.1:15551:5555"
@@ -28,7 +27,6 @@ services:
     environment:
       WRAPPER: gnutls
       GRPC_PORT: "50051"
-      NSSDB: /app/nssdb/gnutls
     ports:
       - "127.0.0.1:15052:50051"
       - "127.0.0.1:15552:5555"
@@ -44,7 +42,7 @@ services:
     environment:
       WRAPPER: nss
       GRPC_PORT: "50051"
-      NSSDB: /app/nssdb/nss
+      NSSDB: /app/wrappers/nss/nssdb/nss
       INTEROP_GNUTLS_NSS_PAIR: ${INTEROP_GNUTLS_NSS_PAIR:-0}
     ports:
       - "127.0.0.1:15053:50051"

@@ -38,6 +38,7 @@ from core.runner import (
     PersistentComposeSession,
     PersistentLocalSession,
     ensure_interop_certs,
+    remove_interop_certs,
     required_backends_from_matrix,
     run_matrix_cell_grpc,
 )
@@ -363,6 +364,7 @@ def main() -> int:
     repo = repository_root()
     parser = build_parser(repo)
     args = parser.parse_args()
+    cleanup_certs = False
     try:
         enforce_suite_cli_exclusivity(args, parser)
         if getattr(args, "suite", None):
@@ -388,6 +390,7 @@ def main() -> int:
         combos = list(product(*axis_vals))
         if combos:
             ensure_interop_certs(repo, verbose=bool(args.verbose))
+            cleanup_certs = True
         backends, pre_skips = required_backends_from_matrix(
             axis_keys, combos, args_template=args, repo=repo, known=known
         )
@@ -476,6 +479,9 @@ def main() -> int:
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
+    finally:
+        if cleanup_certs:
+            remove_interop_certs(repo, verbose=bool(args.verbose))
 
 
 if __name__ == "__main__":

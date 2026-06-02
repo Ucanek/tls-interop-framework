@@ -10,7 +10,7 @@ venv
 .pytest_cache
 
 # Generated or local-only artifacts (image creates its own under /app)
-nssdb
+**/nssdb
 *.pem
 *.key
 

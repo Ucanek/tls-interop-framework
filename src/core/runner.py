@@ -85,6 +85,16 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
 
 
+def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
+    """Remove ``certs/`` after a matrix run (including ``dh2048.pem``)."""
+    cert_dir = repo / "certs"
+    if not cert_dir.is_dir():
+        return
+    if verbose:
+        print(f"{YELLOW}Removing generated {cert_dir}{RESET}")
+    shutil.rmtree(cert_dir, ignore_errors=True)
+
+
 def apply_matrix_tls_endpoints(
     server: str,
     client: str,
@@ -458,7 +468,6 @@ class PersistentLocalSession(BaseExecutionSession):
                 except (ProcessLookupError, PermissionError, OSError):
                     proc.kill()
         self._procs.clear()
-        shutil.rmtree(self.repo / "certs", ignore_errors=True)
 
     def wait_grpc_ready(
         self,

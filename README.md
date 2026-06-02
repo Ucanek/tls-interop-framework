@@ -111,7 +111,7 @@ On push/PR to `main`, CI runs `python3 src/main.py --server <matrix.server> --cl
 | Server | `openssl s_server` | `gnutls-serv` | `selfserv` |
 | Client | `openssl s_client` | `gnutls-cli`  | `tstclnt`  |
 
-- **NSS DB:** `NSSDB` (default `/app/nssdb` in containers), nickname derived from signature schemes.
+- **NSS DB:** `NSSDB` (default `src/wrappers/nss/nssdb/nss`, or `/app/wrappers/nss/nssdb/nss` in containers), nickname derived from signature schemes.
 - **Packages:** Fedora `nss-tools` and `socat`, Debian/Ubuntu `libnss3-tools` and `socat`. On Fedora 43+, `tstclnt` and `selfserv` live under `/usr/lib64/nss/unsupported-tools/` (resolved automatically; optional: `export PATH="$PATH:/usr/lib64/nss/unsupported-tools"`). NSS server mode forwards the public TLS port to `selfserv` via `socat`.
 
 ### GnuTLS server × NSS client (SNI)
