@@ -23,7 +23,6 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
     },
     {
         "id": "tls_version",
-        "choices": ["1.2", "1.3"],
         "description": "TLS protocol version for the endpoint (TlsConfig.version).",
     },
     {
