@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from core.catalog import (
@@ -15,6 +17,7 @@ from core.catalog import (
     load_local_capabilities,
     norm_catalog_token,
     psk_material_from_capabilities,
+    repository_root,
 )
 from core.identity import (
     catalog_identity_pem_paths_for_prefix,
@@ -43,6 +46,77 @@ CAPABILITIES = load_local_capabilities(__file__)
 _EPHEM_CERT = "/tmp/interop_gnutls_cert.pem"
 _EPHEM_KEY = "/tmp/interop_gnutls_key.pem"
 _INTEROP_PSK_PASSWD = "/tmp/interop_gnutls_pskpasswd.txt"
+_HOOK_SOURCE = Path(__file__).resolve().parent / "gnutls_session_hook.c"
+_HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
+
+
+def _gnutls_session_state_paths(config: Any) -> tuple[str, str]:
+    """Session blob and 0-RTT payload paths under ``TlsConfig.repo_root`` (or repo root)."""
+    raw = (getattr(config, "repo_root", None) or "").strip()
+    root = Path(raw).resolve() if raw else repository_root()
+    return str(root / "session.ticket"), str(root / "early_data.txt")
+
+
+def _gnutls_session_hook_library() -> str | None:
+    """Build or return path to ``gnutls_session_hook.so`` for cross-process session I/O."""
+    if _HOOK_SO.is_file():
+        return str(_HOOK_SO)
+    if not _HOOK_SOURCE.is_file():
+        return None
+    try:
+        pkg = subprocess.run(
+            ["pkg-config", "--cflags", "--libs", "gnutls"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return None
+    link_args = pkg.stdout.strip().split() if pkg.stdout.strip() else ["-lgnutls"]
+    try:
+        subprocess.run(
+            [
+                "gcc",
+                "-shared",
+                "-fPIC",
+                "-o",
+                str(_HOOK_SO),
+                str(_HOOK_SOURCE),
+                *link_args,
+            ],
+            check=True,
+            capture_output=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        try:
+            subprocess.run(
+                [
+                    "gcc",
+                    "-shared",
+                    "-fPIC",
+                    "-o",
+                    str(_HOOK_SO),
+                    str(_HOOK_SOURCE),
+                    "-lgnutls",
+                ],
+                check=True,
+                capture_output=True,
+            )
+        except (FileNotFoundError, subprocess.CalledProcessError):
+            return None
+    return str(_HOOK_SO) if _HOOK_SO.is_file() else None
+
+
+def _gnutls_popen_env(
+    config: Any, base: dict[str, str] | None, *, session_env: dict[str, str]
+) -> dict[str, str]:
+    env = dict(base or os.environ)
+    env.update(session_env)
+    hook = _gnutls_session_hook_library()
+    if hook:
+        prev = env.get("LD_PRELOAD", "")
+        env["LD_PRELOAD"] = hook if not prev else f"{hook}{os.pathsep}{prev}"
+    return env
 
 
 def _gnutls_psk_passwd_file(identity: str, secret_hex: str) -> str:
@@ -281,6 +355,8 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         return "cert.pem"
 
     def _start_server(self, config):
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+
         cert_path, key_path = self._ensure_cert_paths(config)
         prio, mid = _split_priority_argv(
             list(_build_tls_argv(config, role=interop_pb2.SERVER).argv)
@@ -307,11 +383,18 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             "-q",
             "--echo",
         ]
+        if has_0rtt:
+            cmd.append("--earlydata")
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
 
     def _start_client(self, config):
+        has_resumption = test_feature_enabled_in_config(config, "resumption")
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+        session_file, early_data_file = _gnutls_session_state_paths(config)
+        step = (getattr(config, "resumption_step", None) or "").strip()
+
         host = config.server_hostname or "localhost"
         prio, mid = _split_priority_argv(
             list(_build_tls_argv(config, role=interop_pb2.CLIENT).argv)
@@ -330,12 +413,26 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             "--priority",
             prio,
         ]
+        session_env: dict[str, str] = {}
+        if (has_resumption or has_0rtt) and step == "save":
+            cmd.extend(["--resume", "--waitresumption"])
+            session_env["GNUTLS_INTEROP_SESSION_OUT"] = session_file
+        if (has_resumption or has_0rtt) and step == "resume":
+            session_env["GNUTLS_INTEROP_SESSION_IN"] = session_file
+            if has_0rtt:
+                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
+                cmd.extend(["--earlydata", early_data_file])
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config)
             cmd.extend(["--x509certfile", client_cert, "--x509keyfile", client_key])
         cmd.append(host)
         cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        base_env = self._popen_env(config)
+        proc = popen_stdio_merged(
+            cmd,
+            cwd=cwd,
+            env=_gnutls_popen_env(config, base_env, session_env=session_env),
+        )
         return proc, format_executed_command(cmd, cwd), "GnuTLS Client connected"
 
     def _server_transmit_poll(self) -> bool:

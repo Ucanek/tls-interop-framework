@@ -1211,6 +1211,27 @@ def psk_material_from_capabilities(
     return identity, secret_hex
 
 
+def _cell_enabled_test_features_skip_reason(
+    cell: dict[str, str],
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
+    """Pre-run SKIP when an enabled ``test_features`` token is unsupported on server or client."""
+    for feat in sorted(enabled_test_features_from_cell(cell)):
+        for role_label, caps in (
+            (f"server ({server})", srv_caps),
+            (f"client ({client})", cli_caps),
+        ):
+            if not test_feature_wired(caps, feat):
+                return f"Feature {feat} is not wired in {role_label} wrapper"
+            if not test_feature_supported(caps, feat):
+                return f"Feature {feat} is not supported in {role_label} wrapper"
+    return None
+
+
 def _cell_test_feature_skip_reason(
     cell: dict[str, str],
     *,
@@ -1350,6 +1371,12 @@ def cell_capability_skip_reason(
     sem_cli = _tls12_semantic_skip_reason_side(cell, server=False, mode=mode_cli)
     if sem_cli:
         return sem_cli
+
+    feat_skip = _cell_enabled_test_features_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
+    if feat_skip:
+        return feat_skip
 
     feat_skip = _cell_test_feature_skip_reason(
         cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
@@ -1591,6 +1618,7 @@ def validate_run_args(
                         f"{arg_name} unknown value(s): {', '.join(unknown)}. "
                         f"Known: {', '.join(tokens)}"
                     )
+            continue
         if not choices:
             continue
 

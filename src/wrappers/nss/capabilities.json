@@ -4,7 +4,7 @@
     "tls_port": 15553,
     "compose_service": "nss",
     "unsupported_tls_fields": ["certificate", "private_key", "ca_file"],
-    "local_cli": ["tstclnt", "selfserv", "socat", "stdbuf", "certutil", "pk12util", "openssl"]
+    "local_cli": ["tstclnt", "selfserv", "stdbuf", "certutil", "pk12util"]
   },
   "tls13": {
     "cipher_suite": {
@@ -171,6 +171,16 @@
       "supported": true,
       "wired": true,
       "description": "Mutual TLS client certificate authentication"
+    },
+    "resumption": {
+      "supported": true,
+      "wired": true,
+      "description": "TLS 1.3 Session Resumption using internal NSS cache"
+    },
+    "0rtt": {
+      "supported": true,
+      "wired": true,
+      "description": "TLS 1.3 Zero-RTT Early Data"
     }
   }
 }

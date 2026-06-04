@@ -49,6 +49,21 @@ def test_feature_enabled_in_config(config: Any, feature: str) -> bool:
     return feature.strip().lower() in repeated_config_tokens(config, "psk_modes")
 
 
+def remove_tls_session_artifact_files(repo_root: str) -> None:
+    """Delete ``session.ticket`` and ``early_data.txt`` under the wrapper repo root."""
+    root = (repo_root or "").strip()
+    if not root:
+        return
+    for name in ("session.ticket", "early_data.txt"):
+        path = os.path.join(root, name)
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            pass
+
+
 def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
     """Maps ``TlsConfig.version`` to TLS 1.2 or TLS 1.3 mode."""
     if config is None:

@@ -12,7 +12,8 @@ RUN mkdir -p /grpc-deps \
 
 FROM fedora:39 AS runtime
 RUN dnf install -y --nodocs --setopt=install_weak_deps=False \
-        python3 openssl gnutls-utils nss-tools socat coreutils \
+        python3 openssl gnutls-utils nss-tools coreutils \
+        gcc pkgconf-pkg-config gnutls-devel \
     && dnf clean all \
     && rm -rf /var/cache/dnf /tmp/sandbox-* /tmp/* /var/tmp/*
 
@@ -29,7 +30,9 @@ COPY scripts/gen_interop_certs.sh ./scripts/
 
 RUN bash ./scripts/gen_interop_certs.sh \
     && ln -sf certs/rsa_default.crt /app/cert.pem \
-    && ln -sf certs/rsa_default.key /app/key.pem
+    && ln -sf certs/rsa_default.key /app/key.pem \
+    && gcc -shared -fPIC -o /app/wrappers/gnutls/gnutls_session_hook.so \
+        /app/wrappers/gnutls/gnutls_session_hook.c -lgnutls
 
 EXPOSE 50051 50052 50053
 EXPOSE 5555

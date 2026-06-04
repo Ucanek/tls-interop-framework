@@ -35,6 +35,8 @@ from core.catalog import (
 
 ensure_import_paths()
 
+from wrappers.utils import remove_tls_session_artifact_files
+
 from proto import interop_pb2, interop_pb2_grpc
 
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
@@ -612,6 +614,27 @@ def tls_config_from_cell(
     return cfg
 
 
+def wrapper_filesystem_root(session: BaseExecutionSession) -> str:
+    """Repo root path as seen inside wrapper processes (host repo locally, ``/app`` in Compose)."""
+    if session.local_mode:
+        return str(session.repo.resolve())
+    return "/app"
+
+
+def _copy_tls_config(cfg: interop_pb2.TlsConfig) -> interop_pb2.TlsConfig:
+    out = interop_pb2.TlsConfig()
+    out.CopyFrom(cfg)
+    return out
+
+
+def tls_config_resumption_or_0rtt_active(cfg: interop_pb2.TlsConfig) -> bool:
+    from wrappers.utils import test_feature_enabled_in_config
+
+    return test_feature_enabled_in_config(
+        cfg, "resumption"
+    ) or test_feature_enabled_in_config(cfg, "0rtt")
+
+
 def run_matrix_cell_grpc(
     cell: dict[str, str],
     session: BaseExecutionSession,
@@ -626,6 +649,9 @@ def run_matrix_cell_grpc(
     repo = session.repo
     server_conf = tls_config_from_cell(cell, interop_pb2.SERVER, repo=repo)
     client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT, repo=repo)
+    wroot = wrapper_filesystem_root(session)
+    server_conf.repo_root = wroot
+    client_conf.repo_root = wroot
     local_mode = session.local_mode
     tcp_host, tcp_port = apply_matrix_tls_endpoints(
         server,
@@ -635,59 +661,63 @@ def run_matrix_cell_grpc(
         local_mode=local_mode,
         repo=session.repo,
     )
-    if (
-        not local_mode
-        and server_conf.port > 0
-        and server_conf.port != 5555
-    ):
-        if verbose:
-            print(
-                f"{YELLOW}[Driver] Note: Compose mode expects TLS port 5555 inside "
-                f"containers (got {server_conf.port}); host check uses {tcp_port}{RESET}",
-                file=sys.stderr,
-            )
+    try:
+        if (
+            not local_mode
+            and server_conf.port > 0
+            and server_conf.port != 5555
+        ):
+            if verbose:
+                print(
+                    f"{YELLOW}[Driver] Note: Compose mode expects TLS port 5555 inside "
+                    f"containers (got {server_conf.port}); host check uses {tcp_port}{RESET}",
+                    file=sys.stderr,
+                )
 
-    driver = InteropDriver(
-        session.grpc_addr(server),
-        session.grpc_addr(client),
-        verbose=verbose,
-    )
-    driver.server_metadata = session.metadata.get(server)
-    driver.client_metadata = session.metadata.get(client)
+        driver = InteropDriver(
+            session.grpc_addr(server),
+            session.grpc_addr(client),
+            verbose=verbose,
+        )
+        driver.server_metadata = session.metadata.get(server)
+        driver.client_metadata = session.metadata.get(client)
 
-    if skip := driver.scenario_skip_reason_for_configs(server_conf, client_conf):
-        if verbose:
-            print(f"{YELLOW}[Driver] SKIP: {skip}{RESET}")
-        else:
-            short = skip[:120].replace("\n", " ")
-            print(f"{YELLOW}○{RESET}  interop  ({short})")
-        return EXIT_SKIP
-
-    driver._last_skip_reason = None
-    driver._last_failure = None
-    ok = driver.run_test_with_configs(
-        server_conf,
-        client_conf,
-        tcp_host=tcp_host,
-        tcp_port=tcp_port,
-    )
-
-    if driver._last_skip_reason:
-        if verbose:
-            print(f"{YELLOW}[Driver] SKIP: {driver._last_skip_reason}{RESET}")
+        if skip := driver.scenario_skip_reason_for_configs(server_conf, client_conf):
+            if verbose:
+                print(f"{YELLOW}[Driver] SKIP: {skip}{RESET}")
+            else:
+                short = skip[:120].replace("\n", " ")
+                print(f"{YELLOW}○{RESET}  interop  ({short})")
             return EXIT_SKIP
-        short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-        print(f"{YELLOW}○{RESET}  interop  ({short})")
-        return EXIT_SKIP
-    if verbose:
+
+        driver._last_skip_reason = None
+        driver._last_failure = None
+        ok = driver.run_test_with_configs(
+            server_conf,
+            client_conf,
+            tcp_host=tcp_host,
+            tcp_port=tcp_port,
+            client_wrapper=client,
+        )
+
+        if driver._last_skip_reason:
+            if verbose:
+                print(f"{YELLOW}[Driver] SKIP: {driver._last_skip_reason}{RESET}")
+                return EXIT_SKIP
+            short = driver._last_skip_reason[:200].replace("\n", " ").strip()
+            print(f"{YELLOW}○{RESET}  interop  ({short})")
+            return EXIT_SKIP
+        if verbose:
+            return 0 if ok else 1
+        detail = ""
+        if not ok and driver._last_failure:
+            detail = (driver._last_failure[2] or "").replace("\n", " ").strip()[:220]
+        suf = f"  ({detail})" if detail else ""
+        mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
+        print(f"{mark}  interop{suf}")
         return 0 if ok else 1
-    detail = ""
-    if not ok and driver._last_failure:
-        detail = (driver._last_failure[2] or "").replace("\n", " ").strip()[:220]
-    suf = f"  ({detail})" if detail else ""
-    mark = f"{GREEN}✓{RESET}" if ok else f"{RED}✗{RESET}"
-    print(f"{mark}  interop{suf}")
-    return 0 if ok else 1
+    finally:
+        remove_tls_session_artifact_files(wroot)
 
 # --- gRPC test driver ---
 
@@ -696,6 +726,7 @@ FAILURE = interop_pb2.OperationResponse.FAILURE
 
 _TCP_AFTER_ESTABLISH_S = 20.0
 _TRANSMIT_GAP_S = 1.0
+_NSS_RESUMPTION_PRE_TRANSMIT_S = 0.5
 _TEST_PAYLOAD = b"INTEROP_SECRET_TOKEN"
 
 
@@ -902,6 +933,114 @@ class InteropDriver:
                 msg = f"[Driver] CLOSE {role} exception: {e}"
                 print(msg if self._verbose else f"{RED}FAIL{RESET}  CLOSE {role}: {e}")
 
+    def _run_post_establish_round_trip(
+        self,
+        *,
+        server_conf: interop_pb2.TlsConfig,
+        client_conf: interop_pb2.TlsConfig,
+        tcp_host: str,
+        tcp_port: int,
+        ver: str,
+        client_wrapper: str = "",
+    ) -> bool:
+        """Host TCP check, TRANSMIT client→server, verify echoed payload."""
+        ok_peer, _ = wait_tcp_connect(
+            tcp_host, int(tcp_port), timeout_s=_TCP_AFTER_ESTABLISH_S
+        )
+        if not ok_peer:
+            self._vprint(
+                f"{RED}[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}{RESET}"
+            )
+            self._last_failure = (
+                "wait_tcp",
+                FAILURE,
+                f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH",
+            )
+            return False
+
+        if (
+            (client_wrapper or "").strip().lower() == "nss"
+            and tls_config_resumption_or_0rtt_active(client_conf)
+        ):
+            time.sleep(_NSS_RESUMPTION_PRE_TRANSMIT_S)
+
+        self._vprint(f"[Driver] Transmitting: {_TEST_PAYLOAD.decode()}")
+        r_tx = self.client_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.TRANSMIT,
+                role=interop_pb2.CLIENT,
+                payload=_TEST_PAYLOAD,
+            )
+        )
+        if not self._check_response(r_tx, "TRANSMIT client"):
+            return False
+
+        time.sleep(_TRANSMIT_GAP_S)
+        r_srv = self.server_stub.ExecuteOperation(
+            interop_pb2.OperationRequest(
+                type=interop_pb2.OperationRequest.TRANSMIT,
+                role=interop_pb2.SERVER,
+            )
+        )
+        if not self._check_response(r_srv, "TRANSMIT server"):
+            return False
+
+        if _TEST_PAYLOAD in r_srv.output_data:
+            self._vprint(f"{GREEN}>>> PASSED: payload echoed (TLS {ver}) <<<{RESET}")
+            return True
+        self._vprint(f"{RED}>>> FAILED: echo mismatch <<<{RESET}")
+        self._last_failure = (
+            "verify",
+            FAILURE,
+            "server output did not contain echoed payload",
+        )
+        return False
+
+    def _run_resumption_or_0rtt_test(
+        self,
+        server_conf: interop_pb2.TlsConfig,
+        client_conf: interop_pb2.TlsConfig,
+        *,
+        tcp_host: str,
+        tcp_port: int,
+        client_wrapper: str = "",
+    ) -> bool:
+        """Server stays up; client save handshake then resume (final result + logs from resume)."""
+        ver = (server_conf.version or "").strip() or "default"
+        try:
+            self._vprint(f"[Driver] Resumption/0-RTT round-trip (TLS {ver})")
+            self._vprint("[Driver] Establishing server (persistent)...")
+            r = self._execute_establish(self.server_stub, interop_pb2.SERVER, server_conf)
+            if not self._check_response(r, "ESTABLISH server"):
+                return False
+
+            save_conf = _copy_tls_config(client_conf)
+            save_conf.resumption_step = "save"
+            self._vprint("[Driver] Resumption step 1: save session ticket...")
+            r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, save_conf)
+            if not self._check_response(r, "ESTABLISH client (resumption save)"):
+                return False
+
+            resume_conf = _copy_tls_config(client_conf)
+            resume_conf.resumption_step = "resume"
+            self._vprint("[Driver] Resumption step 2: resume session...")
+            r = self._execute_establish(
+                self.client_stub, interop_pb2.CLIENT, resume_conf
+            )
+            if not self._check_response(r, "ESTABLISH client (resumption resume)"):
+                return False
+
+            return self._run_post_establish_round_trip(
+                server_conf=server_conf,
+                client_conf=client_conf,
+                tcp_host=tcp_host,
+                tcp_port=tcp_port,
+                ver=ver,
+                client_wrapper=client_wrapper,
+            )
+        finally:
+            self._cleanup()
+
     def run_test_with_configs(
         self,
         server_conf: interop_pb2.TlsConfig,
@@ -909,9 +1048,18 @@ class InteropDriver:
         *,
         tcp_host: str,
         tcp_port: int,
+        client_wrapper: str = "",
     ) -> bool:
         """ESTABLISH server → client → host TCP check → TRANSMIT → CLOSE (wrapper idle)."""
         self._last_skip_reason = None
+        if tls_config_resumption_or_0rtt_active(client_conf):
+            return self._run_resumption_or_0rtt_test(
+                server_conf,
+                client_conf,
+                tcp_host=tcp_host,
+                tcp_port=tcp_port,
+                client_wrapper=client_wrapper,
+            )
         ver = (server_conf.version or "").strip() or "default"
         try:
             self._vprint(f"[Driver] Round-trip (TLS {ver})")
@@ -923,50 +1071,13 @@ class InteropDriver:
             if not self._check_response(r, "ESTABLISH client"):
                 return False
 
-            ok_peer, _ = wait_tcp_connect(
-                tcp_host, int(tcp_port), timeout_s=_TCP_AFTER_ESTABLISH_S
+            return self._run_post_establish_round_trip(
+                server_conf=server_conf,
+                client_conf=client_conf,
+                tcp_host=tcp_host,
+                tcp_port=tcp_port,
+                ver=ver,
+                client_wrapper=client_wrapper,
             )
-            if not ok_peer:
-                self._vprint(
-                    f"{RED}[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}{RESET}"
-                )
-                self._last_failure = (
-                    "wait_tcp",
-                    FAILURE,
-                    f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH",
-                )
-                return False
-
-            self._vprint(f"[Driver] Transmitting: {_TEST_PAYLOAD.decode()}")
-            r_tx = self.client_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.TRANSMIT,
-                    role=interop_pb2.CLIENT,
-                    payload=_TEST_PAYLOAD,
-                )
-            )
-            if not self._check_response(r_tx, "TRANSMIT client"):
-                return False
-
-            time.sleep(_TRANSMIT_GAP_S)
-            r_srv = self.server_stub.ExecuteOperation(
-                interop_pb2.OperationRequest(
-                    type=interop_pb2.OperationRequest.TRANSMIT,
-                    role=interop_pb2.SERVER,
-                )
-            )
-            if not self._check_response(r_srv, "TRANSMIT server"):
-                return False
-
-            if _TEST_PAYLOAD in r_srv.output_data:
-                self._vprint(f"{GREEN}>>> PASSED: payload echoed (TLS {ver}) <<<{RESET}")
-                return True
-            self._vprint(f"{RED}>>> FAILED: echo mismatch <<<{RESET}")
-            self._last_failure = (
-                "verify",
-                FAILURE,
-                "server output did not contain echoed payload",
-            )
-            return False
         finally:
             self._cleanup()

@@ -13,9 +13,7 @@ import os
 import re
 import shutil
 import socket
-import subprocess
 import threading
-import time
 from pathlib import Path
 
 from core.catalog import (
@@ -231,7 +229,6 @@ class NSSWrapper(BaseTemplateWrapper):
 
     def __init__(self) -> None:
         super().__init__()
-        self._socat_proc = None
         from core.catalog import repository_root
 
         self._nssdb = os.environ.get(
@@ -329,25 +326,11 @@ class NSSWrapper(BaseTemplateWrapper):
             )
 
     def _start_server(self, config):
-        mtls = test_feature_enabled_in_config(config, "mtls")
         self._ensure_nss_db_ready()
         self._skip_if_nss_eddsa_unsupported(config, server=True)
         nss_ver = _tls_version_range(config)
-        ext_port = int(config.port)
-        inner_port = ext_port + 10000
+        port = int(config.port)
         cwd = os.getcwd()
-        socat_cmd = [
-            "socat",
-            f"TCP-LISTEN:{ext_port},bind=0.0.0.0,fork,reuseaddr",
-            f"TCP:127.0.0.1:{inner_port}",
-        ]
-        self._socat_proc = subprocess.Popen(
-            socat_cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        time.sleep(0.4)
         cmd = [
             "stdbuf",
             "-o0",
@@ -357,13 +340,12 @@ class NSSWrapper(BaseTemplateWrapper):
             "-n",
             self._nss_server_nickname(config),
             "-p",
-            str(inner_port),
+            str(port),
             "-V",
             nss_ver,
             *self._nss_tls_argv(config),
-            *self._session_ticket_args(config),
         ]
-        if mtls:
+        if test_feature_enabled_in_config(config, "mtls"):
             cmd.append("-r")
         cmd.extend(
             [
@@ -371,15 +353,14 @@ class NSSWrapper(BaseTemplateWrapper):
                 "-v",
             ]
         )
-        logs = "\n".join(
-            (
-                format_executed_command(socat_cmd, cwd),
-                format_executed_command(cmd, cwd),
-            )
-        )
+        logs = format_executed_command(cmd, cwd)
         return popen_stdio_merged(cmd, cwd=cwd), logs, "NSS Server started"
 
     def _start_client(self, config):
+        has_resumption = test_feature_enabled_in_config(config, "resumption")
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+        step = (getattr(config, "resumption_step", None) or "").strip()
+
         self._ensure_nss_db_ready()
         self._skip_if_nss_eddsa_unsupported(config, server=False)
         nss_ver = _tls_version_range(config)
@@ -395,6 +376,8 @@ class NSSWrapper(BaseTemplateWrapper):
             *self._nss_tls_argv(config),
             "-o",
         ]
+        if (has_resumption or has_0rtt) and step == "resume":
+            cmd.append("-R")
         if test_feature_enabled_in_config(config, "mtls"):
             cmd.extend(["-n", "interop_rsa_default"])
         cmd.extend(
@@ -417,22 +400,8 @@ class NSSWrapper(BaseTemplateWrapper):
     def _server_transmit_poll(self) -> bool:
         return True
 
-    def _terminate_socat_proxy(self) -> None:
-        if self._socat_proc:
-            self._socat_proc.terminate()
-            try:
-                self._socat_proc.wait(timeout=2)
-            except subprocess.TimeoutExpired:
-                self._socat_proc.kill()
-        self._socat_proc = None
-
-    def _release_server_aux(self) -> None:
-        """Drop socat only; NSS DB stays populated for nss×nss client ESTABLISH."""
-        self._terminate_socat_proxy()
-
     def _extra_cleanup(self) -> None:
         super()._extra_cleanup()
-        self._terminate_socat_proxy()
         self._cleanup_nss_db()
 
 

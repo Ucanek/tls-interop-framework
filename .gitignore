@@ -38,3 +38,5 @@ sslkeylog*.txt
 
 # Scenarios
 scenarios/
+
+src/wrappers/gnutls/gnutls_session_hook.so

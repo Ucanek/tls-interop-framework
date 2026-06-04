@@ -99,6 +99,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         self.server_proc: subprocess.Popen[bytes] | None = None
         self.client_proc: subprocess.Popen[bytes] | None = None
         self._used_ephemeral_pem: bool = False
+        self._session_artifact_repo_root: str = ""
 
     @property
     @abstractmethod
@@ -314,6 +315,10 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 except OSError:
                     pass
             self._used_ephemeral_pem = False
+        if self._session_artifact_repo_root:
+            from wrappers.utils import remove_tls_session_artifact_files
+
+            remove_tls_session_artifact_files(self._session_artifact_repo_root)
 
     def _release_server_aux(self) -> None:
         """Hook: release server-side proxy/aux processes without touching the client role."""
@@ -403,6 +408,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         else:
             self._release_client_before_establish()
         self._validate_config_supported(request.config, role=request.role)
+        repo_root = (getattr(request.config, "repo_root", None) or "").strip()
+        if repo_root:
+            self._session_artifact_repo_root = repo_root
         status = interop_pb2.OperationResponse.SUCCESS
         msg = ""
         logs = ""

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 import subprocess
+from pathlib import Path
 from typing import Any
 
 from core.catalog import (
@@ -15,6 +16,7 @@ from core.catalog import (
     load_local_capabilities,
     norm_catalog_token,
     psk_material_from_capabilities,
+    repository_root,
 )
 from core.identity import (
     catalog_identity_pem_paths_for_prefix,
@@ -66,6 +68,13 @@ def _append_seclevel_zero(cipher_val: str) -> str:
     if ":@SECLEVEL" in cipher_val:
         return cipher_val
     return f"{cipher_val}:@SECLEVEL=0"
+
+
+def _openssl_session_state_paths(config: Any) -> tuple[str, str]:
+    """Session ticket and 0-RTT payload paths under ``TlsConfig.repo_root`` (or repo root)."""
+    raw = (getattr(config, "repo_root", None) or "").strip()
+    root = Path(raw).resolve() if raw else repository_root()
+    return str(root / "session.ticket"), str(root / "early_data.txt")
 
 
 def _build_tls_argv(
@@ -299,6 +308,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return ["-servername", host]
 
     def _start_server(self, config):
+        has_resumption = test_feature_enabled_in_config(config, "resumption")
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+
         cert_path, key_path = self._ensure_cert_paths(config)
         cmd = (
             ["openssl", "s_server"]
@@ -313,6 +325,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             ]
             + self._build_common_args(config, for_server=True)
         )
+        if has_0rtt:
+            cmd = list(cmd) + ["-early_data"]
         if test_feature_enabled_in_config(config, "mtls"):
             ca_path = (getattr(config, "ca_file", None) or "").strip()
             if not ca_path or not os.path.isfile(ca_path):
@@ -327,6 +341,10 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return proc, format_executed_command(cmd, cwd), "Server started"
 
     def _start_client(self, config):
+        has_resumption = test_feature_enabled_in_config(config, "resumption")
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+        session_file, early_data_file = _openssl_session_state_paths(config)
+
         host = getattr(config, "server_hostname", None) or "localhost"
         tls_flag_pack = self._build_common_args(config, for_server=False)
         cmd = (
@@ -336,6 +354,14 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             + self._client_sni_args(config)
             + tls_flag_pack
         )
+        step = (getattr(config, "resumption_step", "") or "").strip()
+        if (has_resumption or has_0rtt) and step == "save":
+            cmd = list(cmd) + ["-sess_out", session_file]
+        if (has_resumption or has_0rtt) and step == "resume":
+            cmd = list(cmd) + ["-sess_in", session_file]
+            if has_0rtt:
+                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
+                cmd = list(cmd) + ["-early_data", early_data_file]
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config)
             cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
