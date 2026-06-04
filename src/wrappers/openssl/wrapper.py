@@ -18,8 +18,10 @@ from core.catalog import (
 )
 from core.identity import (
     catalog_identity_pem_paths_for_prefix,
+    catalog_identity_trust_pem_path,
     cipher_catalog_id_uses_dsa_auth,
     repeated_config_tokens,
+    server_trust_signature_schemes_tokens,
 )
 from wrappers.base import (
     BaseTemplateWrapper,
@@ -311,6 +313,15 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             ]
             + self._build_common_args(config, for_server=True)
         )
+        if test_feature_enabled_in_config(config, "mtls"):
+            ca_path = (getattr(config, "ca_file", None) or "").strip()
+            if not ca_path or not os.path.isfile(ca_path):
+                ca_path = catalog_identity_trust_pem_path(
+                    server_trust_signature_schemes_tokens(config)
+                )
+            if not ca_path or not os.path.isfile(ca_path):
+                ca_path = cert_path
+            cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
         return proc, format_executed_command(cmd, cwd), "Server started"
@@ -325,6 +336,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             + self._client_sni_args(config)
             + tls_flag_pack
         )
+        if test_feature_enabled_in_config(config, "mtls"):
+            client_cert, client_key = self._ensure_cert_paths(config)
+            cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
         return proc, format_executed_command(cmd, cwd), "Client connected"

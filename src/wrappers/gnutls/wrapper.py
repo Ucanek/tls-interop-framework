@@ -287,6 +287,11 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         )
         if not prio:
             raise RuntimeError("empty GnuTLS priority string")
+        client_cert_flag = (
+            "--require-client-cert"
+            if test_feature_enabled_in_config(config, "mtls")
+            else "--disable-client-cert"
+        )
         cmd = [
             "gnutls-serv",
             "-p",
@@ -295,7 +300,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             cert_path,
             "--x509keyfile",
             key_path,
-            "--disable-client-cert",
+            client_cert_flag,
             *mid,
             "--priority",
             prio,
@@ -324,8 +329,11 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             *mid,
             "--priority",
             prio,
-            host,
         ]
+        if test_feature_enabled_in_config(config, "mtls"):
+            client_cert, client_key = self._ensure_cert_paths(config)
+            cmd.extend(["--x509certfile", client_cert, "--x509keyfile", client_key])
+        cmd.append(host)
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
         return proc, format_executed_command(cmd, cwd), "GnuTLS Client connected"

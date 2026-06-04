@@ -329,6 +329,7 @@ class NSSWrapper(BaseTemplateWrapper):
             )
 
     def _start_server(self, config):
+        mtls = test_feature_enabled_in_config(config, "mtls")
         self._ensure_nss_db_ready()
         self._skip_if_nss_eddsa_unsupported(config, server=True)
         nss_ver = _tls_version_range(config)
@@ -362,6 +363,8 @@ class NSSWrapper(BaseTemplateWrapper):
             *self._nss_tls_argv(config),
             *self._session_ticket_args(config),
         ]
+        if mtls:
+            cmd.append("-r")
         cmd.extend(
             [
                 "-v",
@@ -392,6 +395,8 @@ class NSSWrapper(BaseTemplateWrapper):
             *self._nss_tls_argv(config),
             "-o",
         ]
+        if test_feature_enabled_in_config(config, "mtls"):
+            cmd.extend(["-n", "interop_rsa_default"])
         cmd.extend(
             [
                 "-p",

@@ -195,6 +195,11 @@
       "supported": true,
       "default_enabled": false,
       "wired": true
+    },
+    "mtls": {
+      "supported": true,
+      "wired": true,
+      "description": "Mutual TLS client certificate authentication"
     }
   }
 }

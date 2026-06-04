@@ -134,7 +134,7 @@ def _ensure_nss_db_identities(
             )
             try:
                 _run_checked([pk12util, "-d", db_spec, "-i", p12_path, "-W", "", "-K", ""])
-                _run_checked([certutil, "-M", "-d", db_spec, "-n", nickname, "-t", "u,u,u"])
+                _run_checked([certutil, "-M", "-d", db_spec, "-n", nickname, "-t", "CT,u,u"])
             finally:
                 if os.path.isfile(p12_path):
                     os.remove(p12_path)
