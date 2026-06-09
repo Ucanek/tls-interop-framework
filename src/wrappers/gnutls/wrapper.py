@@ -35,6 +35,7 @@ from wrappers.base import (
     serve_insecure,
 )
 from wrappers.utils import (
+    alpn_cli_protocol_list,
     is_server_role,
     standard_library_metadata,
     test_feature_enabled_in_config,
@@ -385,6 +386,9 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         ]
         if has_0rtt:
             cmd.append("--earlydata")
+        alpn = alpn_cli_protocol_list(config)
+        if alpn:
+            cmd.extend(["--alpn", alpn])
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
@@ -425,6 +429,9 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config)
             cmd.extend(["--x509certfile", client_cert, "--x509keyfile", client_key])
+        alpn = alpn_cli_protocol_list(config)
+        if alpn:
+            cmd.extend(["--alpn", alpn])
         cmd.append(host)
         cwd = os.getcwd()
         base_env = self._popen_env(config)

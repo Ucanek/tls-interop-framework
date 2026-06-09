@@ -44,6 +44,17 @@ def parse_version_line(out: str | None) -> str:
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
+def alpn_protocols_from_config(config: Any) -> list[str]:
+    raw = getattr(config, "alpn_protocols", None) or []
+    return [str(p).strip() for p in raw if str(p).strip()]
+
+
+def alpn_cli_protocol_list(config: Any) -> str:
+    """Comma-separated ALPN ids for backend CLI flags (empty when unset)."""
+    protos = alpn_protocols_from_config(config)
+    return ",".join(protos) if protos else ""
+
+
 def test_feature_enabled_in_config(config: Any, feature: str) -> bool:
     """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
     return feature.strip().lower() in repeated_config_tokens(config, "psk_modes")

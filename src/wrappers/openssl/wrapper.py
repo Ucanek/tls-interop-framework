@@ -33,6 +33,7 @@ from wrappers.base import (
     serve_insecure,
 )
 from wrappers.utils import (
+    alpn_cli_protocol_list,
     standard_library_metadata,
     test_feature_enabled_in_config,
     tls_mode_12_or_13,
@@ -299,6 +300,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         args = list(_build_tls_argv(config, role=role).argv)
         if for_server and bool(getattr(config, "session_tickets_enabled", False)):
             args.extend(["-num_tickets", "2"])
+        alpn = alpn_cli_protocol_list(config)
+        if alpn:
+            args.extend(["-alpn", alpn])
         return args
 
     def _client_sni_args(self, config) -> list[str]:

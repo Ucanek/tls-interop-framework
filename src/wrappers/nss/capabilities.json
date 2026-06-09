@@ -3,7 +3,7 @@
     "grpc_addr": "127.0.0.1:15053",
     "tls_port": 15553,
     "compose_service": "nss",
-    "unsupported_tls_fields": ["certificate", "private_key", "ca_file"],
+    "unsupported_tls_fields": ["certificate", "private_key", "ca_file", "alpn_protocols"],
     "local_cli": ["tstclnt", "selfserv", "stdbuf", "certutil", "pk12util"]
   },
   "tls13": {
@@ -182,5 +182,11 @@
       "wired": true,
       "description": "TLS 1.3 Zero-RTT Early Data"
     }
+  },
+  "alpn_protocols": {
+    "supported": false,
+    "description": "tstclnt/selfserv do not expose ALPN via CLI (-A reads a file, not ALPN)",
+    "h2": { "supported": false, "description": "HTTP/2 over TLS" },
+    "http/1.1": { "supported": false, "description": "HTTP/1.1 traditional" }
   }
 }

@@ -40,3 +40,5 @@ sslkeylog*.txt
 scenarios/
 
 src/wrappers/gnutls/gnutls_session_hook.so
+
+.cursorrules

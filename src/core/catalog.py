@@ -46,6 +46,10 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
         "description": "Advertised TLS signature algorithms.",
     },
     {
+        "id": "alpn",
+        "description": "ALPN protocol identifiers offered by the endpoint (e.g. h2, http/1.1)."
+    },
+    {
         "id": "test_features",
         "description": (
             "Credentials for special ciphers (psk, anonymous). "
@@ -70,6 +74,7 @@ OPTION_GROUPS: dict[str, str] = {
     "tls_version": "protocol",
     "supported_groups": "crypto",
     "signature_schemes": "crypto",
+    "alpn": "protocol",
     "ca_file": "security",
     "certificate_pem": "security",
     "private_key_pem": "security",
@@ -81,15 +86,21 @@ NON_TLS_OPTION_IDS: frozenset[str] = frozenset({"server_wrapper", "client_wrappe
 # Applied once per run (suite/CLI), not Cartesian-expanded with cipher_suite.
 NON_MATRIX_OPTION_IDS: frozenset[str] = frozenset({"test_features"})
 MULTI_VALUE_OPTION_IDS: frozenset[str] = frozenset(
-    {"supported_groups", "signature_schemes", "test_features"}
+    {"supported_groups", "signature_schemes", "alpn", "test_features"}
 )
 ASYMMETRIC_SCALAR_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "tls_version"})
 ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset(
-    {"cipher_suite", "signature_schemes", "supported_groups", "tls_version"}
+    {
+        "cipher_suite",
+        "signature_schemes",
+        "supported_groups",
+        "tls_version",
+        "alpn",
+    }
 )
 
 CAPABILITY_DIMENSIONS: frozenset[str] = frozenset(
-    {"cipher_suite", "supported_groups", "signature_schemes", "tls_version"}
+    {"cipher_suite", "supported_groups", "signature_schemes", "tls_version", "alpn"}
 )
 TLS13_ORTHOGONAL_DIMS: frozenset[str] = frozenset(
     {"supported_groups", "signature_schemes"}
@@ -554,6 +565,27 @@ def backend_supports_cipher(
     return key in mp or catalog_id in mp
 
 
+def capability_dimension_name(option_id: str) -> str:
+    """Map CLI/matrix option id to the matching ``capabilities.json`` block key."""
+    if (option_id or "").strip() == "alpn":
+        return "alpn_protocols"
+    return (option_id or "").strip()
+
+
+def _capability_block_meta_keys() -> frozenset[str]:
+    return frozenset({"supported", "wired", "description"})
+
+
+def _capability_token_supported(block: dict[str, Any], token: str) -> bool:
+    if block.get("supported") is False:
+        return False
+    key = norm_catalog_token(token)
+    entry = block.get(key) if key in block else block.get(token)
+    if isinstance(entry, dict) and entry.get("supported") is False:
+        return False
+    return key in block or token in block
+
+
 def dimension_keys(
     capabilities: dict[str, Any],
     dimension: str,
@@ -567,7 +599,17 @@ def dimension_keys(
     block = capabilities.get(dimension)
     if not isinstance(block, dict):
         return []
-    return sorted(str(k) for k in block.keys() if k)
+    if block.get("supported") is False:
+        return []
+    meta = _capability_block_meta_keys()
+    out: list[str] = []
+    for key, entry in block.items():
+        if key in meta:
+            continue
+        if isinstance(entry, dict) and entry.get("supported") is False:
+            continue
+        out.append(str(key))
+    return sorted(out)
 
 
 def backend_supports_token(
@@ -584,8 +626,7 @@ def backend_supports_token(
     block = capabilities.get(dimension)
     if not isinstance(block, dict):
         return False
-    key = norm_catalog_token(token)
-    return key in block or token in block
+    return _capability_token_supported(block, token)
 
 
 def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -> dict[str, list[str]]:
@@ -593,11 +634,13 @@ def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -
     cipher: set[str] = set()
     groups: set[str] = set()
     sigs: set[str] = set()
+    alpn: set[str] = set()
     for wid in wrapper_ids:
         caps = load_capabilities(wid, repo)
         cipher.update(all_cipher_suite_ids(caps))
         groups.update(dimension_keys(caps, "supported_groups"))
         sigs.update(dimension_keys(caps, "signature_schemes"))
+        alpn.update(dimension_keys(caps, "alpn_protocols"))
     test_feats: set[str] = set()
     for wid in wrapper_ids:
         test_feats.update(test_feature_ids(load_capabilities(wid, repo)))
@@ -605,6 +648,7 @@ def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -
         "cipher_suite": sorted(cipher),
         "supported_groups": sorted(groups),
         "signature_schemes": sorted(sigs),
+        "alpn": sorted(alpn),
         "test_features": sorted(test_feats),
         "tls_version": ["1.2", "1.3"],
     }
@@ -803,6 +847,42 @@ def expand_dimension(value: str, choices: Sequence[str]) -> list[str]:
             f"Unknown value(s) {bad!r}; known: {', '.join(sorted(set(base)))}"
         )
     return parts
+
+
+def expand_alpn_matrix_axis(
+    value: str,
+    *,
+    wrapper_ids: Sequence[str],
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    catalog_choices: Sequence[str],
+) -> list[str]:
+    """
+    Expand ALPN matrix values into ``server:client`` pairs.
+
+    Symmetric comma lists / ``ALL`` become the Cartesian product of server and
+    client protocol choices. Values that already contain ``:`` pass through unchanged.
+    """
+    v = (value or "").strip()
+    if not v:
+        return [""]
+    if ":" in v:
+        return expand_capability_dimension(
+            v,
+            "alpn_protocols",
+            wrapper_ids=wrapper_ids,
+            caps_by_wrapper=caps_by_wrapper,
+            catalog_choices=catalog_choices,
+        )
+    tokens = expand_capability_dimension(
+        v,
+        "alpn_protocols",
+        wrapper_ids=wrapper_ids,
+        caps_by_wrapper=caps_by_wrapper,
+        catalog_choices=catalog_choices,
+    )
+    if not tokens or tokens == [""]:
+        return [""]
+    return [f"{srv}:{cli}" for srv in tokens for cli in tokens]
 
 
 def expand_capability_dimension(
@@ -1011,8 +1091,9 @@ def _check_list_dim(
     tokens = _split_cell_list_tokens(cell, dim, server=server)
     if not tokens:
         return None
+    cap_dim = capability_dimension_name(dim)
     for tok in tokens:
-        if not backend_supports_token(caps, dim, tok, mode=mode):
+        if not backend_supports_token(caps, cap_dim, tok, mode=mode):
             return f"{wrapper} lacks {dim}={tok!r}"
     return None
 
@@ -1399,7 +1480,7 @@ def cell_capability_skip_reason(
         if check:
             return check
 
-    for dim in ("supported_groups", "signature_schemes"):
+    for dim in ("supported_groups", "signature_schemes", "alpn"):
         for check in (
             _check_list_dim(
                 cell, dim, server=True, wrapper=f"server ({server})", caps=srv_caps, mode=mode_srv
@@ -1539,6 +1620,7 @@ def run_args_tls_config_view(
         cipher_suite=pick_scalar("cipher_suite"),
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
+        alpn_protocols=pick_list("alpn"),
         psk_modes=sorted(
             parse_test_features_enabled(",".join(pick_list("test_features")))
         ),
@@ -1723,18 +1805,28 @@ def matrix_axis_plan(
         tokens = option_choice_tokens(item) if ch else []
         raw = str(getattr(args, oid, "") or "")
         if oid in CAPABILITY_DIMENSIONS and tokens:
-            vals.append(
-                expand_capability_dimension(
-                    raw,
-                    oid,
-                    wrapper_ids=sorted(matrix_wrappers),
-                    caps_by_wrapper=caps_cache,
-                    catalog_choices=tokens,
-                    tls_mode=(
-                        cipher_tls_mode if oid == "cipher_suite" else None
-                    ),
+            if oid == "alpn":
+                vals.append(
+                    expand_alpn_matrix_axis(
+                        raw,
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                    )
                 )
-            )
+            else:
+                vals.append(
+                    expand_capability_dimension(
+                        raw,
+                        capability_dimension_name(oid),
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                        tls_mode=(
+                            cipher_tls_mode if oid == "cipher_suite" else None
+                        ),
+                    )
+                )
         elif tokens:
             vals.append(expand_dimension(raw, tokens))
         else:

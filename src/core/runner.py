@@ -529,12 +529,8 @@ def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[s
     raw = (cell.get(field) or "").strip()
     if not raw:
         return []
-    if ":" in raw:
-        left, right = split_asymmetric_csv(raw)
-        part = left if server else right
-    else:
-        part = raw
-    return [p.strip() for p in part.split(",") if p.strip()]
+    left, right = split_asymmetric_csv(raw)
+    return list(left if server else right)
 
 
 def _server_signature_schemes_from_cell(cell: dict[str, str]) -> list[str]:
@@ -604,6 +600,7 @@ def tls_config_from_cell(
     cfg.signature_schemes.extend(
         _pick_cell_list(cell, "signature_schemes", server=server)
     )
+    cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn", server=server))
     from core.catalog import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))

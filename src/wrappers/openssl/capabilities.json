@@ -187,5 +187,9 @@
       "wired": true,
       "description": "TLS 1.3 Zero-RTT Early Data"
     }
+  },
+  "alpn_protocols": {
+  "h2": { "supported": true, "description": "HTTP/2 over TLS" },
+  "http/1.1": { "supported": true, "description": "HTTP/1.1 traditional" }
   }
 }

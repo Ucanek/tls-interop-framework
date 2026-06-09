@@ -55,6 +55,7 @@ _SUITE_MATRIX_CLI: dict[str, str] = {
     "cipher_suite": "--cipher-suite",
     "supported_groups": "--supported-groups",
     "tls_version": "--tls-version",
+    "alpn": "--alpn",
     "test_features": "--test-features",
 }
 
@@ -170,6 +171,15 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         default="",
         help=(
             "TLS protocol version for the endpoint (TlsConfig.version)."
+            + _asym
+            + _matrix
+        ),
+    )
+    groups["protocol"].add_argument(
+        "--alpn",
+        default="",
+        help=(
+            "ALPN protocol identifiers offered by the endpoint (e.g. h2, http/1.1)."
             + _asym
             + _matrix
         ),
@@ -319,6 +329,7 @@ def _cell_summary_label(cell: dict[str, str]) -> str:
         "cipher_suite",
         "supported_groups",
         "signature_schemes",
+        "alpn",
     )
     parts: list[str] = []
     for k in ordered:
