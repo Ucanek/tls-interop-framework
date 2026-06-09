@@ -10,20 +10,11 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from core.identity import (
-    IDENTITY_PREFIXES,
-    catalog_identity_pem_paths_for_prefix,
-    cipher_catalog_id_uses_dsa_auth,
-    get_cert_prefix_for_config,
-    get_cert_prefix_for_schemes,
-    identity_pem_present,
-)
+from core.identity import(IDENTITY_PREFIXES, catalog_identity_pem_paths_for_prefix,
+    cipher_catalog_id_uses_dsa_auth, get_cert_prefix_for_config, get_cert_prefix_for_schemes, identity_pem_present)
 from wrappers.utils import parse_version_line
 
-_UNSUPPORTED_TOOL_PREFIXES = (
-    "/usr/lib64/nss/unsupported-tools",
-    "/usr/lib/nss/unsupported-tools",
-)
+_UNSUPPORTED_TOOL_PREFIXES = ("/usr/lib64/nss/unsupported-tools", "/usr/lib/nss/unsupported-tools")
 
 # NSS pk12util cannot import OpenSSL-generated Ed25519/Ed448 PKCS#12 (Mozilla bug 1993638).
 _NSS_SKIP_PKCS12_IMPORT_PREFIXES: frozenset[str] = frozenset({"ed25519", "ed448"})
@@ -67,17 +58,11 @@ def _run_checked(cmd: list[str]) -> subprocess.CompletedProcess[str]:
 
 
 def _nss_db_has_nickname(certutil: str, db_spec: str, nickname: str) -> bool:
-    r = subprocess.run(
-        [certutil, "-L", "-d", db_spec, "-n", nickname],
-        capture_output=True,
-        text=True,
-    )
+    r = subprocess.run([certutil, "-L", "-d", db_spec, "-n", nickname], capture_output=True, text=True)
     return r.returncode == 0
 
 
-def _ensure_nss_db_identities(
-    nssdb_path: str, identities: list[tuple[str, str, str]]
-) -> None:
+def _ensure_nss_db_identities(nssdb_path: str, identities: list[tuple[str, str, str]]) -> None:
     """
     Ensure NSS DB exists and contains every ``(nickname, cert_pem, key_pem)``.
 
@@ -97,9 +82,7 @@ def _ensure_nss_db_identities(
         os.makedirs(lock_parent, exist_ok=True)
     with open(lock_path, "w", encoding="utf-8") as lock:
         fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-        if all(
-            _nss_db_has_nickname(certutil, db_spec, nick) for nick, _, _ in identities
-        ):
+        if all(_nss_db_has_nickname(certutil, db_spec, nick) for nick, _, _ in identities):
             return
 
         if os.path.isdir(db_abs):
@@ -110,28 +93,10 @@ def _ensure_nss_db_identities(
 
         for nickname, cert_pem, key_pem in identities:
             if not (os.path.isfile(cert_pem) and os.path.isfile(key_pem)):
-                raise RuntimeError(
-                    f"NSS setup: missing PEM for {nickname}: {cert_pem!r} / {key_pem!r}"
-                )
+                raise RuntimeError(f"NSS setup: missing PEM for {nickname}: {cert_pem!r} / {key_pem!r}")
             p12_path = os.path.join(db_abs, f"{nickname}.p12")
-            _run_checked(
-                [
-                    openssl,
-                    "pkcs12",
-                    "-export",
-                    "-in",
-                    cert_pem,
-                    "-inkey",
-                    key_pem,
-                    "-out",
-                    p12_path,
-                    "-passout",
-                    "pass:",
-                    "-nodes",
-                    "-name",
-                    nickname,
-                ]
-            )
+            _run_checked([openssl, "pkcs12", "-export", "-in", cert_pem, "-inkey", key_pem, "-out", p12_path,
+                "-passout", "pass:", "-nodes", "-name", nickname])
             try:
                 _run_checked([pk12util, "-d", db_spec, "-i", p12_path, "-W", "", "-K", ""])
                 _run_checked([certutil, "-M", "-d", db_spec, "-n", nickname, "-t", "CT,u,u"])
@@ -144,24 +109,15 @@ def get_nss_library_version() -> str:
     """Package version string for ``GetMetadata`` (rpm or dpkg)."""
     try:
         if shutil.which("rpm"):
-            r = subprocess.run(
-                ["rpm", "-q", "nss-softokn"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+            r = subprocess.run(["rpm", "-q", "nss-softokn"], capture_output=True, text=True, timeout=5)
             if r.returncode == 0 and (r.stdout or "").strip():
                 return parse_version_line(r.stdout) or ""
     except (OSError, subprocess.SubprocessError):
         pass
     try:
         if shutil.which("dpkg-query"):
-            r = subprocess.run(
-                ["dpkg-query", "-W", "-f=${Version}\n", "libnss3"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
+            r = subprocess.run(["dpkg-query", "-W", "-f=${Version}\n", "libnss3"],
+                capture_output=True, text=True, timeout=5)
             if r.returncode == 0 and (r.stdout or "").strip():
                 return parse_version_line(r.stdout) or ""
     except (OSError, subprocess.SubprocessError):
@@ -173,27 +129,18 @@ def nss_server_nickname_for_signature_schemes(schemes: Sequence[str]) -> str:
     return nss_nickname_for_prefix(get_cert_prefix_for_schemes(schemes))
 
 
-def nss_server_nickname_for_config(
-    config: Any,
-    *,
-    repo: Path | None = None,
-) -> str:
+def nss_server_nickname_for_config(config: Any, *, repo: Path | None = None) -> str:
     """``selfserv -n`` nickname from server ``signature_schemes`` / ``cipher_suite``."""
     raw_cipher = str(getattr(config, "cipher_suite", None) or "").strip()
     if cipher_catalog_id_uses_dsa_auth(raw_cipher):
         if not identity_pem_present("dsa_default", repo=repo):
-            raise RuntimeError(
-                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-                "(run scripts/gen_interop_certs.sh)"
-            )
+            raise RuntimeError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
+                "(run scripts/gen_interop_certs.sh)")
         return nss_nickname_for_prefix("dsa_default")
     return nss_nickname_for_prefix(get_cert_prefix_for_config(config))
 
 
-def nss_interop_identity_import_rows(
-    *,
-    repo: Path | None = None,
-) -> list[tuple[str, str, str]]:
+def nss_interop_identity_import_rows(*, repo: Path | None = None) -> list[tuple[str, str, str]]:
     """
     Return ``(nickname, cert_pem_path, key_pem_path)`` for each identity bundle
     that exists on disk (used to populate NSS DB).

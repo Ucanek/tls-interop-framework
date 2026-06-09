@@ -28,10 +28,8 @@ def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return (
-            [p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()],
-        )
+        return ([p.strip() for p in left.split(",") if p.strip()],
+            [p.strip() for p in right.split(",") if p.strip()])
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
 
@@ -91,10 +89,7 @@ def is_server_role(role: Any | None) -> bool:
         return True
 
 
-def format_executed_command(
-    cmd: Sequence[object],
-    cwd: str | os.PathLike[str] | None = None,
-) -> str:
+def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None) -> str:
     """Formats argv as a shell-safe log line."""
     line = shlex.join(str(x) for x in cmd)
     if cwd is not None:
@@ -107,34 +102,18 @@ def _make_non_blocking(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
-def popen_stdio_merged(
-    cmd: Sequence[object],
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
-) -> subprocess.Popen[bytes]:
+def popen_stdio_merged(cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
     """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
-    p = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=os.fspath(cwd) if cwd is not None else None,
-        env=dict(env) if env is not None else None,
-    )
+    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        cwd=os.fspath(cwd) if cwd is not None else None, env=dict(env) if env is not None else None)
     if p.stdout:
         _make_non_blocking(p.stdout.fileno())
     return p
 
 
-def read_nonblocking_stdout(
-    proc: subprocess.Popen[bytes],
-    *,
-    timeout_s: float = 2.0,
-    idle_s: float = 0.05,
-    poll_s: float = 0.02,
-    max_bytes: int = 1 << 20,
-) -> bytes:
+def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0,
+    idle_s: float = 0.05, poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
     """
     Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
     """
@@ -163,19 +142,12 @@ def read_nonblocking_stdout(
     return b"".join(chunks)
 
 
-def capability(
-    name: str,
-    *flags: interop_pb2.ModifyFlag.ValueType,
-) -> interop_pb2.Capability:
+def capability(name: str, *flags: interop_pb2.ModifyFlag.ValueType) -> interop_pb2.Capability:
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
-def standard_library_metadata(
-    component_name: str,
-    version: str,
-    *,
-    capabilities: dict | None = None,
-) -> interop_pb2.LibraryMetadata:
+def standard_library_metadata(component_name: str, version: str, *,
+    capabilities: dict | None = None) -> interop_pb2.LibraryMetadata:
     """Returns capability matrix from ``capabilities.json`` when provided."""
     cap = capability
     r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
@@ -185,23 +157,14 @@ def standard_library_metadata(
     group_caps: list[str] = []
     try:
         if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
-                capabilities, component_name=component_name
-            )
+            version_caps, cipher_caps, group_caps = metadata_from_capabilities(capabilities,
+                component_name=component_name)
     except Exception:
         pass
-    version_caps_msg = [
-        cap(name, r, s, n) if can_set else cap(name, r, n)
-        for name, can_set in version_caps
-    ]
-    return interop_pb2.LibraryMetadata(
-        component_name=component_name,
-        version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-        supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps],
-        groups=[cap(name, r, n) for name in group_caps],
-    )
+    version_caps_msg = [cap(name, r, s, n) if can_set else cap(name, r, n) for name, can_set in version_caps]
+    return interop_pb2.LibraryMetadata(component_name=component_name, version=version,
+        roles=[interop_pb2.CLIENT, interop_pb2.SERVER], supported_versions=version_caps_msg,
+        cipher_suites=[cap(name, r, n) for name in cipher_caps], groups=[cap(name, r, n) for name in group_caps])
 
 
 def run_cli_version(argv: list[str], timeout: float = 5) -> str:
@@ -215,10 +178,7 @@ def run_cli_version(argv: list[str], timeout: float = 5) -> str:
     return "unknown"
 
 
-def serve_insecure(
-    wrapper_cls: Type[Any],
-    display_name: str,
-) -> None:
+def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
     """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
     from concurrent import futures
 

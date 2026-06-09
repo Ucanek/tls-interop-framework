@@ -8,36 +8,14 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from core.catalog import (
-    TranslationResult,
-    cipher_catalog_id_requires_anon,
-    cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities,
-    load_local_capabilities,
-    norm_catalog_token,
-    psk_material_from_capabilities,
-    repository_root,
-)
-from core.identity import (
-    catalog_identity_pem_paths_for_prefix,
-    catalog_identity_trust_pem_path,
-    cipher_catalog_id_uses_dsa_auth,
-    repeated_config_tokens,
-    server_trust_signature_schemes_tokens,
-)
-from wrappers.base import (
-    BaseTemplateWrapper,
-    WrapperSetupError,
-    format_executed_command,
-    popen_stdio_merged,
-    serve_insecure,
-)
-from wrappers.utils import (
-    alpn_cli_protocol_list,
-    standard_library_metadata,
-    test_feature_enabled_in_config,
-    tls_mode_12_or_13,
-)
+from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities, repository_root)
+from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
+    cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
+from wrappers.base import(BaseTemplateWrapper, WrapperSetupError,
+    format_executed_command, popen_stdio_merged, serve_insecure)
+from wrappers.utils import(alpn_cli_protocol_list, standard_library_metadata,
+    test_feature_enabled_in_config, tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
 
@@ -78,12 +56,8 @@ def _openssl_session_state_paths(config: Any) -> tuple[str, str]:
     return str(root / "session.ticket"), str(root / "early_data.txt")
 
 
-def _build_tls_argv(
-    config: Any,
-    *,
-    role: Any | None = None,
-    capabilities: dict[str, Any] | None = None,
-) -> TranslationResult:
+def _build_tls_argv(config: Any, *, role: Any | None = None,
+    capabilities: dict[str, Any] | None = None) -> TranslationResult:
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
     unsupported: list[str] = []
@@ -109,9 +83,7 @@ def _build_tls_argv(
                 unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.3 mapping)")
         elif key in cap12:
             cipher_val = cap12[key]
-            if test_feature_enabled_in_config(config, "anonymous") and cipher_catalog_id_requires_anon(
-                raw_cipher
-            ):
+            if test_feature_enabled_in_config(config, "anonymous") and cipher_catalog_id_requires_anon(raw_cipher):
                 cipher_val = _append_seclevel_zero(cipher_val)
             elif _openssl_cipher_needs_legacy_dss(raw_cipher):
                 cipher_val = _append_seclevel_zero(cipher_val)
@@ -119,24 +91,16 @@ def _build_tls_argv(
         else:
             unsupported.append(f"cipher_suite:{raw_cipher!r} (no TLS 1.2 mapping)")
 
-    if (
-        raw_cipher
-        and test_feature_enabled_in_config(config, "psk")
-        and cipher_catalog_id_requires_psk(raw_cipher)
-    ):
+    if (raw_cipher and test_feature_enabled_in_config(config, "psk")
+        and cipher_catalog_id_requires_psk(raw_cipher)):
         mat = psk_material_from_capabilities(caps, raw_cipher)
         if mat:
             argv.extend(["-psk_identity", mat[0], "-psk", mat[1]])
         else:
-            unsupported.append(
-                "psk (missing or wrong-length test_features.psk secret_hex_* for cipher)"
-            )
+            unsupported.append("psk (missing or wrong-length test_features.psk secret_hex_* for cipher)")
 
     if mode == "1.3":
-        for field, flag in (
-            ("supported_groups", "-groups"),
-            ("signature_schemes", "-sigalgs"),
-        ):
+        for field, flag in (("supported_groups", "-groups"), ("signature_schemes", "-sigalgs")):
             items = repeated_config_tokens(config, field)
             if not items:
                 continue
@@ -148,9 +112,7 @@ def _build_tls_argv(
                 k = norm_catalog_token(it)
                 v = block.get(k) or block.get(it)
                 if not v:
-                    unsupported.append(
-                        f"{field}:{it!r} (unsupported for openssl mapping)"
-                    )
+                    unsupported.append(f"{field}:{it!r} (unsupported for openssl mapping)")
                     continue
                 mapped.append(str(v))
             if mapped:
@@ -159,12 +121,8 @@ def _build_tls_argv(
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(
-    config: Any,
-    *,
-    role: Any | None = None,
-    capabilities: dict[str, Any] | None = None,
-) -> TranslationResult:
+def tls_argv_for_config(config: Any, *, role: Any | None = None,
+    capabilities: dict[str, Any] | None = None) -> TranslationResult:
     return _build_tls_argv(config, role=role, capabilities=capabilities)
 
 
@@ -193,32 +151,11 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
         return (_EPHEM_CERT, _EPHEM_KEY)
 
-    def _generate_fallback_rsa_identity(
-        self, cert_path: str, key_path: str
-    ) -> tuple[str, str]:
+    def _generate_fallback_rsa_identity(self, cert_path: str, key_path: str) -> tuple[str, str]:
         """One-day RSA leaf when catalog/cwd PEMs are unavailable (ephemeral paths)."""
-        subprocess.run(
-            [
-                "openssl",
-                "req",
-                "-x509",
-                "-newkey",
-                "rsa:2048",
-                "-keyout",
-                key_path,
-                "-out",
-                cert_path,
-                "-days",
-                "1",
-                "-nodes",
-                "-subj",
-                "/CN=localhost",
-            ],
-            check=True,
-            capture_output=True,
-            timeout=90,
-            text=True,
-        )
+        subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key_path, "-out", cert_path,
+                "-days", "1", "-nodes", "-subj", "/CN=localhost"],
+            check=True, capture_output=True, timeout=90, text=True)
         try:
             os.chmod(key_path, 0o600)
         except OSError:
@@ -236,10 +173,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             key_b = getattr(config, "private_key", None) or b""
             if cert_b.strip() and key_b.strip():
                 return super()._ensure_cert_paths(config)
-            raise WrapperSetupError(
-                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-                "(run scripts/gen_interop_certs.sh)"
-            )
+            raise WrapperSetupError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key ",
+                "(run scripts/gen_interop_certs.sh)")
         try:
             return super()._ensure_cert_paths(config)
         except WrapperSetupError:
@@ -250,45 +185,21 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return ["openssl", "version"]
 
     def _build_library_metadata(self, version: str):
-        return standard_library_metadata(
-            self._component_name, version, capabilities=CAPABILITIES
-        )
+        return standard_library_metadata(self._component_name, version, capabilities=CAPABILITIES)
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
         text = stdout or ""
         out: dict[str, str] = {}
-        m = re.search(
-            r"New,\s*(TLSv[\d.]+|DTLSv[\d.]+)\s*,\s*Cipher\s+is\s+(\S+)",
-            text,
-            re.IGNORECASE,
-        )
+        m = re.search(r"New,\s*(TLSv[\d.]+|DTLSv[\d.]+)\s*,\s*Cipher\s+is\s+(\S+)", text, re.IGNORECASE)
         if m:
-            out["protocol_version"] = m.group(1)
-            out["cipher_suite"] = m.group(2)
+            out["protocol_version"], out["cipher_suite"] = m.group(1), m.group(2)
         else:
-            m2 = re.search(
-                r"(?:Protocol|Version)\s*:\s*(TLSv[\d.]+|TLS\s*[\d.]+|DTLSv[\d.]+)",
-                text,
-                re.IGNORECASE,
-            )
-            if m2:
+            if m2 := re.search(r"(?:Protocol|Version)\s*:\s*(TLSv[\d.]+|TLS\s*[\d.]+|DTLSv[\d.]+)", text, re.IGNORECASE):
                 out["protocol_version"] = m2.group(1).replace(" ", "")
-            m3 = re.search(
-                r"Cipher\s+(?:is|name)\s*[:=]?\s*(\S+)",
-                text,
-                re.IGNORECASE,
-            )
-            if m3:
+            if m3 := re.search(r"Cipher\s+(?:is|name)\s*[:=]?\s*(\S+)", text, re.IGNORECASE):
                 out["cipher_suite"] = m3.group(1).strip()
-        g = re.search(
-            r"(?:Named\s+Group|Negotiated\s+TLS\s+group|Using\s+default\s+temp\s+key\s+parameters\s+name)\s*:\s*(\S+)",
-            text,
-            re.IGNORECASE,
-        ) or re.search(
-            r"Server\s+Temp\s+Key:\s*(\S+)",
-            text,
-            re.IGNORECASE,
-        )
+        g = re.search(r"(?:Named\s+Group|Negotiated\s+TLS\s+group|Using\s+default\s+temp\s+key\s+parameters\s+name)\s*:\s*(\S+)",
+            text, re.IGNORECASE) or re.search(r"Server\s+Temp\s+Key:\s*(\S+)", text, re.IGNORECASE)
         if g:
             out["named_group"] = g.group(1).strip()
         return out
@@ -316,19 +227,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
         cert_path, key_path = self._ensure_cert_paths(config)
-        cmd = (
-            ["openssl", "s_server"]
-            + _openssl_legacy_provider_argv(config)
-            + [
-                "-accept",
-                f"0.0.0.0:{config.port}",
-                "-cert",
-                cert_path,
-                "-key",
-                key_path,
-            ]
-            + self._build_common_args(config, for_server=True)
-        )
+        cmd = (["openssl", "s_server"] + _openssl_legacy_provider_argv(config)
+            + ["-accept", f"0.0.0.0:{config.port}", "-cert", cert_path, "-key", key_path]
+            + self._build_common_args(config, for_server=True))
         if has_0rtt:
             cmd = list(cmd) + ["-early_data"]
         if test_feature_enabled_in_config(config, "mtls"):
@@ -351,13 +252,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
 
         host = getattr(config, "server_hostname", None) or "localhost"
         tls_flag_pack = self._build_common_args(config, for_server=False)
-        cmd = (
-            ["openssl", "s_client"]
-            + _openssl_legacy_provider_argv(config)
-            + ["-connect", f"{host}:{config.port}"]
-            + self._client_sni_args(config)
-            + tls_flag_pack
-        )
+        cmd = (["openssl", "s_client"] + _openssl_legacy_provider_argv(config)
+            + ["-connect", f"{host}:{config.port}"] + self._client_sni_args(config) + tls_flag_pack)
         step = (getattr(config, "resumption_step", "") or "").strip()
         if (has_resumption or has_0rtt) and step == "save":
             cmd = list(cmd) + ["-sess_out", session_file]
