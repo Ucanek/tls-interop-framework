@@ -98,3 +98,5 @@ ln -sf ed448.crt "${CERT_DIR}/cert_ed448.pem"
 ln -sf ed448.key "${CERT_DIR}/key_ed448.pem"
 
 echo "Wrote identity bundles under ${CERT_DIR}/ (8 prefixes)"
+chmod 755 "${CERT_DIR}"
+chmod a+r "${CERT_DIR}"/*.crt "${CERT_DIR}"/*.pem 2>/dev/null || true

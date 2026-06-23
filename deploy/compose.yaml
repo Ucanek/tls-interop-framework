@@ -8,7 +8,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     volumes:
-      - ../certs:/app/certs:ro
+      - ../certs:/app/certs:ro,z
     environment:
       WRAPPER: openssl
       GRPC_PORT: "50051"
@@ -23,7 +23,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     volumes:
-      - ../certs:/app/certs:ro
+      - ../certs:/app/certs:ro,z
     environment:
       WRAPPER: gnutls
       GRPC_PORT: "50051"
@@ -38,7 +38,7 @@ services:
       dockerfile: deploy/Dockerfile
     image: tls-interop-wrapper
     volumes:
-      - ../certs:/app/certs:ro
+      - ../certs:/app/certs:ro,z
     environment:
       WRAPPER: nss
       GRPC_PORT: "50051"

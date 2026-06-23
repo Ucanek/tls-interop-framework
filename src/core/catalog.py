@@ -46,6 +46,9 @@ ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "signatu
 CAPABILITY_DIMENSIONS: frozenset[str] = frozenset({"cipher_suite", "supported_groups", "signature_schemes", "tls_version", "alpn"})
 TLS13_ORTHOGONAL_DIMS: frozenset[str] = frozenset({"supported_groups", "signature_schemes"})
 
+# Matrix default when ``cipher_suite`` is omitted but ``tls_version`` pins TLS 1.2 or 1.3.
+DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {"1.3": "aes-128-gcm", "1.2": "ecdhe-rsa-aes-128-gcm-sha256"}
+
 
 def repository_root() -> Path:
     """Repo root (``deploy/compose.yaml``) or container ``/app`` (``proto/interop_pb2.py``)."""
@@ -399,6 +402,14 @@ def union_cipher_suite_ids_for_wrappers(caps_by_wrapper: dict[str, dict[str, Any
         else:
             keys.update(cipher_suite_ids_for_mode(caps, mode))
     return sorted(keys)
+
+
+def default_cipher_for_tls_mode(mode: TlsMode, *, allowed: set[str] | frozenset[str]) -> str:
+    """One catalog cipher when ``cipher_suite`` is omitted; prefer scenario defaults."""
+    preferred = DEFAULT_CIPHER_BY_TLS_MODE.get(mode, "")
+    if preferred and preferred in allowed:
+        return preferred
+    return sorted(allowed)[0] if allowed else ""
 
 
 def tls_mode_filter_from_args(args: Any) -> TlsMode | None:
@@ -758,6 +769,10 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
         return expanded
     allowed = set(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
     filtered = [x for x in expanded if x in allowed]
+    # Unset cipher_suite with explicit tls_version → one default cipher for that protocol version.
+    if not filtered and not v.strip():
+        default = default_cipher_for_tls_mode(cipher_mode, allowed=allowed)
+        return [default] if default else [""]
     # Explicit cipher requests stay in the matrix (SKIP at run time) instead of 0 tests.
     if not filtered and v.strip() and not re.match(r"(?is)^ALL", v.strip()):
         return expanded if expanded else [v.strip()]

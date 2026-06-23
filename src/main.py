@@ -84,7 +84,9 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         help="Reserved for future parallel matrix runs (persistent backends run serially). Default: 1.")
 
     groups["crypto"].add_argument("--cipher-suite", default="",
-        help="Cipher suite catalog id (per-backend mapping in capabilities.json)." + _asym + _matrix)
+        help="Cipher suite catalog id (per-backend mapping in capabilities.json). "
+        "Omitted with --tls-version: one default cipher for that TLS version; use ALL for every declared cipher."
+        + _asym + _matrix)
     groups["protocol"].add_argument("--tls-version", default="",
         help="TLS protocol version for the endpoint (TlsConfig.version)." + _asym + _matrix)
     groups["protocol"].add_argument("--alpn", default="",
