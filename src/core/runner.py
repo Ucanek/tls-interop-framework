@@ -22,9 +22,7 @@ from core.catalog import(backend_grpc_addr, backend_tls_endpoint, cell_capabilit
 ensure_import_paths()
 
 from wrappers.utils import remove_tls_session_artifact_files
-
 from proto import interop_pb2, interop_pb2_grpc
-
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
 
 # Distinct from 0 (pass) and 1 (fail) so matrix runners can show SKIP vs OK.
@@ -150,16 +148,8 @@ def required_backends_from_matrix(axis_keys: list[str], combos: list[tuple[Any, 
 
 
 def _compose_base_cmd(repo: Path, project: str, *, verbose: bool) -> list[str]:
-    progress: list[str] = [] if verbose else ["--progress", "quiet"]
-    return [
-        "docker",
-        "compose",
-        *progress,
-        "-p",
-        project,
-        "-f",
-        str(repo / "deploy" / "compose.yaml"),
-    ]
+    progress = [] if verbose else ["--progress", "quiet"]
+    return ["docker", "compose", *progress, "-p", project, "-f", str(repo / "deploy" / "compose.yaml")]
 
 
 class BaseExecutionSession(ABC):
@@ -573,7 +563,7 @@ FAILURE = interop_pb2.OperationResponse.FAILURE
 _TCP_AFTER_ESTABLISH_S = 20.0
 _TRANSMIT_GAP_S = 1.0
 _NSS_RESUMPTION_PRE_TRANSMIT_S = 0.5
-_TEST_PAYLOAD = b"INTEROP_SECRET_TOKEN"
+_TEST_PAYLOAD = b"PAYLOAD"
 
 
 def _wait_grpc_channel_ready(address: str, *, deadline: float, verbose: bool) -> bool:

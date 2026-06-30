@@ -18,9 +18,8 @@ from pathlib import Path
 
 from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
     cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities)
-from core.identity import(identity_kind_from_signature_schemes,
-    repeated_config_tokens, server_trust_signature_schemes_tokens)
-from wrappers.base import(BaseTemplateWrapper, WrapperSkipError,
+from core.identity import repeated_config_tokens
+from wrappers.base import(BaseTemplateWrapper,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.nss.nss_db import(_ensure_nss_db_identities, get_nss_library_version,
     nss_interop_identity_import_rows, nss_server_nickname_for_config, resolve_cli_tool)
@@ -249,16 +248,8 @@ class NSSWrapper(BaseTemplateWrapper):
     def _nss_server_nickname(self, config) -> str:
         return nss_server_nickname_for_config(config, repo=self._nss_repo())
 
-    def _skip_if_nss_eddsa_unsupported(self, config, *, server: bool) -> None:
-        schemes = (server_trust_signature_schemes_tokens(config) if server
-            else repeated_config_tokens(config, "signature_schemes"))
-        if identity_kind_from_signature_schemes(schemes) in ("ed25519", "ed448"):
-            raise WrapperSkipError("NSS pk12util cannot import OpenSSL Ed25519/Ed448 PKCS#12 private keys "
-                "(Mozilla NSS bug 1993638). Use openssl or gnutls for EdDSA in this matrix.")
-
     def _start_server(self, config):
         self._ensure_nss_db_ready()
-        self._skip_if_nss_eddsa_unsupported(config, server=True)
         nss_ver = _tls_version_range(config)
         port = int(config.port)
         cwd = os.getcwd()
@@ -276,7 +267,6 @@ class NSSWrapper(BaseTemplateWrapper):
         step = (getattr(config, "resumption_step", None) or "").strip()
 
         self._ensure_nss_db_ready()
-        self._skip_if_nss_eddsa_unsupported(config, server=False)
         nss_ver = _tls_version_range(config)
         host = config.server_hostname or "localhost"
         port = int(config.port)

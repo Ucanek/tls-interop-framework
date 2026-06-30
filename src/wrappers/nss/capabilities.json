@@ -143,8 +143,6 @@
     "rsa-pss-pss-sha256": "rsa_pss_pss_sha256",
     "rsa-pss-pss-sha384": "rsa_pss_pss_sha384",
     "rsa-pss-pss-sha512": "rsa_pss_pss_sha512",
-    "ed25519": "ed25519",
-    "ed448": "ed448",
     "dsa-sha1": "dsa_sha1",
     "dsa-sha256": "dsa_sha256",
     "dsa-sha384": "dsa_sha384",
