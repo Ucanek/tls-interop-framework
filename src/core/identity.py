@@ -105,10 +105,9 @@ def get_cert_prefix_for_config(config: Any) -> str:
 def interop_certs_dir(repo: Path | None = None) -> Path:
     if repo is not None:
         return repo / "certs"
-    cwd = Path.cwd()
-    if (cwd / "certs").is_dir():
-        return cwd / "certs"
-    return Path("/app/certs")
+    from core.catalog import repository_root
+
+    return repository_root() / "certs"
 
 
 def identity_pem_present(prefix: str, *, repo: Path | None = None) -> bool:

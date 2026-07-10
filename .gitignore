@@ -16,9 +16,6 @@ build/
 .coverage
 htmlcov/
 
-# Compose driver env (written by src/main.py)
-deploy/.interop.env
-
 # TLS keys, PEM, NSS
 *.pem
 *.key
@@ -42,3 +39,5 @@ scenarios/
 src/wrappers/gnutls/gnutls_session_hook.so
 
 .cursorrules
+/.vscode
+milestones.md

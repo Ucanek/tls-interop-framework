@@ -8,7 +8,7 @@ This project provides a standardized framework for **interoperability testing** 
 
 A common problem in cryptographic development is misinterpretation of specs (RFCs). An implementation may pass its own test suite yet fail to interoperate with other libraries or introduce subtle security issues. This framework addresses that by providing a **common test driver** that orchestrates tests across multiple **library wrappers** via a single gRPC contract.
 
-Each TLS backend runs as an independent **wrapper process** (one container per backend in Docker, or one host subprocess per backend with `--local`). The driver expands a test matrix, sends `ESTABLISH` / `TRANSMIT` / `CLOSE` commands over gRPC, and reports per-cell results.
+Each TLS backend runs as an independent **wrapper subprocess** on the host. The driver expands a test matrix, sends `ESTABLISH` / `TRANSMIT` / `CLOSE` commands over gRPC, and reports per-cell results.
 
 ## Architecture
 
@@ -24,35 +24,32 @@ Two logical planes:
 
 | Path | Role |
 |------|------|
-| `src/main.py` | Host CLI: matrix expansion, suite YAML, Docker Compose or `--local` orchestration |
-| `src/core/runner.py` | Persistent Compose (`up -d` per backend) or local subprocesses + gRPC matrix driver |
+| `src/main.py` | Host CLI: matrix expansion, suite YAML, wrapper orchestration |
+| `src/core/runner.py` | Local wrapper subprocesses + gRPC matrix driver |
 | `src/core/catalog.py` | Parameters, matrix, capabilities JSON, wrapper discovery, CLI validation |
 | `src/core/identity.py` | Identity PEM paths, NSS DB import rows |
 | `src/wrappers/base.py` | Shared gRPC servicer and subprocess helpers for all backends |
 | `src/wrappers/<backend>/` | `wrapper.py` (TLS argv from `capabilities.json`) + `capabilities.json` |
 | `proto/` | `.proto` schema and generated Python stubs |
-| `deploy/` | `Dockerfile`, `compose.yaml`, `wrapper_entry.py` |
 | `scenarios/` | YAML test suites (`--suite`) |
 | `scripts/gen_interop_certs.sh` | RSA/ECDSA/DH identity PEMs under `certs/` |
 | `certs/` | Generated test certificates (created on first run) |
 
-**Layout:** `src/wrappers/<backend>/` holds `wrapper.py` and `capabilities.json`; `src/wrappers/base.py` is the shared gRPC base. The Docker image copies `core/` and `wrappers/` under `/app`.
+**Layout:** `src/wrappers/<backend>/` holds `wrapper.py` and `capabilities.json`; `src/wrappers/base.py` is the shared gRPC base.
 
 ### Port map (host)
 
-| Backend | gRPC (host) | TLS data (host) | Compose service |
-|---------|-------------|-----------------|-----------------|
-| openssl | `15051` | `15551` | `openssl` |
-| gnutls  | `15052` | `15552` | `gnutls` |
-| nss     | `15053` | `15553` | `nss` |
-
-Inside each container, gRPC listens on `50051` and TLS on `5555`; Compose maps these to the host ports above.
+| Backend | gRPC (host) | TLS data (host) |
+|---------|-------------|-----------------|
+| openssl | `15051` | `15551` |
+| gnutls  | `15052` | `15552` |
+| nss     | `15053` | `15553` |
 
 ## Tech stack
 
 - **Language:** Python 3.x  
 - **Communication:** gRPC & Protocol Buffers  
-- **Orchestration:** Docker Compose (default) or host subprocesses (`--local`)  
+- **Orchestration:** host subprocesses (one wrapper per backend)
 - **Libraries under test:** OpenSSL, GnuTLS, NSS (CLI tools)
 
 ## Running the tests
@@ -60,14 +57,15 @@ Inside each container, gRPC listens on `50051` and TLS on `5555`; Compose maps t
 Install host dependencies:
 
 ```bash
-# CLI / dry-run (list wrappers, validate matrix)
-pip install 'protobuf>=4.21' 'PyYAML>=6.0'
+# CLI tools (Fedora)
+sudo dnf install openssl gnutls-bin nss-tools
 
-# Local runs (--local): gRPC driver + generated stubs
+# CLI tools (Debian/Ubuntu)
+sudo apt-get install openssl gnutls-bin libnss3-tools
+
+# Python (matrix driver + generated stubs)
 pip install 'grpcio>=1.60' 'protobuf>=4.21' 'PyYAML>=6.0'
 ```
-
-Full matrix runs use **Docker Compose** by default. Use **`--local`** to run wrappers as host subprocesses instead (no Docker).
 
 List wrappers and catalog options:
 
@@ -76,18 +74,17 @@ python3 src/main.py --list-wrappers
 python3 src/main.py --list-options
 ```
 
-Run one server×client pair (Docker):
+Run one server×client pair:
 
 ```bash
 python3 src/main.py --server openssl --client gnutls
 ```
 
-Run locally on the host (OpenSSL/GnuTLS/NSS CLI tools on `PATH`, ports `15051–15053` / `15551–15553`):
+Wrappers listen on host ports `15051–15053` (gRPC) and `15551–15553` (TLS). Identity PEMs are created automatically on first run (or: `bash scripts/gen_interop_certs.sh`).
 
 ```bash
-# Identity PEMs are created automatically on first run (or: bash scripts/gen_interop_certs.sh)
-PYTHONPATH=src:proto python3 src/main.py --local --server openssl --client openssl
-python3 src/main.py --local --server openssl --client gnutls -v
+PYTHONPATH=src:proto python3 src/main.py --server openssl --client openssl
+python3 src/main.py --server openssl --client gnutls -v
 ```
 
 Run the full 3×3 matrix:
@@ -98,7 +95,7 @@ python3 src/main.py --server ALL --client ALL
 
 Matrix dimensions support comma lists, `ALL`, and `ALL\excl1,excl2` on `--server`, `--client`, and choice-backed options from the union of all `src/wrappers/*/capabilities.json` files. `ALL` on `--cipher-suite` expands to ciphers declared in the active matrix wrappers’ capabilities. Use `SERVER:CLIENT` on `cipher_suite`, `tls_version`, `supported_groups`, and `signature_schemes` for asymmetric configuration.
 
-Parallel cells: `--jobs N` (each cell gets its own Compose project and dotenv file).
+Parallel cells: `--jobs N` (reserved; persistent backends currently run serially).
 
 Verbose / dry-run:
 
@@ -113,7 +110,7 @@ Pre-defined YAML matrices live under `scenarios/`. With `--suite`, matrix dimens
 
 ```bash
 python3 src/main.py --suite scenarios/smoke.yaml
-python3 src/main.py --local --suite scenarios/pairwise-tls13.yaml -v
+python3 src/main.py --suite scenarios/pairwise-tls13.yaml -v
 ```
 
 | File | Purpose |
@@ -148,21 +145,6 @@ python3 -m grpc_tools.protoc -Iproto --python_out=proto --grpc_python_out=proto 
 #   sed -i 's/^import interop_pb2/from proto import interop_pb2/' proto/interop_pb2_grpc.py
 ```
 
-### CI (GitHub Actions)
-
-On push/PR to `main`, CI runs `python3 src/main.py --server <matrix.server> --client <matrix.client>` for each pair in the 3×3 grid.
-
-### Docker on Fedora (SELinux)
-
-Compose mounts `certs/` read-only with the `:z` label so containers can read PEMs when SELinux is enforcing:
-
-```yaml
-volumes:
-  - ../certs:/app/certs:ro,z
-```
-
-If you see `Permission denied` on `/app/certs/*.crt`, regenerate certs (`bash scripts/gen_interop_certs.sh`) and ensure the volume uses `:z`.
-
 ## NSS
 
 | Role   | OpenSSL           | GnuTLS        | NSS        |
@@ -170,12 +152,12 @@ If you see `Permission denied` on `/app/certs/*.crt`, regenerate certs (`bash sc
 | Server | `openssl s_server` | `gnutls-serv` | `selfserv` |
 | Client | `openssl s_client` | `gnutls-cli`  | `tstclnt`  |
 
-- **NSS DB:** `NSSDB` (default `src/wrappers/nss/nssdb/nss`, or `/app/wrappers/nss/nssdb/nss` in containers), nickname derived from signature schemes.
+- **NSS DB:** `NSSDB` (default `src/wrappers/nss/nssdb/nss`), nickname derived from signature schemes.
 - **Packages:** Fedora `nss-tools`, Debian/Ubuntu `libnss3-tools`. On Fedora 43+, `tstclnt` and `selfserv` live under `/usr/lib64/nss/unsupported-tools/` (resolved automatically; optional: `export PATH="$PATH:/usr/lib64/nss/unsupported-tools"`). The NSS server runs `selfserv` directly on the matrix TLS port (`TlsConfig.port`).
 
 ### GnuTLS server × NSS client (SNI)
 
-Compose defines one long-lived service per backend (`openssl`, `gnutls`, `nss`). `src/main.py` starts only the backends required by the matrix, runs all cells over gRPC, then `compose down`. When both GnuTLS and NSS are needed, the NSS wrapper's `orchestration_env` hook sets `INTEROP_GNUTLS_NSS_PAIR=1`. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake.
+`src/main.py` starts only the backends required by the matrix and runs all cells over gRPC. When both GnuTLS and NSS are needed, the NSS wrapper's `orchestration_env` hook sets `INTEROP_GNUTLS_NSS_PAIR=1`. The NSS wrapper resolves the peer hostname to an IP for `tstclnt -h` and omits DNS SNI so GnuTLS 3.8+ does not reject the handshake.
 
 ## Adding a new wrapper
 
@@ -198,7 +180,7 @@ python3 src/main.py --list-wrappers
 
 ### Step-by-step checklist
 
-1. **Pick an id** — lowercase alphanumeric with `_` or `-` (e.g. `mbedtls`). This becomes the Compose service name and `WRAPPER` env value.
+1. **Pick an id** — lowercase alphanumeric with `_` or `-` (e.g. `mbedtls`). This becomes the wrapper directory name and `WRAPPER` env value when running standalone.
 
 2. **Create `capabilities.json`** — declare what the backend can represent. Copy `src/wrappers/openssl/capabilities.json` or `gnutls` as a template and trim to supported options.
 
@@ -206,7 +188,7 @@ python3 src/main.py --list-wrappers
 
    | Key | Purpose |
    |-----|---------|
-   | `runtime` | Host ports, Compose service name, local CLI binaries |
+   | `runtime` | Host ports and required CLI binaries |
    | `tls_version` | Map `1.2` / `1.3` to CLI flags |
    | `tls12` / `tls13` | Per-version `cipher_suite` catalog → CLI token maps |
    | `supported_groups` | Catalog group id → CLI token |
@@ -220,7 +202,6 @@ python3 src/main.py --list-wrappers
      "runtime": {
        "grpc_addr": "127.0.0.1:15054",
        "tls_port": 15554,
-       "compose_service": "mbedtls",
        "unsupported_tls_fields": [],
        "local_cli": ["mbedtls_client", "mbedtls_server"]
      }
@@ -228,8 +209,7 @@ python3 src/main.py --list-wrappers
    ```
 
    - `grpc_addr` / `tls_port` — **unique host ports** (openssl `15051`/`15551`, gnutls `15052`/`15552`, nss `15053`/`15553`; pick the next free pair for a fourth backend).
-   - `compose_service` — must match the service name in `deploy/compose.yaml`.
-   - `local_cli` — executables that must be on `PATH` for `--local` runs.
+   - `local_cli` — executables that must be on `PATH` before running the matrix.
    - `unsupported_tls_fields` — proto field names the wrapper cannot map (cells using them are skipped).
 
    Catalog ids in JSON are shared across backends where possible (e.g. `aes-128-gcm`, `x25519`). Omit cipher/group entries the library does not support; the matrix driver will **SKIP** cells where either side lacks the token.
@@ -253,52 +233,31 @@ python3 src/main.py --list-wrappers
    - Optionally override `_parse_negotiated_params(stdout)` to extract protocol/cipher/group from CLI output.
    - Add a `if __name__ == "__main__": serve_insecure(MyWrapper, "Label")` block so the module can run standalone.
 
-4. **Add a Compose service** in `deploy/compose.yaml`:
-
-   ```yaml
-   mbedtls:
-     build:
-       context: ..
-       dockerfile: deploy/Dockerfile
-     image: tls-interop-wrapper
-     volumes:
-       - ../certs:/app/certs:ro,z
-     environment:
-       WRAPPER: mbedtls
-       GRPC_PORT: "50051"
-     ports:
-       - "127.0.0.1:15054:50051"
-       - "127.0.0.1:15554:5555"
-     command: ["python3", "/app/wrapper_entry.py"]
-   ```
-
-   `deploy/wrapper_entry.py` reads `WRAPPER` and runs `wrappers.<id>.wrapper` as `__main__`. Install any new OS packages in `deploy/Dockerfile` if the default Fedora image does not ship your CLI tools.
-
-5. **Optional module-level hooks** in `wrapper.py` (looked up by `call_wrapper_hook()` in `catalog.py`):
+4. **Optional module-level hooks** in `wrapper.py` (looked up by `call_wrapper_hook()` in `catalog.py`):
 
    | Hook | When used |
    |------|-----------|
    | `resolve_cli_tool(name)` | Resolve non-standard binary paths (see NSS) |
-   | `local_cli_requirements()` | Override `runtime.local_cli` for `--local` preflight |
-   | `orchestration_env(active_backends)` | Extra env for Docker Compose (e.g. NSS `INTEROP_GNUTLS_NSS_PAIR`) |
-   | `local_wrapper_env(repo, backend_id, active_backends)` | Per-backend env for `--local` subprocesses (e.g. `NSSDB`) |
+   | `local_cli_requirements()` | Override `runtime.local_cli` for preflight checks |
+   | `orchestration_env(active_backends)` | Extra env when multiple backends run together (e.g. NSS `INTEROP_GNUTLS_NSS_PAIR`) |
+   | `local_wrapper_env(repo, backend_id, active_backends)` | Per-backend env for subprocesses (e.g. `NSSDB`) |
 
-6. **Test locally first**, then in Docker:
+5. **Test**:
 
    ```bash
    # Standalone gRPC server (Ctrl+C to stop)
    PYTHONPATH=src:proto WRAPPER=mbedtls python3 src/wrappers/mbedtls/wrapper.py
 
    # Single interop cell
-   python3 src/main.py --local --server mbedtls --client openssl -v
+   python3 src/main.py --server mbedtls --client openssl -v
    python3 src/main.py --server mbedtls --client gnutls -v
    ```
 
-7. **Extend scenarios** — add the new id to `server` / `client` lines in `scenarios/*.yaml` when you want matrix coverage.
+6. **Extend scenarios** — add the new id to `server` / `client` lines in `scenarios/*.yaml` when you want matrix coverage.
 
 ### What you do *not* need to change
 
-- `src/core/runner.py` — starts backends by `compose_service` / `grpc_addr` from capabilities.
+- `src/core/runner.py` — starts backends by `grpc_addr` from capabilities.
 - `src/core/catalog.py` — auto-merges catalog options from all `capabilities.json` files.
 - `proto/interop.proto` — unless you need new `TlsConfig` fields (then regenerate stubs and map them in your wrapper).
 

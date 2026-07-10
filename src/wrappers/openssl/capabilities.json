@@ -2,7 +2,6 @@
   "runtime": {
     "grpc_addr": "127.0.0.1:15051",
     "tls_port": 15551,
-    "compose_service": "openssl",
     "unsupported_tls_fields": [],
     "local_cli": ["openssl"]
   },

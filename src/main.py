@@ -23,7 +23,7 @@ from core.catalog import(cell_capability_skip_reason, discover_wrapper_ids, ensu
     matrix_axis_plan, normalize_cell_tls_micro_params, print_catalog_options, repository_root, validate_run_args)
 
 ensure_import_paths()
-from core.runner import(EXIT_SKIP, BaseExecutionSession, PersistentComposeSession, PersistentLocalSession,
+from core.runner import(EXIT_SKIP, BaseExecutionSession, WrapperSession,
     ensure_interop_certs, remove_interop_certs, required_backends_from_matrix, run_matrix_cell_grpc)
 
 GREEN = "\033[92m"
@@ -50,11 +50,11 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     _asym = " Use 'SERVER:CLIENT' for asymmetric configuration."
     _matrix = " Matrix: comma list, ALL, or ALL\\token,token to exclude."
     parser = argparse.ArgumentParser(
-        description="TLS interop runner: starts backend wrappers via Docker Compose (default) or "
-        "--local host subprocesses, then drives tests over gRPC. Use comma lists, ALL, or ALL\\ exclusions on "
-        "--server/--client and matrix TLS options for a Cartesian matrix.")
+        description="TLS interop runner: starts backend wrappers as host subprocesses, then drives tests "
+        "over gRPC. Use comma lists, ALL, or ALL\\ exclusions on --server/--client and matrix TLS "
+        "options for a Cartesian matrix.")
     groups = {
-        "basic": parser.add_argument_group("Basic", "Runner, compose defaults, and global TLS listen port."),
+        "basic": parser.add_argument_group("Basic", "Runner and TLS listen port."),
         "crypto": parser.add_argument_group("Cryptography", "Ciphers, ECDH groups, and signature algorithms."),
         "protocol": parser.add_argument_group("Protocol", "TLS protocol version (TlsConfig.version)."),
         "security": parser.add_argument_group("Security & PKI", "Trust, hostname, and optional inline PEM material."),
@@ -74,9 +74,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         help="Client wrapper (comma list, ALL, ALL\\a,b to exclude; default: openssl)")
     groups["basic"].add_argument("--tls-port", type=int, default=0,
         help="Override TlsConfig.port (0 = driver default 5555)")
-    groups["basic"].add_argument("--local", action="store_true",
-        help="Run wrappers as local Python subprocesses (no Docker). Requires openssl, "
-        "gnutls-utils, nss-tools on PATH, pip install grpcio, and certs/ (auto-generated).")
     groups["basic"].add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     groups["basic"].add_argument("--dry-run", action="store_true",
         help="Expand matrix and print planned backends without starting wrappers")
@@ -252,11 +249,7 @@ def main() -> int:
 
         if args.dry_run:
             svc = ", ".join(sorted(backends)) if backends else "(none)"
-            mode = "local subprocesses" if args.local else "docker compose"
-            print(f"DRY-RUN: would start backend(s) via {mode}: {svc}")
-            if backends and not args.local:
-                compose = repo / "deploy" / "compose.yaml"
-                print("DRY-RUN compose:", "docker compose", "-f", str(compose), "up -d", *sorted(backends))
+            print(f"DRY-RUN: would start wrapper subprocess(es): {svc}")
             print(f"DRY-RUN: {n_tests} matrix cell(s), {pre_skips} pre-SKIP")
             results = [_run_matrix_cell(t, axis_keys=axis_keys, args_template=args, repo=repo, known=known,
                 session=None) for t in combos]
@@ -265,10 +258,7 @@ def main() -> int:
             results: list[tuple[str, int]] = []
             try:
                 if backends:
-                    if args.local:
-                        session = PersistentLocalSession(repo, backends, verbose=bool(args.verbose))
-                    else:
-                        session = PersistentComposeSession(repo, backends, verbose=bool(args.verbose))
+                    session = WrapperSession(repo, backends, verbose=bool(args.verbose))
                     session.start()
                 for tup in combos:
                     results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
@@ -280,7 +270,7 @@ def main() -> int:
                 print(f"Backend startup failed: {e}", file=sys.stderr)
                 return 2
             except RuntimeError as e:
-                print(f"Local mode: {e}", file=sys.stderr)
+                print(f"Wrapper startup failed: {e}", file=sys.stderr)
                 return 2
             finally:
                 if session is not None:

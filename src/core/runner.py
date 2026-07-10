@@ -1,10 +1,9 @@
-"""TLS interop runner: Docker Compose or local wrappers + gRPC test driver."""
+"""TLS interop runner: local wrapper subprocesses + gRPC matrix driver."""
 
 from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-import re
 import shutil
 import signal
 import subprocess
@@ -16,8 +15,8 @@ from typing import Any, Mapping
 import grpc
 
 from core.catalog import(backend_grpc_addr, backend_tls_endpoint, cell_capability_skip_reason,
-    check_local_cli_tools, compose_service_name, discover_compose_backends, ensure_import_paths, load_capabilities,
-    merged_orchestration_env, norm_token, normalize_cell_tls_micro_params, parse_asymmetric, session_wrapper_env, tls_version_to_capability_name)
+    check_local_cli_tools, discover_wrapper_ids, ensure_import_paths, load_capabilities,
+    norm_token, normalize_cell_tls_micro_params, parse_asymmetric, session_wrapper_env, tls_version_to_capability_name)
 
 ensure_import_paths()
 
@@ -58,7 +57,7 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
         raise FileNotFoundError(f"Missing certs/ bundles ({', '.join(missing)}); "
             f"run scripts/gen_interop_certs.sh or create certs/ manually")
     if verbose:
-        print(f"{YELLOW}[Local] Generating identity PEMs ({', '.join(missing)}) via {script}{RESET}")
+        print(f"{YELLOW}Generating identity PEMs ({', '.join(missing)}) via {script}{RESET}")
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
 
 
@@ -73,54 +72,13 @@ def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
 
 
 def apply_matrix_tls_endpoints(server: str, client: str, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, *, local_mode: bool, repo: Path) -> tuple[str, int]:
-    """
-    Return host TCP coordinates for the driver check after ESTABLISH.
-
-    In local mode each wrapper listens on its published TLS port (15551–15553).
-    In Compose mode wrappers use TlsConfig.port (5555) inside containers; the
-    driver probes the host-mapped port.
-    """
+    client_conf: interop_pb2.TlsConfig, *, repo: Path) -> tuple[str, int]:
+    """Return host TCP coordinates for the driver check after ESTABLISH."""
     tcp_host, tcp_port = backend_tls_endpoint(server, repo)
-    if local_mode:
-        server_conf.port = tcp_port
-        client_conf.server_hostname = "127.0.0.1"
-        client_conf.port = tcp_port
-    elif server == client:
-        client_conf.server_hostname = "localhost"
-    else:
-        client_conf.server_hostname = server
-    if client_conf.port <= 0:
-        client_conf.port = server_conf.port if server_conf.port > 0 else 5555
+    server_conf.port = tcp_port
+    client_conf.server_hostname = "127.0.0.1"
+    client_conf.port = tcp_port
     return tcp_host, tcp_port
-
-
-# --- Docker Compose orchestration (persistent backends) ---
-
-def interop_dotenv_path(root: Path) -> Path:
-    return root / "deploy" / ".interop.env"
-
-
-def write_interop_dotenv(path: Path, variables: dict[str, str]) -> None:
-    """Writes a Docker Compose ``env_file`` (KEY=value, one per line)."""
-
-    def esc_val(v: str) -> str:
-        if "\n" in v or "\r" in v:
-            raise ValueError("Env value must not contain newlines")
-        if re.fullmatch(r"[A-Za-z0-9_.,:@%+=/-]+", v):
-            return v
-        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        for k in sorted(variables):
-            f.write(f"{k}={esc_val(variables[k])}\n")
-    path.chmod(0o600)
-
-
-def sanitize_compose_project(name: str) -> str:
-    s = "".join(c if c.isalnum() or c in "-_" else "-" for c in name.lower()).strip("-")
-    return (s or "interop")[:63]
 
 
 def required_backends_from_matrix(axis_keys: list[str], combos: list[tuple[Any, ...]], *,
@@ -147,18 +105,12 @@ def required_backends_from_matrix(axis_keys: list[str], combos: list[tuple[Any, 
     return frozenset(needed), skips
 
 
-def _compose_base_cmd(repo: Path, project: str, *, verbose: bool) -> list[str]:
-    progress = [] if verbose else ["--progress", "quiet"]
-    return ["docker", "compose", *progress, "-p", project, "-f", str(repo / "deploy" / "compose.yaml")]
-
-
 class BaseExecutionSession(ABC):
-    """Shared lifecycle for persistent Compose or local wrapper sessions."""
+    """Shared lifecycle for persistent local wrapper sessions."""
 
     repo: Path
     backends: list[str]
     verbose: bool
-    local_mode: bool
     metadata: dict[str, interop_pb2.LibraryMetadata]
 
     @abstractmethod
@@ -178,103 +130,11 @@ class BaseExecutionSession(ABC):
         """Host TCP coordinates for post-ESTABLISH connectivity checks."""
 
 
-class PersistentComposeSession(BaseExecutionSession):
-    """Start selected backend containers once; matrix loop uses gRPC only."""
-
-    local_mode = False
-
-    def __init__(self, repo: Path, backends: frozenset[str],
-        *, verbose: bool = False, project: str | None = None) -> None:
-        known = discover_compose_backends(repo)
-        unknown = backends - known
-        if unknown:
-            raise ValueError(f"Unknown backend service(s): {sorted(unknown)}")
-        self.repo = repo
-        self.backends = sorted(backends)
-        self.verbose = verbose
-        proj_env = (os.environ.get("INTEROP_COMPOSE_PROJECT") or "").strip()
-        if project:
-            self.project = sanitize_compose_project(project)
-        elif proj_env:
-            self.project = sanitize_compose_project(proj_env)
-        else:
-            self.project = sanitize_compose_project("interop-" + "-".join(self.backends))
-        self.metadata: dict[str, interop_pb2.LibraryMetadata] = {}
-
-    def grpc_addr(self, backend: str) -> str:
-        return backend_grpc_addr(backend, self.repo)
-
-    def tls_endpoint(self, backend: str) -> tuple[str, int]:
-        return backend_tls_endpoint(backend, self.repo)
-
-    def _compose_env(self) -> dict[str, str]:
-        env = os.environ.copy()
-        env.update(merged_orchestration_env(self.backends))
-        return env
-
-    def up(self) -> None:
-        """``docker compose build`` then ``up -d`` for selected backends only."""
-        if not self.backends:
-            return
-        compose = _compose_base_cmd(self.repo, self.project, verbose=self.verbose)
-        env = self._compose_env()
-        services = [compose_service_name(b, self.repo) for b in self.backends]
-        if self.verbose:
-            print(f"{YELLOW}[Compose] Starting backends: {', '.join(services)}{RESET}")
-        subprocess.run(compose + ["build"] + ([] if self.verbose else ["-q"]), cwd=self.repo, env=env,
-            stdin=subprocess.DEVNULL, check=True)
-        subprocess.run(compose + ["up", "-d", *services], cwd=self.repo, env=env, stdin=subprocess.DEVNULL, check=True)
-
-    def down(self) -> None:
-        compose = _compose_base_cmd(self.repo, self.project, verbose=self.verbose)
-        subprocess.run(compose + ["down", "--remove-orphans"], cwd=self.repo, env=self._compose_env(),
-            stdin=subprocess.DEVNULL, check=False)
-
-    def wait_grpc_ready(self, timeout_s: float = _DEFAULT_GRPC_STARTUP_S) -> None:
-        """Retry until every selected backend accepts gRPC on the host-published port."""
-        addrs = sorted({self.grpc_addr(b) for b in self.backends})
-        if not addrs:
-            return
-        deadline = time.monotonic() + timeout_s
-        pending = set(addrs)
-        while time.monotonic() < deadline and pending:
-            for addr in list(pending):
-                if _wait_grpc_channel_ready(addr, deadline=deadline, verbose=self.verbose):
-                    pending.discard(addr)
-            if pending:
-                time.sleep(_GRPC_STARTUP_POLL_S)
-        if pending:
-            raise TimeoutError(f"gRPC not reachable within {timeout_s}s: {', '.join(sorted(pending))}")
-
-    def load_metadata(self) -> None:
-        for backend in self.backends:
-            addr = self.grpc_addr(backend)
-            ch = grpc.insecure_channel(addr)
-            try:
-                stub = interop_pb2_grpc.TlsInteropWrapperStub(ch)
-                self.metadata[backend] = stub.GetMetadata(interop_pb2.Empty())
-            finally:
-                try:
-                    ch.close()
-                except Exception:
-                    pass
-
-    def start(self) -> None:
-        self.up()
-        self.wait_grpc_ready()
-        self.load_metadata()
-
-    def stop(self) -> None:
-        self.down()
-
-
-class PersistentLocalSession(BaseExecutionSession):
-    """Start wrapper gRPC services as host subprocesses (no Docker)."""
-
-    local_mode = True
+class WrapperSession(BaseExecutionSession):
+    """Start wrapper gRPC services as host subprocesses."""
 
     def __init__(self, repo: Path, backends: frozenset[str], *, verbose: bool = False) -> None:
-        known = discover_compose_backends(repo)
+        known = frozenset(discover_wrapper_ids(repo))
         unknown = backends - known
         if unknown:
             raise ValueError(f"Unknown backend(s): {sorted(unknown)}")
@@ -296,7 +156,6 @@ class PersistentLocalSession(BaseExecutionSession):
         env["GRPC_PORT"] = str(grpc_port)
         env["WRAPPER"] = backend
         env.update(session_wrapper_env(backend, self.repo, self.backends))
-        # ``src/`` for ``core`` / ``wrappers``; repo root comes from ``cwd`` for ``proto/``.
         src_s = str(self.repo / "src")
         prev = env.get("PYTHONPATH", "")
         env["PYTHONPATH"] = src_s if not prev else f"{src_s}{os.pathsep}{prev}"
@@ -311,24 +170,24 @@ class PersistentLocalSession(BaseExecutionSession):
         try:
             import grpc  # noqa: F401
         except ImportError as e:
-            raise RuntimeError("Local mode requires grpcio on the host Python "
+            raise RuntimeError("Requires grpcio on the host Python "
                 "(pip install 'grpcio>=1.60' 'protobuf>=4.21')") from e
         ensure_interop_certs(self.repo, verbose=self.verbose)
         missing = check_local_cli_tools(self.backends, self.repo)
         if missing:
-            raise RuntimeError("Local mode requires TLS CLI tools on PATH:\n  " + "\n  ".join(missing))
+            raise RuntimeError("Requires TLS CLI tools on PATH:\n  " + "\n  ".join(missing))
         for backend in self.backends:
             addr = self.grpc_addr(backend)
             host, port = _grpc_host_port(addr)
             in_use, _ = wait_tcp_connect(host, port, timeout_s=0.35)
             if in_use:
-                raise RuntimeError(f"Port {port} already in use ({addr}); stop other wrappers or compose stacks")
+                raise RuntimeError(f"Port {port} already in use ({addr}); stop other wrapper processes")
         if self.verbose:
-            print(f"{YELLOW}[Local] Starting wrappers: {', '.join(self.backends)}{RESET}")
+            print(f"{YELLOW}Starting wrappers: {', '.join(self.backends)}{RESET}")
         for backend in self.backends:
             cmd = self._wrapper_cmd(backend)
             if self.verbose:
-                print(f"[Local] {backend}: {' '.join(cmd)} (GRPC_PORT from env)")
+                print(f"[Wrapper] {backend}: {' '.join(cmd)} (GRPC_PORT from env)")
             proc = subprocess.Popen(cmd, cwd=self.repo, env=self._wrapper_env(backend), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE if self.verbose else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if self.verbose else subprocess.DEVNULL, start_new_session=True)
@@ -479,10 +338,8 @@ def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None =
 
 
 def wrapper_filesystem_root(session: BaseExecutionSession) -> str:
-    """Repo root path as seen inside wrapper processes (host repo locally, ``/app`` in Compose)."""
-    if session.local_mode:
-        return str(session.repo.resolve())
-    return "/app"
+    """Repo root path as seen inside wrapper subprocesses."""
+    return str(session.repo.resolve())
 
 
 def _copy_tls_config(cfg: interop_pb2.TlsConfig) -> interop_pb2.TlsConfig:
@@ -498,7 +355,7 @@ def tls_config_resumption_or_0rtt_active(cfg: interop_pb2.TlsConfig) -> bool:
 
 
 def run_matrix_cell_grpc(cell: dict[str, str], session: BaseExecutionSession, *, verbose: bool) -> int:
-    """Run one matrix cell over persistent backends (gRPC only, no Compose)."""
+    """Run one matrix cell over persistent local wrappers."""
     server = (cell.get("server") or "").strip().lower()
     client = (cell.get("client") or "").strip().lower()
     print(f"========== {server}x{client} ==========")
@@ -509,15 +366,9 @@ def run_matrix_cell_grpc(cell: dict[str, str], session: BaseExecutionSession, *,
     wroot = wrapper_filesystem_root(session)
     server_conf.repo_root = wroot
     client_conf.repo_root = wroot
-    local_mode = session.local_mode
     tcp_host, tcp_port = apply_matrix_tls_endpoints(server, client,
-        server_conf, client_conf, local_mode=local_mode, repo=session.repo)
+        server_conf, client_conf, repo=session.repo)
     try:
-        if not local_mode and server_conf.port > 0 and server_conf.port != 5555:
-            if verbose:
-                print(f"{YELLOW}[Driver] Note: Compose mode expects TLS port 5555 inside "
-                    f"containers (got {server_conf.port}); host check uses {tcp_port}{RESET}", file=sys.stderr)
-
         driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
         driver.server_metadata = session.metadata.get(server)
         driver.client_metadata = session.metadata.get(client)

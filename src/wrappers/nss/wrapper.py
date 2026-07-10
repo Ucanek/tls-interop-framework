@@ -2,7 +2,7 @@
 
 The SQLite NSS DB under ``NSSDB`` (default ``wrappers/nss/nssdb/<backend>``) is populated on first gRPC use (not in ``__init__``)
 so the wrapper process can bind :50051 before heavy ``pk12util`` imports. Bundles
-under ``/app/certs/`` (RSA, ECDSA, Ed25519, Ed448) use distinct nicknames. Set
+under ``certs/`` (RSA, ECDSA, Ed25519, Ed448) use distinct nicknames. Set
 ``INTEROP_GNUTLS_NSS_PAIR`` when the NSS client peers into a Docker
 network where symbolic hostnames resolve to RFC 1918 addresses (see README).
 """
@@ -27,13 +27,13 @@ from wrappers.utils import(standard_library_metadata, test_feature_enabled_in_co
 
 CAPABILITIES = load_local_capabilities(__file__)
 
-# Must match deploy/compose.yaml environment wiring.
+# Must match ``orchestration_env`` wiring when GnuTLS and NSS run together.
 _GNUTLS_NSS_PAIR_ENV = "INTEROP_GNUTLS_NSS_PAIR"
 _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 
 def nss_db_directory(repo: Path, backend_id: str = "nss") -> Path:
-    """Per-backend NSS SQL DB path: ``<repo>/src/wrappers/nss/nssdb/<backend_id>`` (or ``/app/wrappers/...`` in images)."""
+    """Per-backend NSS SQL DB path: ``<repo>/src/wrappers/nss/nssdb/<backend_id>``."""
     from core.catalog import wrappers_plugin_dir
 
     return wrappers_plugin_dir(repo) / "nss" / "nssdb" / backend_id

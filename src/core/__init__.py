@@ -1,1 +1,1 @@
-"""``catalog``, ``identity`` (certificates), and ``runner`` (Compose/local + gRPC driver)."""
+"""``catalog``, ``identity`` (certificates), and ``runner`` (local wrappers + gRPC driver)."""

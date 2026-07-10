@@ -51,11 +51,9 @@ DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {"1.3": "aes-128-gcm", "1.2": "
 
 
 def repository_root() -> Path:
-    """Repo root (``deploy/compose.yaml``) or container ``/app`` (``proto/interop_pb2.py``)."""
+    """Repository root (directory containing ``proto/interop_pb2.py``)."""
     cur = Path(__file__).resolve().parent
     while True:
-        if (cur / "deploy" / "compose.yaml").is_file():
-            return cur
         if (cur / "proto" / "interop_pb2.py").is_file():
             return cur
         parent = cur.parent
@@ -64,8 +62,6 @@ def repository_root() -> Path:
         cur = parent
     p = Path(__file__).resolve()
     for candidate in (p.parents[2], p.parents[1]):
-        if (candidate / "deploy" / "compose.yaml").is_file():
-            return candidate
         if (candidate / "proto" / "interop_pb2.py").is_file():
             return candidate
     return p.parents[2]
@@ -221,7 +217,7 @@ def load_capabilities(backend_name: str, repo: Path | None = None) -> dict[str, 
 
 
 _RUNTIME_DEFAULTS: dict[str, Any] = {"grpc_addr": None, "tls_host": "127.0.0.1", "tls_port": 15551,
-    "compose_service": None, "unsupported_tls_fields": (), "local_cli": ()}
+    "unsupported_tls_fields": (), "local_cli": ()}
 
 
 def wrapper_runtime(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -312,25 +308,6 @@ def backend_tls_endpoint(backend_name: str, repo: Path | None = None) -> tuple[s
     host = str(rt.get("tls_host") or "127.0.0.1")
     port = int(rt.get("tls_port") or 15551)
     return host, port
-
-
-def compose_service_name(backend_name: str, repo: Path | None = None) -> str:
-    rt = wrapper_runtime_config(backend_name, repo)
-    svc = rt.get("compose_service")
-    if isinstance(svc, str) and svc.strip():
-        return svc.strip()
-    return (backend_name or "").strip().lower()
-
-
-def discover_compose_backends(repo: Path | None = None) -> frozenset[str]:
-    """Wrapper ids that declare ``runtime.compose_service`` (Docker Compose services)."""
-    root = repo or repository_root()
-    out: set[str] = set()
-    for wid in discover_wrapper_ids(root):
-        rt = wrapper_runtime_config(wid, root)
-        if rt.get("compose_service"):
-            out.add(wid)
-    return frozenset(out)
 
 
 def check_local_cli_tools(backends: Iterable[str], repo: Path | None = None) -> list[str]:
