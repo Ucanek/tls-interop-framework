@@ -73,7 +73,7 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     groups["basic"].add_argument("--client", default="openssl",
         help="Client wrapper (comma list, ALL, ALL\\a,b to exclude; default: openssl)")
     groups["basic"].add_argument("--tls-port", type=int, default=0,
-        help="Override TlsConfig.port (0 = driver default 5555)")
+        help="Override TLS listen/connect port (0 = per-backend default from capabilities.json)")
     groups["basic"].add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     groups["basic"].add_argument("--dry-run", action="store_true",
         help="Expand matrix and print planned backends without starting wrappers")

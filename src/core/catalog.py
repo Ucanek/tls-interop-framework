@@ -807,6 +807,9 @@ def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, re
     drop orthogonal dims unless the user set them on the CLI.
     """
     out = dict(cell)
+    port = int(getattr(args_template, "tls_port", 0) or 0)
+    if port:
+        out["tls_port"] = str(port)
     server = (cell.get("server") or "").strip().lower()
     client = (cell.get("client") or "").strip().lower()
     try:

@@ -72,9 +72,11 @@ def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
 
 
 def apply_matrix_tls_endpoints(server: str, client: str, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, *, repo: Path) -> tuple[str, int]:
+    client_conf: interop_pb2.TlsConfig, *, repo: Path, cell: dict[str, str] | None = None) -> tuple[str, int]:
     """Return host TCP coordinates for the driver check after ESTABLISH."""
-    tcp_host, tcp_port = backend_tls_endpoint(server, repo)
+    tcp_host, default_port = backend_tls_endpoint(server, repo)
+    port_raw = ((cell or {}).get("tls_port") or "").strip()
+    tcp_port = int(port_raw) if port_raw else default_port
     server_conf.port = tcp_port
     client_conf.server_hostname = "127.0.0.1"
     client_conf.port = tcp_port
@@ -367,7 +369,7 @@ def run_matrix_cell_grpc(cell: dict[str, str], session: BaseExecutionSession, *,
     server_conf.repo_root = wroot
     client_conf.repo_root = wroot
     tcp_host, tcp_port = apply_matrix_tls_endpoints(server, client,
-        server_conf, client_conf, repo=session.repo)
+        server_conf, client_conf, repo=session.repo, cell=cell)
     try:
         driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
         driver.server_metadata = session.metadata.get(server)
