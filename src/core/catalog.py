@@ -19,22 +19,17 @@ STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
     {"id": "cipher_suite", "description": "Cipher suite catalog id (per-backend mapping in capabilities.json)."},
     {"id": "tls_version", "description": "TLS protocol version for the endpoint (TlsConfig.version)."},
     {"id": "tls_port", "description": "TLS data-plane port override (default scenario value is 5555)."},
-    {"id": "certificate_pem", "description": "PEM certificate bytes provided to endpoint identity config."},
-    {"id": "private_key_pem", "description": "PEM private key bytes paired with certificate_pem."},
     {"id": "supported_groups", "description": "Advertised/allowed key exchange groups (supported_groups extension)."},
     {"id": "signature_schemes", "description": "Advertised TLS signature algorithms."},
     {"id": "alpn", "description": "ALPN protocol identifiers offered by the endpoint (e.g. h2, http/1.1)."},
     {"id": "test_features", "description": ("Credentials for special ciphers (psk, anonymous). "
         "cipher_suite ALL includes PSK/anon suites; without enabling a feature here, "
         "those cells are pre-SKIP (Feature disabled). "
-        "Set test_features: psk,anonymous (or YAML map with true values) to run them.")},
-    {"id": "ca_file", "description": "Path/identifier for trusted CA bundle file."},
-    {"id": "keylog_file", "description": "NSS/SSLKEYLOGFILE-compatible key log output path."})
+        "Set test_features: psk,anonymous (or YAML map with true values) to run them.")})
 
 OPTION_GROUPS: dict[str, str] = {
     "tls_port": "basic", "cipher_suite": "crypto", "tls_version": "protocol", "supported_groups": "crypto",
-    "signature_schemes": "crypto", "alpn": "protocol", "ca_file": "security", "certificate_pem": "security",
-    "private_key_pem": "security", "keylog_file": "debug", "test_features": "crypto"}
+    "signature_schemes": "crypto", "alpn": "protocol", "test_features": "crypto"}
 
 NON_TLS_OPTION_IDS: frozenset[str] = frozenset({"server_wrapper", "client_wrapper"})
 # Applied once per run (suite/CLI), not Cartesian-expanded with cipher_suite.
@@ -1315,10 +1310,7 @@ def run_args_tls_config_view(args: Any, *, server: bool) -> SimpleNamespace:
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
         alpn_protocols=pick_list("alpn"),
-        psk_modes=sorted(parse_test_features_enabled(",".join(pick_list("test_features")))),
-        ca_file=(getattr(args, "ca_file", None) or "") or "",
-        certificate=getattr(args, "certificate_pem", None),
-        private_key=getattr(args, "private_key_pem", None))
+        psk_modes=sorted(parse_test_features_enabled(",".join(pick_list("test_features")))))
 
 
 def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[str]) -> None:

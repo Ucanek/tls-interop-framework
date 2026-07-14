@@ -242,7 +242,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
                 ca_path = cert_path
             cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]
         cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Server started"
 
     def _start_client(self, config):
@@ -266,7 +266,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             client_cert, client_key = self._ensure_cert_paths(config)
             cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
         cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Client connected"
 
 

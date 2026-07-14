@@ -71,7 +71,7 @@ message TlsConfig {
   reserved 29, 30; // formerly verify_peer / verify_hostname
   string ca_file = 31;
   string ca_path = 32;
-  string keylog_file = 33;
+  reserved 33;
   repeated string certificate_compression_send = 34;
   repeated string certificate_compression_receive = 35;
   // Driver-only: "save" | "resume" for TLS 1.3 session ticket / 0-RTT orchestration.

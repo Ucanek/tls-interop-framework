@@ -58,8 +58,8 @@ def _gnutls_session_hook_library() -> str | None:
     return str(_HOOK_SO) if _HOOK_SO.is_file() else None
 
 
-def _gnutls_popen_env(config: Any, base: dict[str, str] | None, *, session_env: dict[str, str]) -> dict[str, str]:
-    env = dict(base or os.environ)
+def _gnutls_popen_env(*, session_env: dict[str, str]) -> dict[str, str]:
+    env = dict(os.environ)
     env.update(session_env)
     hook = _gnutls_session_hook_library()
     if hook:
@@ -264,7 +264,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         if alpn:
             cmd.extend(["--alpn", alpn])
         cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=self._popen_env(config))
+        proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
 
     def _start_client(self, config):
@@ -296,8 +296,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             cmd.extend(["--alpn", alpn])
         cmd.append(host)
         cwd = os.getcwd()
-        base_env = self._popen_env(config)
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=_gnutls_popen_env(config, base_env, session_env=session_env))
+        proc = popen_stdio_merged(cmd, cwd=cwd, env=_gnutls_popen_env(session_env=session_env))
         return proc, format_executed_command(cmd, cwd), "GnuTLS Client connected"
 
     def _server_transmit_poll(self) -> bool:

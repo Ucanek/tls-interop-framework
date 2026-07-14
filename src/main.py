@@ -57,8 +57,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         "basic": parser.add_argument_group("Basic", "Runner and TLS listen port."),
         "crypto": parser.add_argument_group("Cryptography", "Ciphers, ECDH groups, and signature algorithms."),
         "protocol": parser.add_argument_group("Protocol", "TLS protocol version (TlsConfig.version)."),
-        "security": parser.add_argument_group("Security & PKI", "Trust, hostname, and optional inline PEM material."),
-        "debug": parser.add_argument_group("Debug / internals", "Diagnostic knobs (e.g. key log)."),
     }
 
     list_group = groups["basic"].add_mutually_exclusive_group()
@@ -75,10 +73,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     groups["basic"].add_argument("--tls-port", type=int, default=0,
         help="Override TLS listen/connect port (0 = per-backend default from capabilities.json)")
     groups["basic"].add_argument("-v", "--verbose", action="store_true", help="Verbose output")
-    groups["basic"].add_argument("--dry-run", action="store_true",
-        help="Expand matrix and print planned backends without starting wrappers")
-    groups["basic"].add_argument("--jobs", type=int, default=1,
-        help="Reserved for future parallel matrix runs (persistent backends run serially). Default: 1.")
 
     groups["crypto"].add_argument("--cipher-suite", default="",
         help="Cipher suite catalog id (per-backend mapping in capabilities.json). "
@@ -96,13 +90,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         help=("Credentials for special ciphers (psk, anonymous). cipher_suite ALL includes PSK/anon suites; "
             "without enabling a feature here, those cells are pre-SKIP (Feature disabled). "
             "Set test_features: psk,anonymous (or YAML map with true values) to run them.") + _matrix)
-    groups["security"].add_argument("--ca-file", default="", help="Path/identifier for trusted CA bundle file.")
-    groups["security"].add_argument("--certificate-pem", default="",
-        help="PEM certificate bytes provided to endpoint identity config.")
-    groups["security"].add_argument("--private-key-pem", default="",
-        help="PEM private key bytes paired with certificate_pem.")
-    groups["debug"].add_argument("--keylog-file", default="",
-        help="NSS/SSLKEYLOGFILE-compatible key log output path.")
     return parser
 
 
@@ -202,7 +189,7 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
         return label, EXIT_SKIP
 
     if session is None:
-        return label, 0
+        raise RuntimeError("missing wrapper session for matrix cell")
 
     cell_ns = copy.copy(args_template)
     for k in axis_keys:
@@ -241,40 +228,30 @@ def main() -> int:
         if combos:
             ensure_interop_certs(repo, verbose=bool(args.verbose))
             cleanup_certs = True
-        backends, pre_skips = required_backends_from_matrix(axis_keys, combos, args_template=args,
+        backends, _ = required_backends_from_matrix(axis_keys, combos, args_template=args,
             repo=repo, known=known)
-        jobs = max(1, int(args.jobs))
-        if jobs > 1:
-            print("Note: parallel --jobs is disabled with persistent backends; running serially.", file=sys.stderr)
 
-        if args.dry_run:
-            svc = ", ".join(sorted(backends)) if backends else "(none)"
-            print(f"DRY-RUN: would start wrapper subprocess(es): {svc}")
-            print(f"DRY-RUN: {n_tests} matrix cell(s), {pre_skips} pre-SKIP")
-            results = [_run_matrix_cell(t, axis_keys=axis_keys, args_template=args, repo=repo, known=known,
-                session=None) for t in combos]
-        else:
-            session: BaseExecutionSession | None = None
-            results: list[tuple[str, int]] = []
-            try:
-                if backends:
-                    session = WrapperSession(repo, backends, verbose=bool(args.verbose))
-                    session.start()
-                for tup in combos:
-                    results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
-                        known=known, session=session))
-            except TimeoutError as e:
-                print(e, file=sys.stderr)
-                return 2
-            except subprocess.CalledProcessError as e:
-                print(f"Backend startup failed: {e}", file=sys.stderr)
-                return 2
-            except RuntimeError as e:
-                print(f"Wrapper startup failed: {e}", file=sys.stderr)
-                return 2
-            finally:
-                if session is not None:
-                    session.stop()
+        session: BaseExecutionSession | None = None
+        results: list[tuple[str, int]] = []
+        try:
+            if backends:
+                session = WrapperSession(repo, backends, verbose=bool(args.verbose))
+                session.start()
+            for tup in combos:
+                results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
+                    known=known, session=session))
+        except TimeoutError as e:
+            print(e, file=sys.stderr)
+            return 2
+        except subprocess.CalledProcessError as e:
+            print(f"Backend startup failed: {e}", file=sys.stderr)
+            return 2
+        except RuntimeError as e:
+            print(f"Wrapper startup failed: {e}", file=sys.stderr)
+            return 2
+        finally:
+            if session is not None:
+                session.stop()
 
         print("\n--- Results ---")
         use_color = sys.stdout.isatty()

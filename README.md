@@ -95,13 +95,10 @@ python3 src/main.py --server ALL --client ALL
 
 Matrix dimensions support comma lists, `ALL`, and `ALL\excl1,excl2` on `--server`, `--client`, and choice-backed options from the union of all `src/wrappers/*/capabilities.json` files. `ALL` on `--cipher-suite` expands to ciphers declared in the active matrix wrappers’ capabilities. Use `SERVER:CLIENT` on `cipher_suite`, `tls_version`, `supported_groups`, and `signature_schemes` for asymmetric configuration.
 
-Parallel cells: `--jobs N` (reserved; persistent backends currently run serially).
-
-Verbose / dry-run:
+Verbose output:
 
 ```bash
 python3 src/main.py --server openssl --client nss -v
-python3 src/main.py --server ALL --client ALL --dry-run
 ```
 
 ### Test suites (`scenarios/`)

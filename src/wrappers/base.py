@@ -144,15 +144,6 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         raise WrapperSetupError("No identity PEM for this test (set certificate/private_key, use certs/ "
             "from scripts/gen_interop_certs.sh, or cert.pem/key.pem in cwd)")
 
-    def _popen_env(self, config: interop_pb2.TlsConfig) -> dict[str, str] | None:
-        """Environment with ``SSLKEYLOGFILE`` when ``TlsConfig.keylog_file`` is set."""
-        path = (getattr(config, "keylog_file", None) or "").strip()
-        if not path:
-            return None
-        env = dict(os.environ)
-        env["SSLKEYLOGFILE"] = path
-        return env
-
     def _terminate_process_hard(self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0) -> None:
         """SIGTERM then SIGKILL (best-effort)."""
         if proc is None or proc.poll() is not None:
