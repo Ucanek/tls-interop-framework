@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from core.catalog import(cell_capability_skip_reason, discover_wrapper_ids, ensure_import_paths,
-    matrix_axis_plan, normalize_cell_tls_micro_params, print_catalog_options, repository_root, validate_run_args)
+    grpc_port_overrides_from_args, matrix_axis_plan, normalize_cell_tls_micro_params, print_catalog_options, repository_root, validate_run_args)
 
 ensure_import_paths()
 from core.runner import(EXIT_SKIP, BaseExecutionSession, WrapperSession,
@@ -72,7 +72,13 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         help="Client wrapper (comma list, ALL, ALL\\a,b to exclude; default: openssl)")
     groups["basic"].add_argument("--tls-port", type=int, default=0,
         help="Override TLS listen/connect port (0 = per-backend default from capabilities.json)")
+    groups["basic"].add_argument("--server-grpc-port", type=int, default=0,
+        help="Override gRPC port for --server wrapper (0 = capabilities.json; useful with --attach)")
+    groups["basic"].add_argument("--client-grpc-port", type=int, default=0,
+        help="Override gRPC port for --client wrapper (0 = capabilities.json; useful with --attach)")
     groups["basic"].add_argument("-v", "--verbose", action="store_true", help="Verbose output")
+    groups["basic"].add_argument("--attach", action="store_true",
+        help="Connect to wrapper gRPC services already running on localhost (do not start subprocesses)")
 
     groups["crypto"].add_argument("--cipher-suite", default="",
         help="Cipher suite catalog id (per-backend mapping in capabilities.json). "
@@ -235,7 +241,8 @@ def main() -> int:
         results: list[tuple[str, int]] = []
         try:
             if backends:
-                session = WrapperSession(repo, backends, verbose=bool(args.verbose))
+                session = WrapperSession(repo, backends, verbose=bool(args.verbose), attach=bool(args.attach),
+                    grpc_port_overrides=grpc_port_overrides_from_args(args))
                 session.start()
             for tup in combos:
                 results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,

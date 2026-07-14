@@ -290,12 +290,33 @@ def session_wrapper_env(backend_name: str, repo: Path, active_backends: Iterable
     return merged
 
 
-def backend_grpc_addr(backend_name: str, repo: Path | None = None) -> str:
+def backend_grpc_addr(backend_name: str, repo: Path | None = None, *, port_override: int | None = None) -> str:
     rt = wrapper_runtime_config(backend_name, repo)
     addr = rt.get("grpc_addr")
     if not isinstance(addr, str) or not addr.strip():
         raise ValueError(f"capabilities.runtime.grpc_addr missing for backend {backend_name!r}")
-    return addr.strip()
+    addr = addr.strip()
+    if port_override:
+        host, _, _ = addr.rpartition(":")
+        return f"{host or '127.0.0.1'}:{int(port_override)}"
+    return addr
+
+
+def grpc_port_overrides_from_args(args: Any) -> dict[str, int]:
+    """Per-backend gRPC port overrides from ``--server-grpc-port`` / ``--client-grpc-port``."""
+    out: dict[str, int] = {}
+
+    def _maybe_add(role: str, port: int) -> None:
+        if not port:
+            return
+        wid = (getattr(args, role, None) or "").strip().lower()
+        if not wid or wid == "all" or "," in wid or "\\" in wid:
+            return
+        out[wid] = port
+
+    _maybe_add("server", int(getattr(args, "server_grpc_port", 0) or 0))
+    _maybe_add("client", int(getattr(args, "client_grpc_port", 0) or 0))
+    return out
 
 
 def backend_tls_endpoint(backend_name: str, repo: Path | None = None) -> tuple[str, int]:
@@ -1335,6 +1356,9 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
         raise ValueError(f"Unknown --client '{args.client}'. Known: {sorted(known_wrappers)}")
     if not (0 <= int(args.tls_port) <= 65535):
         raise ValueError("--tls-port must be in range 0..65535")
+    for attr in ("server_grpc_port", "client_grpc_port"):
+        if not (0 <= int(getattr(args, attr, 0) or 0) <= 65535):
+            raise ValueError(f"--{attr.replace('_', '-')} must be in range 0..65535")
 
     for item in load_options_catalog(repo):
         option_id = item["id"]

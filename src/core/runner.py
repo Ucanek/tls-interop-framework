@@ -133,9 +133,10 @@ class BaseExecutionSession(ABC):
 
 
 class WrapperSession(BaseExecutionSession):
-    """Start wrapper gRPC services as host subprocesses."""
+    """Start wrapper gRPC services as host subprocesses, or attach to existing ones."""
 
-    def __init__(self, repo: Path, backends: frozenset[str], *, verbose: bool = False) -> None:
+    def __init__(self, repo: Path, backends: frozenset[str], *, verbose: bool = False,
+        attach: bool = False, grpc_port_overrides: Mapping[str, int] | None = None) -> None:
         known = frozenset(discover_wrapper_ids(repo))
         unknown = backends - known
         if unknown:
@@ -143,11 +144,15 @@ class WrapperSession(BaseExecutionSession):
         self.repo = repo.resolve()
         self.backends = sorted(backends)
         self.verbose = verbose
+        self.attach = attach
+        self._grpc_port_overrides = {k.strip().lower(): int(v) for k, v in (grpc_port_overrides or {}).items()}
         self.metadata: dict[str, interop_pb2.LibraryMetadata] = {}
         self._procs: list[subprocess.Popen[bytes]] = []
 
     def grpc_addr(self, backend: str) -> str:
-        return backend_grpc_addr(backend, self.repo)
+        key = (backend or "").strip().lower()
+        override = self._grpc_port_overrides.get(key)
+        return backend_grpc_addr(key, self.repo, port_override=override or None)
 
     def tls_endpoint(self, backend: str) -> tuple[str, int]:
         return backend_tls_endpoint(backend, self.repo)
@@ -168,6 +173,10 @@ class WrapperSession(BaseExecutionSession):
 
     def up(self) -> None:
         if not self.backends:
+            return
+        if self.attach:
+            targets = ", ".join(f"{b} @ {self.grpc_addr(b)}" for b in self.backends)
+            print(f"Attach mode: connecting to existing wrapper(s) on localhost ({targets})")
             return
         try:
             import grpc  # noqa: F401
@@ -205,6 +214,8 @@ class WrapperSession(BaseExecutionSession):
                     + (f":\n{out}" if out else ""))
 
     def down(self) -> None:
+        if self.attach:
+            return
         for proc in self._procs:
             if proc.poll() is not None:
                 continue
