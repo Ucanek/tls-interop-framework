@@ -23,7 +23,7 @@ from core.catalog import(cell_capability_skip_reason, discover_wrapper_ids, ensu
     grpc_port_overrides_from_args, matrix_axis_plan, normalize_cell_tls_micro_params, print_catalog_options, repository_root, validate_run_args)
 
 ensure_import_paths()
-from core.runner import(EXIT_SKIP, BaseExecutionSession, WrapperSession,
+from core.runner import(EXIT_SKIP, BaseExecutionSession, DebugRunLogs, WrapperSession,
     ensure_interop_certs, remove_interop_certs, required_backends_from_matrix, run_matrix_cell_grpc)
 
 GREEN = "\033[92m"
@@ -181,16 +181,18 @@ def _cell_summary_label(cell: dict[str, str]) -> str:
 
 
 def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
-    args_template: argparse.Namespace, repo: Path, known: frozenset[str], session: BaseExecutionSession | None) -> tuple[str, int]:
+    args_template: argparse.Namespace, repo: Path, known: frozenset[str],
+    session: BaseExecutionSession | None, debug_logs: DebugRunLogs | None = None) -> tuple[str, int]:
     cell = {k: str(v) for k, v in zip(axis_keys, tup)}
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
     label = _cell_summary_label(cell)
     skip = cell_capability_skip_reason(cell, repo)
     if skip:
+        skip_s = skip if isinstance(skip, str) else " ".join(str(x) for x in skip)
         if args_template.verbose:
-            print(f"SKIP (pre-run): {skip}", file=sys.stderr)
+            print(f"SKIP (pre-run): {skip_s}", file=sys.stderr)
         else:
-            short = skip[:120].replace("\n", " ")
+            short = skip_s[:120].replace("\n", " ")
             print(f"{label} | SKIP  ({short})")
         return label, EXIT_SKIP
 
@@ -201,7 +203,7 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
     for k in axis_keys:
         setattr(cell_ns, k, cell[k])
     validate_run_args(cell_ns, known_wrappers=known, repo=repo)
-    rc = run_matrix_cell_grpc(cell, session, verbose=bool(args_template.verbose))
+    rc = run_matrix_cell_grpc(cell, session, verbose=bool(args_template.verbose), debug_logs=debug_logs)
     return label, rc
 
 
@@ -231,6 +233,7 @@ def main() -> int:
         print(f"Running matrix of {n_tests} tests...")
 
         combos = list(product(*axis_vals))
+        debug_logs: DebugRunLogs | None = DebugRunLogs(repo) if combos else None
         if combos:
             ensure_interop_certs(repo, verbose=bool(args.verbose))
             cleanup_certs = True
@@ -246,7 +249,7 @@ def main() -> int:
                 session.start()
             for tup in combos:
                 results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
-                    known=known, session=session))
+                    known=known, session=session, debug_logs=debug_logs))
         except TimeoutError as e:
             print(e, file=sys.stderr)
             return 2
@@ -269,6 +272,10 @@ def main() -> int:
             else:
                 print(f"{label} | {text}")
         if any(rc not in (0, EXIT_SKIP) for _, rc in results):
+            if debug_logs is not None and debug_logs.ready:
+                run_dir = debug_logs.path
+                rel = run_dir.relative_to(repo) if run_dir and run_dir.is_relative_to(repo) else run_dir
+                print(f"{RED}Debug logs for this run: {rel}/{RESET}")
             return 1
         return 0
     except ValueError as e:

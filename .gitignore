@@ -26,6 +26,9 @@ htmlcov/
 **/nssdb/
 **/*.nssdb.*
 
+# Failure debug dumps from the orchestrator
+debug_logs/
+
 # Editor / tooling
 .idea/
 .cursorignore

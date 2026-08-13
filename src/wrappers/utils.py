@@ -97,6 +97,31 @@ def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] |
     return line
 
 
+def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
+    stdout: str = "", stderr: str = "") -> str:
+    """
+    Build ``OperationResponse.logs`` with CMD, exit code, stdout, and stderr.
+
+    Wrappers merge stderr into stdout (``stderr=STDOUT``) to avoid pipe deadlocks
+    on long-lived CLI processes; when ``stderr`` is empty, the stderr section notes that.
+    """
+    cmd_s = (cmd or "").strip()
+    if cmd_s and not cmd_s.startswith("CMD:"):
+        cmd_s = f"CMD: {cmd_s}"
+    elif not cmd_s:
+        cmd_s = "CMD: (unknown)"
+    if exit_code is None:
+        exit_s = "Exit code: (running)"
+    else:
+        exit_s = f"Exit code: {exit_code}"
+    out_body = (stdout or "").rstrip() if (stdout or "").strip() else "(empty)"
+    if (stderr or "").strip():
+        err_body = stderr.rstrip()
+    else:
+        err_body = "(stderr merged into stdout; see stdout above)"
+    return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
+
+
 def _make_non_blocking(fd: int) -> None:
     flags = fcntl.fcntl(fd, fcntl.F_GETFL)
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)

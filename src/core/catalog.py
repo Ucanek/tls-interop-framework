@@ -864,7 +864,7 @@ def _check_cipher_side(cell: dict[str, str], *, server: bool,
     modes = backend_cipher_modes(caps, cid)
     if not modes:
         return f"{wrapper} lacks cipher_suite={cid!r}"
-    return (f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} ",
+    return (f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} "
         f"(supported modes: {', '.join(sorted(modes))})")
 
 
