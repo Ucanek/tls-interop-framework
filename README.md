@@ -61,12 +61,15 @@ With `--suite`, do not pass `--server` / `--client` or other matrix flags — va
 ## Results
 
 
-| OK                  | FAIL            | SKIP                                   |
-| ------------------- | --------------- | -------------------------------------- |
-| handshake + echo OK | error / timeout | unsupported option or disabled feature |
+| OK | FAIL | SKIP | TIMEOUT |
+|----|------|------|---------|
+| handshake + echo OK | error | unsupported / disabled feature | `--cell-timeout` exceeded |
 
+Default cell limit: **45 s** (`--cell-timeout`). On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
 
-On **FAIL**, logs appear under `debug_logs/run_<timestamp>/fail_<server>_x_<client>_….log` (CLI cmd, stdout, `TlsConfig`). No folder if all cells pass.
+Parallel runs: `--jobs N` (default 1) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
+
+On **FAIL** or **TIMEOUT**, logs appear under `debug_logs/run_<timestamp>/` (`fail_*.log` or `timeout_*.log`). No folder if all cells pass.
 
 ## Manual debug (`--attach`)
 

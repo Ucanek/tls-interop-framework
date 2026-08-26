@@ -28,6 +28,7 @@ htmlcov/
 
 # Failure debug dumps from the orchestrator
 debug_logs/
+.interop_worker/
 
 # Editor / tooling
 .idea/

@@ -14,13 +14,10 @@ from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identit
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
 from wrappers.base import(BaseTemplateWrapper, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
-from wrappers.utils import(alpn_cli_protocol_list, standard_library_metadata,
-    test_feature_enabled_in_config, tls_mode_12_or_13)
+from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path,
+    standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
-
-_EPHEM_CERT = "/tmp/interop_openssl_cert.pem"
-_EPHEM_KEY = "/tmp/interop_openssl_key.pem"
 
 _DNS_LABEL_OK = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
 _LEGACY_DSS_CIPHER_RE = re.compile(r"dss|dsh", re.IGNORECASE)
@@ -149,7 +146,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
 
     @property
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return (_EPHEM_CERT, _EPHEM_KEY)
+        return interop_staging_pem_paths("openssl")
 
     def _generate_fallback_rsa_identity(self, cert_path: str, key_path: str) -> tuple[str, str]:
         """One-day RSA leaf when catalog/cwd PEMs are unavailable (ephemeral paths)."""

@@ -73,6 +73,20 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
             pass
 
 
+def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
+    """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
+    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
+    suffix = f"_{slot}" if slot else ""
+    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
+
+
+def interop_staging_sidecar_path(prefix: str, name: str) -> str:
+    """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot suffix."""
+    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
+    suffix = f"_{slot}" if slot else ""
+    return f"/tmp/interop_{prefix}_{name}{suffix}"
+
+
 def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
     """Maps ``TlsConfig.version`` to TLS 1.2 or TLS 1.3 mode."""
     if config is None:

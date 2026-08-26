@@ -16,14 +16,10 @@ from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identit
 from proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
-from wrappers.utils import(alpn_cli_protocol_list, is_server_role,
+from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path, is_server_role,
     standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
-
-_EPHEM_CERT = "/tmp/interop_gnutls_cert.pem"
-_EPHEM_KEY = "/tmp/interop_gnutls_key.pem"
-_INTEROP_PSK_PASSWD = "/tmp/interop_gnutls_pskpasswd.txt"
 _HOOK_SOURCE = Path(__file__).resolve().parent / "gnutls_session_hook.c"
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
 
@@ -70,9 +66,10 @@ def _gnutls_popen_env(*, session_env: dict[str, str]) -> dict[str, str]:
 
 def _gnutls_psk_passwd_file(identity: str, secret_hex: str) -> str:
     """``gnutls-serv`` reads PSK credentials from ``identity:hexkey`` lines."""
-    with open(_INTEROP_PSK_PASSWD, "w", encoding="ascii") as f:
+    path = interop_staging_sidecar_path("gnutls", "pskpasswd.txt")
+    with open(path, "w", encoding="ascii") as f:
         f.write(f"{identity}:{secret_hex}\n")
-    return _INTEROP_PSK_PASSWD
+    return path
 
 
 def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str) -> list[str]:
@@ -198,7 +195,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
 
     @property
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return (_EPHEM_CERT, _EPHEM_KEY)
+        return interop_staging_pem_paths("gnutls")
 
     def _version_command(self) -> list[str]:
         return ["gnutls-cli", "--version"]
