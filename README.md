@@ -11,6 +11,8 @@ sudo apt-get install openssl gnutls-bin libnss3-tools
 
 pip install 'grpcio>=1.60' 'protobuf>=4.21' 'PyYAML>=6.0'
 
+make gnutls-hook   # GnuTLS session resumption LD_PRELOAD hook (needs gcc + libgnutls dev)
+
 python3 src/main.py --server openssl --client gnutls
 python3 src/main.py --suite scenarios/pairwise-tls13.yaml   # 9 cells, TLS 1.3 3×3
 
@@ -107,6 +109,7 @@ Notes:
 - Fedora 43+: `tstclnt` / `selfserv` in `/usr/lib64/nss/unsupported-tools/` (auto-resolved).
 - `tstclnt` has no ALPN; `selfserv` serves one connection then exits (wrapper restarts it).
 - GnuTLS server × NSS client: `INTEROP_GNUTLS_NSS_PAIR` is set automatically when both run in one matrix.
+- Session resumption: build `gnutls_session_hook.so` once with `make gnutls-hook` (requires `gcc`, `pkg-config`, GnuTLS headers). Without it, resumption tests skip the hook (no runtime compile).
 
 ## New wrapper
 

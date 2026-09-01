@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-import subprocess
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,6 @@ from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, in
     standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
-_HOOK_SOURCE = Path(__file__).resolve().parent / "gnutls_session_hook.c"
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
 
 
@@ -32,25 +30,7 @@ def _gnutls_session_state_paths(config: Any) -> tuple[str, str]:
 
 
 def _gnutls_session_hook_library() -> str | None:
-    """Build or return path to ``gnutls_session_hook.so`` for cross-process session I/O."""
-    if _HOOK_SO.is_file():
-        return str(_HOOK_SO)
-    if not _HOOK_SOURCE.is_file():
-        return None
-    try:
-        pkg = subprocess.run(["pkg-config", "--cflags", "--libs", "gnutls"], check=True, capture_output=True, text=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        return None
-    link_args = pkg.stdout.strip().split() if pkg.stdout.strip() else ["-lgnutls"]
-    try:
-        subprocess.run(["gcc", "-shared", "-fPIC", "-o", str(_HOOK_SO), str(_HOOK_SOURCE), *link_args],
-            check=True, capture_output=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        try:
-            subprocess.run(["gcc", "-shared", "-fPIC", "-o", str(_HOOK_SO), str(_HOOK_SOURCE), "-lgnutls"],
-                check=True, capture_output=True)
-        except (FileNotFoundError, subprocess.CalledProcessError):
-            return None
+    """Return path to prebuilt ``gnutls_session_hook.so`` (see repo ``Makefile`` target ``gnutls-hook``)."""
     return str(_HOOK_SO) if _HOOK_SO.is_file() else None
 
 
