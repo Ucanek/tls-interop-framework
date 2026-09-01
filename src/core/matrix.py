@@ -10,8 +10,8 @@ from core.capabilities import(CAPABILITY_DIMENSIONS, NON_MATRIX_OPTION_IDS, NON_
     backend_cipher_modes, capability_dimension_name, default_cipher_for_tls_mode, dimension_keys,
     load_capabilities, load_capabilities_cache, load_options_catalog, option_choice_tokens, repository_root,
     union_cipher_suite_ids_for_wrappers)
-from core.validation import(asymmetric_role_part, parse_asymmetric, split_csv_tokens, tls_mode_filter_from_args,
-    tls_mode_from_version)
+from core.utils import asymmetric_role_part, parse_asymmetric, split_csv_tokens
+from core.validation import tls_mode_filter_from_args, tls_mode_from_version
 
 
 def expand_dimension(value: str, choices: Sequence[str]) -> list[str]:

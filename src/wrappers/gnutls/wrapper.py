@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any
 
 from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities,
-    repository_root)
-from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
-    cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
+    cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities, repository_root)
+from core.identity import(cipher_catalog_id_uses_dsa_auth, dsa_cipher_setup_error, has_inline_identity_pem,
+    repeated_config_tokens, resolve_client_trust_pem_path, resolve_dsa_cipher_cert_paths)
+from core.utils import norm_catalog_token
 from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
@@ -224,32 +224,17 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         return False
 
     def _ensure_cert_paths(self, config, state: WrapperSessionState):
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
-        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
-            cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
-            if cert and key:
-                return cert, key
-            cert_b = getattr(config, "certificate", None) or b""
-            key_b = getattr(config, "private_key", None) or b""
-            if cert_b.strip() and key_b.strip():
+        dsa = resolve_dsa_cipher_cert_paths(config)
+        if dsa:
+            return dsa
+        if cipher_catalog_id_uses_dsa_auth(str(getattr(config, "cipher_suite", None) or "")):
+            if has_inline_identity_pem(config):
                 return super()._ensure_cert_paths(config, state)
-            raise WrapperSetupError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-                "(run scripts/gen_interop_certs.sh)")
+            raise WrapperSetupError(dsa_cipher_setup_error())
         return super()._ensure_cert_paths(config, state)
 
     def _client_x509_cafile(self, config) -> str:
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
-        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
-            cert, _ = catalog_identity_pem_paths_for_prefix("dsa_default")
-            if cert and os.path.isfile(cert):
-                return cert
-        trust = catalog_identity_trust_pem_path(server_trust_signature_schemes_tokens(config))
-        if trust and os.path.isfile(trust):
-            return trust
-        for candidate in (os.path.join(os.getcwd(), "cert.pem"), "cert.pem"):
-            if candidate and os.path.isfile(candidate):
-                return candidate
-        return "cert.pem"
+        return resolve_client_trust_pem_path(config)
 
     def _start_server(self, config, state: WrapperSessionState):
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")

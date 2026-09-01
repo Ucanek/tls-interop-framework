@@ -8,6 +8,8 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
+from core.utils import norm_scheme_token, split_asymmetric_csv
+
 # Catalog prefixes under ``certs/`` (``{prefix}.crt`` + ``{prefix}.key``).
 IDENTITY_PREFIXES: tuple[str, ...] = ("rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256",
     "ecdsa_p384", "ecdsa_p521", "ed25519", "ed448")
@@ -21,22 +23,6 @@ def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
     return bool(re.search(r"(^|-)dss(-|$)", c))
 
 
-def _split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
-
-
-def _norm_scheme_token(raw: str) -> str:
-    return (raw or "").strip().lower().replace(" ", "").replace("_", "-")
-
-
 def get_cert_prefix_for_scheme(scheme: str) -> str:
     """
     Map a catalog ``signature_schemes`` id to a ``certs/`` filename prefix.
@@ -46,7 +32,7 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
       ``rsa-pss-pss-sha256`` → ``rsa_pss_pure``
       ``ecdsa-secp384r1-sha384`` → ``ecdsa_p384``
     """
-    tok = _norm_scheme_token(scheme)
+    tok = norm_scheme_token(scheme)
     if not tok:
         return _DEFAULT_PREFIX
     if tok.startswith("ed25519") or tok == "ed25519":
@@ -201,6 +187,54 @@ def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
     return cert
 
 
+def has_inline_identity_pem(config: Any) -> bool:
+    cert_b = getattr(config, "certificate", None) or b""
+    key_b = getattr(config, "private_key", None) or b""
+    return bool(cert_b.strip() and key_b.strip())
+
+
+def dsa_cipher_setup_error() -> str:
+    return "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key (run scripts/gen_interop_certs.sh)"
+
+
+def resolve_dsa_cipher_cert_paths(config: Any, *, repo: Path | None = None) -> tuple[str, str] | None:
+    """Catalog ``dsa_default`` PEM paths when ``cipher_suite`` needs DSA auth."""
+    raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+    if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
+        return None
+    cert, key = catalog_identity_pem_paths_for_prefix("dsa_default", repo=repo)
+    if cert and key:
+        return cert, key
+    return None
+
+
+def resolve_client_trust_pem_path(config: Any, schemes: Sequence[str] | None = None) -> str:
+    """Client trust anchor: DSA leaf, scheme-based leaf, cwd ``cert.pem``, or fallback name."""
+    dsa = resolve_dsa_cipher_cert_paths(config)
+    if dsa and os.path.isfile(dsa[0]):
+        return dsa[0]
+    trust_schemes = schemes if schemes is not None else server_trust_signature_schemes_tokens(config)
+    trust = catalog_identity_trust_pem_path(trust_schemes)
+    if trust and os.path.isfile(trust):
+        return trust
+    for candidate in (os.path.join(os.getcwd(), "cert.pem"), "cert.pem"):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return "cert.pem"
+
+
+def resolve_server_mtls_cafile(config: Any, server_cert_path: str, schemes: Sequence[str] | None = None) -> str:
+    """mTLS CA file: explicit ``ca_file``, scheme trust leaf, or server certificate."""
+    ca_path = (getattr(config, "ca_file", None) or "").strip()
+    if ca_path and os.path.isfile(ca_path):
+        return ca_path
+    trust_schemes = schemes if schemes is not None else server_trust_signature_schemes_tokens(config)
+    ca_path = catalog_identity_trust_pem_path(trust_schemes)
+    if ca_path and os.path.isfile(ca_path):
+        return ca_path
+    return server_cert_path
+
+
 def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
     """
     Schemes that determine **server** leaf identity for client trust stores.
@@ -214,6 +248,6 @@ def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
         return [p.strip() for p in env_raw.split(",") if p.strip()]
     gsig = (os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip()
     if gsig and ":" in gsig:
-        left, _ = _split_asymmetric_csv(gsig)
+        left, _ = split_asymmetric_csv(gsig)
         return left
     return repeated_config_tokens(config, "signature_schemes")

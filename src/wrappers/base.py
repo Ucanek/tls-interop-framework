@@ -19,8 +19,9 @@ from interop_proto import interop_pb2
 from interop_proto import interop_pb2_grpc
 from wrappers.utils import(capability, format_cli_debug_logs, format_executed_command, hrr_detected_in_cli_output,
     is_server_role, parse_version_line, popen_stdio_merged, read_nonblocking_stdout, run_cli_version,
-    serve_insecure, split_asymmetric_csv, standard_library_metadata, test_feature_enabled_in_config,
+    serve_insecure, standard_library_metadata, test_feature_enabled_in_config,
     tls_mode_12_or_13)
+from core.utils import split_asymmetric_csv
 
 FAIL_LOG_TAIL: int = 65536
 

@@ -17,8 +17,9 @@ import threading
 from pathlib import Path
 
 from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities,
+    cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities,
     repository_root, wrappers_plugin_dir)
+from core.utils import norm_catalog_token
 from core.identity import repeated_config_tokens
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState,
     format_executed_command, popen_stdio_merged, serve_insecure)

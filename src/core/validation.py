@@ -18,27 +18,7 @@ from core.capabilities import(ASYMMETRIC_SCALAR_OPTION_IDS, MULTI_VALUE_OPTION_I
     tls_argv_for_config,     wrapper_runtime_config)
 
 
-def parse_asymmetric(val: str | None) -> tuple[str, str]:
-    v = (val or "").strip()
-    if ":" in v:
-        left, right = v.split(":", 1)
-        return left.strip(), right.strip()
-    return v, v
-
-
-def asymmetric_role_part(val: str | None, *, server: bool) -> str:
-    """Server (left) or client (right) segment from a symmetric or ``server:client`` value."""
-    left, right = parse_asymmetric(val)
-    return left if server else right
-
-
-def split_csv_tokens(part: str) -> list[str]:
-    """Comma-separated catalog tokens (empty segments dropped)."""
-    return [p.strip() for p in (part or "").split(",") if p.strip()]
-
-
-def norm_token(s: str) -> str:
-    return (s or "").strip().lower().replace("-", "").replace("_", "")
+from core.utils import(asymmetric_role_part, norm_token, parse_asymmetric, split_csv_tokens)
 
 
 def tls_mode_from_version(version: str | None) -> TlsMode:

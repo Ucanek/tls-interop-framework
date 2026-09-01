@@ -47,21 +47,7 @@ def hrr_detected_in_cli_output(text: str) -> bool:
     return False
 
 
-def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    """
-    Split comma-separated tokens per role on the first ``:`` in the raw string.
-
-    With no colon, both sides receive the same parsed list.
-    """
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
+from core.utils import split_asymmetric_csv
 
 
 def parse_version_line(out: str | None) -> str:

@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
+from core.utils import norm_catalog_token
+
 TlsMode = Literal["1.2", "1.3"]
 
 DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {"1.3": "aes-128-gcm", "1.2": "ecdhe-rsa-aes-128-gcm-sha256"}
@@ -300,10 +302,6 @@ def default_cipher_for_tls_mode(mode: TlsMode, *, allowed: set[str] | frozenset[
     if preferred and preferred in allowed:
         return preferred
     return sorted(allowed)[0] if allowed else ""
-
-
-def norm_catalog_token(raw: str) -> str:
-    return (raw or "").strip().lower().replace(" ", "")
 
 
 def backend_cipher_modes(capabilities: dict[str, Any], catalog_id: str) -> set[TlsMode]:
