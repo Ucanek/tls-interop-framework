@@ -6,8 +6,8 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
 
+from core.tls_config_view import RoleLike, TlsConfigInput, TlsConfigLike, TlsConfigView
 from core.utils import norm_scheme_token, split_asymmetric_csv
 
 # Catalog prefixes under ``certs/`` (``{prefix}.crt`` + ``{prefix}.key``).
@@ -80,12 +80,12 @@ def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:
     return _DEFAULT_PREFIX
 
 
-def get_cert_prefix_for_config(config: Any) -> str:
+def get_cert_prefix_for_config(config: TlsConfigLike) -> str:
     """Resolve prefix from ``signature_schemes``, else ``cipher_suite`` on ``config``."""
     schemes = repeated_config_tokens(config, "signature_schemes")
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
-    return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
+    return get_cert_prefix_for_cipher_suite(TlsConfigView(config).cipher_suite)
 
 
 def interop_certs_dir(repo: Path | None = None) -> Path:
@@ -132,16 +132,8 @@ def read_identity_pem_bytes(prefix: str, *, repo: Path | None = None) -> tuple[b
     return Path(cert_path).read_bytes(), Path(key_path).read_bytes()
 
 
-def repeated_config_tokens(config: Any, field: str) -> list[str]:
-    raw = getattr(config, field, None)
-    if not raw:
-        return []
-    out: list[str] = []
-    for x in raw:
-        s = str(x).strip()
-        if s:
-            out.append(s)
-    return out
+def repeated_config_tokens(config: TlsConfigLike, field: str) -> list[str]:
+    return TlsConfigView(config).list_field(field)
 
 
 def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
@@ -173,12 +165,12 @@ def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
     return None
 
 
-def resolve_identity_kind(config: Any) -> str:
+def resolve_identity_kind(config: TlsConfigLike) -> str:
     return (identity_kind_from_signature_schemes(repeated_config_tokens(config, "signature_schemes"))
-        or identity_kind_from_cipher_suite(str(getattr(config, "cipher_suite", "") or "")) or "rsa")
+        or identity_kind_from_cipher_suite(TlsConfigView(config).cipher_suite) or "rsa")
 
 
-def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
+def catalog_identity_pem_paths_for_config(config: TlsConfigLike) -> tuple[str, str]:
     return catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
 
 
@@ -187,19 +179,17 @@ def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
     return cert
 
 
-def has_inline_identity_pem(config: Any) -> bool:
-    cert_b = getattr(config, "certificate", None) or b""
-    key_b = getattr(config, "private_key", None) or b""
-    return bool(cert_b.strip() and key_b.strip())
+def has_inline_identity_pem(config: TlsConfigLike) -> bool:
+    return TlsConfigView(config).has_inline_identity_pem()
 
 
 def dsa_cipher_setup_error() -> str:
     return "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key (run scripts/gen_interop_certs.sh)"
 
 
-def resolve_dsa_cipher_cert_paths(config: Any, *, repo: Path | None = None) -> tuple[str, str] | None:
+def resolve_dsa_cipher_cert_paths(config: TlsConfigLike, *, repo: Path | None = None) -> tuple[str, str] | None:
     """Catalog ``dsa_default`` PEM paths when ``cipher_suite`` needs DSA auth."""
-    raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+    raw_cipher = TlsConfigView(config).cipher_suite
     if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
         return None
     cert, key = catalog_identity_pem_paths_for_prefix("dsa_default", repo=repo)
@@ -208,7 +198,7 @@ def resolve_dsa_cipher_cert_paths(config: Any, *, repo: Path | None = None) -> t
     return None
 
 
-def resolve_client_trust_pem_path(config: Any, schemes: Sequence[str] | None = None) -> str:
+def resolve_client_trust_pem_path(config: TlsConfigLike, schemes: Sequence[str] | None = None) -> str:
     """Client trust anchor: DSA leaf, scheme-based leaf, cwd ``cert.pem``, or fallback name."""
     dsa = resolve_dsa_cipher_cert_paths(config)
     if dsa and os.path.isfile(dsa[0]):
@@ -223,9 +213,10 @@ def resolve_client_trust_pem_path(config: Any, schemes: Sequence[str] | None = N
     return "cert.pem"
 
 
-def resolve_server_mtls_cafile(config: Any, server_cert_path: str, schemes: Sequence[str] | None = None) -> str:
+def resolve_server_mtls_cafile(config: TlsConfigLike, server_cert_path: str,
+    schemes: Sequence[str] | None = None) -> str:
     """mTLS CA file: explicit ``ca_file``, scheme trust leaf, or server certificate."""
-    ca_path = (getattr(config, "ca_file", None) or "").strip()
+    ca_path = TlsConfigView(config).ca_file
     if ca_path and os.path.isfile(ca_path):
         return ca_path
     trust_schemes = schemes if schemes is not None else server_trust_signature_schemes_tokens(config)
@@ -235,7 +226,7 @@ def resolve_server_mtls_cafile(config: Any, server_cert_path: str, schemes: Sequ
     return server_cert_path
 
 
-def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
+def server_trust_signature_schemes_tokens(config: TlsConfigLike) -> list[str]:
     """
     Schemes that determine **server** leaf identity for client trust stores.
 

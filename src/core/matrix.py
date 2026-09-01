@@ -10,6 +10,7 @@ from core.capabilities import(CAPABILITY_DIMENSIONS, NON_MATRIX_OPTION_IDS, NON_
     backend_cipher_modes, capability_dimension_name, default_cipher_for_tls_mode, dimension_keys,
     load_capabilities, load_capabilities_cache, load_options_catalog, option_choice_tokens, repository_root,
     union_cipher_suite_ids_for_wrappers)
+from core.matrix_cell import MatrixCell
 from core.utils import asymmetric_role_part, parse_asymmetric, split_csv_tokens
 from core.validation import tls_mode_filter_from_args, tls_mode_from_version
 
@@ -128,19 +129,13 @@ def expand_alpn_matrix_axis(value: str, *, wrapper_ids: Sequence[str],
     return [f"{srv}:{cli}" for srv in tokens for cli in tokens]
 
 
-def _cell_cipher_id(cell: dict[str, str], *, server: bool) -> str:
-    cs = (cell.get("cipher_suite") or "").strip()
-    if not cs:
-        return ""
-    if ":" in cs:
-        left, right = cs.split(":", 1)
-        return (left if server else right).strip()
-    return cs
+def _cell_cipher_id(cell: MatrixCell, *, server: bool) -> str:
+    return cell.cipher_id(server=server)
 
 
-def effective_cell_tls_mode(cell: dict[str, str], srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> TlsMode:
+def effective_cell_tls_mode(cell: MatrixCell, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> TlsMode:
     """Infer TLS 1.2 vs 1.3 from explicit version or cipher capabilities sections."""
-    tv = (cell.get("tls_version") or "").strip()
+    tv = (cell.tls_version or "").strip()
     if tv and ":" not in tv:
         return tls_mode_from_version(tv)
     if tv and ":" in tv:
@@ -161,7 +156,7 @@ def effective_cell_tls_mode(cell: dict[str, str], srv_caps: dict[str, Any], cli_
     return "1.3"
 
 
-def _implicit_tls_version_for_side(cell: dict[str, str], *, server: bool, caps: dict[str, Any]) -> str:
+def _implicit_tls_version_for_side(cell: MatrixCell, *, server: bool, caps: dict[str, Any]) -> str:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
         return ""
@@ -173,43 +168,43 @@ def _implicit_tls_version_for_side(cell: dict[str, str], *, server: bool, caps: 
     return ""
 
 
-def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, repo: Path) -> dict[str, str]:
+def normalize_cell_tls_micro_params(cell: MatrixCell, args_template: Any, repo: Path) -> MatrixCell:
     """
     Infer ``tls_version`` from cipher ``tls13``/``tls12`` sections; for TLS 1.2 ciphers
     drop orthogonal dims unless the user set them on the CLI.
     """
     from core.capabilities import TLS13_ORTHOGONAL_DIMS
 
-    out = dict(cell)
+    out = cell.to_mapping()
     port = int(getattr(args_template, "tls_port", 0) or 0)
     if port:
         out["tls_port"] = str(port)
-    server = (cell.get("server") or "").strip().lower()
-    client = (cell.get("client") or "").strip().lower()
+    server = cell.server
+    client = cell.client
     try:
         srv_caps = load_capabilities(server, repo)
         cli_caps = load_capabilities(client, repo)
     except (FileNotFoundError, ValueError):
-        return out
+        return MatrixCell.from_mapping(out)
 
     if not (out.get("tls_version") or "").strip():
-        sv = _implicit_tls_version_for_side(out, server=True, caps=srv_caps)
-        cv = _implicit_tls_version_for_side(out, server=False, caps=cli_caps)
+        sv = _implicit_tls_version_for_side(cell, server=True, caps=srv_caps)
+        cv = _implicit_tls_version_for_side(cell, server=False, caps=cli_caps)
         if sv or cv:
             if sv and cv and sv != cv:
                 out["tls_version"] = f"{sv}:{cv}"
             else:
                 out["tls_version"] = sv or cv
 
-    if effective_cell_tls_mode(out, srv_caps, cli_caps) != "1.2":
+    if effective_cell_tls_mode(MatrixCell.from_mapping(out), srv_caps, cli_caps) != "1.2":
         out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
-        return out
+        return MatrixCell.from_mapping(out)
     for dim in TLS13_ORTHOGONAL_DIMS:
         user_raw = str(getattr(args_template, dim, "") or "").strip()
         if not user_raw:
             out[dim] = ""
     out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
-    return out
+    return MatrixCell.from_mapping(out)
 
 
 def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],

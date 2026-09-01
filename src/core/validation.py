@@ -15,7 +15,9 @@ from core.capabilities import(ASYMMETRIC_SCALAR_OPTION_IDS, MULTI_VALUE_OPTION_I
     capability_dimension_name, cipher_catalog_id_requires_identity_pem, cipher_required_test_feature,
     enabled_test_features_from_cell, load_capabilities, load_options_catalog, option_choice_tokens,
     parse_test_features_enabled, repository_root, test_feature_supported, test_feature_wired,
-    tls_argv_for_config,     wrapper_runtime_config)
+    tls_argv_for_config, wrapper_runtime_config)
+from core.matrix_cell import MatrixCell
+from core.tls_config_view import RoleLike, TlsConfigInput
 
 
 from core.utils import(asymmetric_role_part, norm_token, parse_asymmetric, split_csv_tokens)
@@ -71,7 +73,7 @@ def parse_csv_values(raw: str, arg_name: str) -> list[str]:
     return values
 
 
-def _config_has_value(config: Any, field: str) -> bool:
+def _config_has_value(config: TlsConfigInput, field: str) -> bool:
     raw = getattr(config, field, None)
     if raw is None:
         return False
@@ -88,7 +90,7 @@ def _config_has_value(config: Any, field: str) -> bool:
     return bool(str(raw).strip())
 
 
-def unsupported_cli_params(config: Any, backend: str, repo: Path | None = None) -> list[str]:
+def unsupported_cli_params(config: TlsConfigInput, backend: str, repo: Path | None = None) -> list[str]:
     """
     Return unsupported non-empty ``TlsConfig`` fields for a backend CLI.
 
@@ -107,7 +109,7 @@ def unsupported_cli_params(config: Any, backend: str, repo: Path | None = None) 
     return bad
 
 
-def catalog_parameter_conflicts(config: Any, backend: str, *, role: Any | None = None,
+def catalog_parameter_conflicts(config: TlsConfigInput, backend: str, *, role: RoleLike | None = None,
     capabilities: dict[str, Any] | None = None, repo: Path | None = None) -> list[str]:
     """
     Union of ``unsupported_cli_params`` and capability-translator unsupported
@@ -392,18 +394,12 @@ def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
     return Tls12CipherMetadata(kx=kx, au=au)
 
 
-def _split_cell_list_tokens(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
-    return split_csv_tokens(asymmetric_role_part(cell.get(field), server=server))
+def _split_cell_list_tokens(cell: MatrixCell, field: str, *, server: bool) -> list[str]:
+    return cell.list_tokens(field, server=server)
 
 
-def _cell_cipher_id(cell: dict[str, str], *, server: bool) -> str:
-    cs = (cell.get("cipher_suite") or "").strip()
-    if not cs:
-        return ""
-    if ":" in cs:
-        left, right = cs.split(":", 1)
-        return (left if server else right).strip()
-    return cs
+def _cell_cipher_id(cell: MatrixCell, *, server: bool) -> str:
+    return cell.cipher_id(server=server)
 
 
 def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "dsa", "eddsa", "unknown"]:
@@ -433,7 +429,7 @@ def _group_family(token: str) -> Literal["ec", "ffdhe", "other"]:
     return "other"
 
 
-def _tls12_semantic_skip_reason_side(cell: dict[str, str], *, server: bool, mode: TlsMode) -> str | None:
+def _tls12_semantic_skip_reason_side(cell: MatrixCell, *, server: bool, mode: TlsMode) -> str | None:
     if mode != "1.2":
         return None
     cipher_id = _cell_cipher_id(cell, server=server)
@@ -470,7 +466,7 @@ def _tls12_semantic_skip_reason_side(cell: dict[str, str], *, server: bool, mode
     return None
 
 
-def _check_cipher_side(cell: dict[str, str], *, server: bool,
+def _check_cipher_side(cell: MatrixCell, *, server: bool,
     wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
@@ -484,12 +480,12 @@ def _check_cipher_side(cell: dict[str, str], *, server: bool,
         f"(supported modes: {', '.join(sorted(modes))})")
 
 
-def _check_list_dim(cell: dict[str, str], dim: str, *, server: bool,
+def _check_list_dim(cell: MatrixCell, dim: str, *, server: bool,
     wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
     from core.capabilities import TLS13_ORTHOGONAL_DIMS
 
     if mode == "1.2" and dim in TLS13_ORTHOGONAL_DIMS:
-        raw = (cell.get(dim) or "").strip()
+        raw = (getattr(cell, dim, "") or "").strip()
         if not raw:
             return None
     tokens = _split_cell_list_tokens(cell, dim, server=server)
@@ -502,7 +498,7 @@ def _check_list_dim(cell: dict[str, str], dim: str, *, server: bool,
     return None
 
 
-def _required_server_identity_prefix(cell: dict[str, str]) -> str | None:
+def _required_server_identity_prefix(cell: MatrixCell) -> str | None:
     """``certs/`` filename prefix the server needs for this matrix cell."""
     from core.identity import get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes
 
@@ -515,7 +511,7 @@ def _required_server_identity_prefix(cell: dict[str, str]) -> str | None:
     return get_cert_prefix_for_cipher_suite(cipher)
 
 
-def _cell_identity_pem_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
+def _cell_identity_pem_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
     """Pre-run SKIP when ``certs/{prefix}.crt`` + ``.key`` are required but missing."""
     from core.identity import identity_pem_present
 
@@ -527,7 +523,7 @@ def _cell_identity_pem_skip_reason(cell: dict[str, str], repo: Path) -> str | No
     return f"Missing identity PEM: certs/{prefix}.crt and certs/{prefix}.key"
 
 
-def _cell_enabled_test_features_skip_reason(cell: dict[str, str], *, server: str,
+def _cell_enabled_test_features_skip_reason(cell: MatrixCell, *, server: str,
     client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
     """Pre-run SKIP when an enabled ``test_features`` token is unsupported on server or client."""
     for feat in sorted(enabled_test_features_from_cell(cell)):
@@ -539,7 +535,7 @@ def _cell_enabled_test_features_skip_reason(cell: dict[str, str], *, server: str
     return None
 
 
-def _cell_test_feature_skip_reason(cell: dict[str, str], *, server: str,
+def _cell_test_feature_skip_reason(cell: MatrixCell, *, server: str,
     client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
     """
     Pre-run SKIP for PSK/anon cipher suites.
@@ -563,10 +559,10 @@ def _cell_test_feature_skip_reason(cell: dict[str, str], *, server: str,
     return None
 
 
-def cell_capability_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
+def cell_capability_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
     """SKIP when server/client lack a declared token in capabilities.json."""
-    server = (cell.get("server") or "").strip().lower()
-    client = (cell.get("client") or "").strip().lower()
+    server = cell.server
+    client = cell.client
     if not server or not client:
         return None
     try:
@@ -579,7 +575,7 @@ def cell_capability_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
 
     mode_srv = effective_cell_tls_mode(cell, srv_caps, cli_caps)
     mode_cli = mode_srv
-    tv = (cell.get("tls_version") or "").strip()
+    tv = (cell.tls_version or "").strip()
     if tv and ":" in tv:
         lv, rv = parse_asymmetric(tv)
         if lv:
@@ -620,7 +616,7 @@ def cell_capability_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
             if check:
                 return check
 
-    tv_single = (cell.get("tls_version") or "").strip()
+    tv_single = (cell.tls_version or "").strip()
     if tv_single and ":" not in tv_single:
         for wrapper, caps, mode in ((f"server ({server})", srv_caps, mode_srv),
             (f"client ({client})", cli_caps, mode_cli)):

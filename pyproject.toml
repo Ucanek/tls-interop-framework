@@ -24,3 +24,17 @@ py-modules = ["main"]
 [tool.setuptools.packages.find]
 where = ["src", "."]
 include = ["core*", "wrappers*", "interop_proto*"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["core", "wrappers"]
+exclude = ["interop_proto/"]
+plugins = ["mypy_protobuf.plugin"]
+
+[[tool.mypy.overrides]]
+module = "grpc.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "interop_proto.*"
+ignore_errors = true

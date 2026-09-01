@@ -15,12 +15,15 @@ import shutil
 import socket
 import threading
 from pathlib import Path
+from typing import Any
 
 from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
     cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities,
     repository_root, wrappers_plugin_dir)
-from core.utils import norm_catalog_token
 from core.identity import repeated_config_tokens
+from core.tls_config_view import RoleLike, TlsConfigLike
+from core.utils import norm_catalog_token
+from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.nss.nss_db import(_ensure_nss_db_identities, get_nss_library_version,
@@ -44,7 +47,7 @@ def _nss_repo_root(_nssdb_path: str) -> Path:
     return repository_root()
 
 
-def _nss_anon_argv(config) -> list[str]:
+def _nss_anon_argv(config: TlsConfigLike) -> list[str]:
     """
     Anonymous suites (``test_features: anonymous``).
 
@@ -63,7 +66,7 @@ def _nss_anon_argv(config) -> list[str]:
     return ["-H", "1"]
 
 
-def _nss_psk_z_argv(config, caps: dict) -> list[str]:
+def _nss_psk_z_argv(config: TlsConfigLike, caps: dict[str, Any]) -> list[str]:
     """
     ``-z 0x<hex>[:identity]`` — NSS TLS 1.3 External PSK (selfserv/tstclnt).
 
@@ -84,7 +87,8 @@ def _nss_psk_z_argv(config, caps: dict) -> list[str]:
     return ["-z", f"0x{secret_hex}:{identity}"]
 
 
-def _build_tls_argv(config, *, role=None, capabilities=None) -> TranslationResult:
+def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
+    capabilities: dict[str, Any] | None = None) -> TranslationResult:
     del role
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
@@ -126,7 +130,8 @@ def _build_tls_argv(config, *, role=None, capabilities=None) -> TranslationResul
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(config, *, role=None, capabilities=None) -> TranslationResult:
+def tls_argv_for_config(config: TlsConfigLike, *, role: RoleLike | None = None,
+    capabilities: dict[str, Any] | None = None) -> TranslationResult:
     return _build_tls_argv(config, role=role, capabilities=capabilities)
 
 
@@ -179,7 +184,7 @@ def local_wrapper_env(repo: Path, backend_id: str, active_backends: frozenset[st
     return {"NSSDB": str(nss_db_directory(repo, backend_id))}
 
 
-def _tls_version_range(config):
+def _tls_version_range(config: interop_pb2.TlsConfig | None) -> str:
     if config is None:
         return "tls1.2:tls1.3"
     v = (config.version or "").strip().lower()
@@ -262,19 +267,19 @@ class NSSWrapper(BaseTemplateWrapper):
     def _db_spec(self) -> str:
         return f"sql:{os.path.abspath(self._nssdb)}"
 
-    def _session_ticket_args(self, config):
+    def _session_ticket_args(self, config: interop_pb2.TlsConfig) -> list[str]:
         return ["-u"] if bool(getattr(config, "session_tickets_enabled", False)) else []
 
-    def _nss_tls_argv(self, config) -> list[str]:
+    def _nss_tls_argv(self, config: interop_pb2.TlsConfig) -> list[str]:
         return list(_build_tls_argv(config).argv)
 
     def _nss_repo(self) -> Path:
         return _nss_repo_root(self._nssdb)
 
-    def _nss_server_nickname(self, config) -> str:
+    def _nss_server_nickname(self, config: interop_pb2.TlsConfig) -> str:
         return nss_server_nickname_for_config(config, repo=self._nss_repo())
 
-    def _start_server(self, config, state: WrapperSessionState):
+    def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         self._ensure_nss_db_ready()
         nss_ver = _tls_version_range(config)
         port = int(config.port)
@@ -287,7 +292,7 @@ class NSSWrapper(BaseTemplateWrapper):
         logs = format_executed_command(cmd, cwd)
         return popen_stdio_merged(cmd, cwd=cwd), logs, "NSS Server started"
 
-    def _start_client(self, config, state: WrapperSessionState):
+    def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         step = (getattr(config, "resumption_step", None) or "").strip()

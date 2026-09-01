@@ -12,7 +12,9 @@ from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon
     cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities, repository_root)
 from core.identity import(cipher_catalog_id_uses_dsa_auth, dsa_cipher_setup_error, has_inline_identity_pem,
     repeated_config_tokens, resolve_dsa_cipher_cert_paths, resolve_server_mtls_cafile)
+from core.tls_config_view import RoleLike, TlsConfigLike, TlsConfigView
 from core.utils import norm_catalog_token
+from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.utils import(alpn_cli_protocol_list, standard_library_metadata, test_feature_enabled_in_config,
@@ -34,8 +36,8 @@ def _openssl_cipher_needs_legacy_dss(cipher_suite: str) -> bool:
     return bool(_LEGACY_DSS_CIPHER_RE.search(c.replace("_", "-")))
 
 
-def _openssl_legacy_provider_argv(config: Any) -> list[str]:
-    raw = (getattr(config, "cipher_suite", None) or "").strip()
+def _openssl_legacy_provider_argv(config: TlsConfigLike) -> list[str]:
+    raw = TlsConfigView(config).cipher_suite
     if not _openssl_cipher_needs_legacy_dss(raw):
         return []
     return ["-provider", "legacy", "-provider", "default"]
@@ -47,14 +49,14 @@ def _append_seclevel_zero(cipher_val: str) -> str:
     return f"{cipher_val}:@SECLEVEL=0"
 
 
-def _openssl_session_state_paths(config: Any) -> tuple[str, str]:
+def _openssl_session_state_paths(config: TlsConfigLike) -> tuple[str, str]:
     """Session ticket and 0-RTT payload paths under ``TlsConfig.repo_root`` (or repo root)."""
-    raw = (getattr(config, "repo_root", None) or "").strip()
+    raw = TlsConfigView(config).repo_root
     root = Path(raw).resolve() if raw else repository_root()
     return str(root / "session.ticket"), str(root / "early_data.txt")
 
 
-def _build_tls_argv(config: Any, *, role: Any | None = None,
+def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
     capabilities: dict[str, Any] | None = None) -> TranslationResult:
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
@@ -71,7 +73,7 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
             else:
                 argv.append(str(flag))
 
-    raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
+    raw_cipher = TlsConfigView(config).cipher_suite
     if raw_cipher:
         key = norm_catalog_token(raw_cipher)
         if mode == "1.3":
@@ -119,7 +121,7 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(config: Any, *, role: Any | None = None,
+def tls_argv_for_config(config: TlsConfigLike, *, role: RoleLike | None = None,
     capabilities: dict[str, Any] | None = None) -> TranslationResult:
     return _build_tls_argv(config, role=role, capabilities=capabilities)
 
@@ -158,8 +160,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         state.used_ephemeral_pem = True
         return cert_path, key_path
 
-    def _ensure_cert_paths(self, config, state: WrapperSessionState):
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+    def _ensure_cert_paths(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
+        raw_cipher = TlsConfigView(config).cipher_suite
         if _openssl_cipher_needs_legacy_dss(raw_cipher):
             dsa = resolve_dsa_cipher_cert_paths(config)
             if dsa:
@@ -196,25 +198,26 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             out["named_group"] = g.group(1).strip()
         return out
 
-    def _build_common_args(self, config, *, for_server: bool) -> list[str]:
+    def _build_common_args(self, config: interop_pb2.TlsConfig, *, for_server: bool) -> list[str]:
         from interop_proto import interop_pb2
 
         role = interop_pb2.SERVER if for_server else interop_pb2.CLIENT
         args = list(_build_tls_argv(config, role=role).argv)
-        if for_server and bool(getattr(config, "session_tickets_enabled", False)):
+        cfg = TlsConfigView(config)
+        if for_server and cfg.session_tickets_enabled:
             args.extend(["-num_tickets", "2"])
         alpn = alpn_cli_protocol_list(config)
         if alpn:
             args.extend(["-alpn", alpn])
         return args
 
-    def _client_sni_args(self, config) -> list[str]:
-        host = (getattr(config, "server_hostname", None) or "").strip()
+    def _client_sni_args(self, config: interop_pb2.TlsConfig) -> list[str]:
+        host = TlsConfigView(config).server_hostname
         if not _host_ok_for_sni(host):
             return ["-noservername"]
         return ["-servername", host]
 
-    def _start_server(self, config, state: WrapperSessionState):
+    def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
@@ -227,22 +230,24 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if test_feature_enabled_in_config(config, "mtls"):
             ca_path = resolve_server_mtls_cafile(config, cert_path)
             cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]
-        if tls_mode_12_or_13(config) == "1.3" or getattr(config, "expect_hrr", False):
+        cfg = TlsConfigView(config)
+        if tls_mode_12_or_13(config) == "1.3" or cfg.expect_hrr:
             cmd = list(cmd) + ["-state"]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Server started"
 
-    def _start_client(self, config, state: WrapperSessionState):
+    def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         session_file, early_data_file = _openssl_session_state_paths(config)
 
-        host = getattr(config, "server_hostname", None) or "localhost"
+        cfg = TlsConfigView(config)
+        host = cfg.server_hostname or "localhost"
         tls_flag_pack = self._build_common_args(config, for_server=False)
         cmd = (["openssl", "s_client"] + _openssl_legacy_provider_argv(config)
             + ["-connect", f"{host}:{config.port}"] + self._client_sni_args(config) + tls_flag_pack)
-        step = (getattr(config, "resumption_step", "") or "").strip()
+        step = cfg.resumption_step
         if (has_resumption or has_0rtt) and step == "save":
             cmd = list(cmd) + ["-sess_out", session_file]
         if (has_resumption or has_0rtt) and step == "resume":
@@ -253,7 +258,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config, state)
             cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
-        if tls_mode_12_or_13(config) == "1.3" or getattr(config, "expect_hrr", False):
+        if tls_mode_12_or_13(config) == "1.3" or cfg.expect_hrr:
             cmd = list(cmd) + ["-state"]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd)

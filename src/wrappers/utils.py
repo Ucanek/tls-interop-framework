@@ -3,20 +3,22 @@
 from __future__ import annotations
 
 import asyncio
-import concurrent.futures
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
-from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, Type
+from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, Type, TYPE_CHECKING
 
 from core.capabilities import metadata_from_capabilities
-from core.identity import repeated_config_tokens
+from core.tls_config_view import RoleLike, TlsConfigInput, TlsConfigLike, TlsConfigView
 from core.utils import split_asymmetric_csv
 from core.validation import tls_mode_from_version
 from interop_proto import interop_pb2
+
+if TYPE_CHECKING:
+    from wrappers.base import WrapperSessionState
 
 TlsModeLiteral = Literal["1.2", "1.3"]
 
@@ -56,20 +58,19 @@ def parse_version_line(out: str | None) -> str:
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
-def alpn_protocols_from_config(config: Any) -> list[str]:
-    raw = getattr(config, "alpn_protocols", None) or []
-    return [str(p).strip() for p in raw if str(p).strip()]
+def alpn_protocols_from_config(config: TlsConfigLike) -> list[str]:
+    return TlsConfigView(config).alpn_protocols
 
 
-def alpn_cli_protocol_list(config: Any) -> str:
+def alpn_cli_protocol_list(config: TlsConfigLike) -> str:
     """Comma-separated ALPN ids for backend CLI flags (empty when unset)."""
     protos = alpn_protocols_from_config(config)
     return ",".join(protos) if protos else ""
 
 
-def test_feature_enabled_in_config(config: Any, feature: str) -> bool:
+def test_feature_enabled_in_config(config: TlsConfigLike, feature: str) -> bool:
     """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
-    return feature.strip().lower() in repeated_config_tokens(config, "psk_modes")
+    return feature.strip().lower() in TlsConfigView(config).psk_modes
 
 
 def remove_tls_session_artifact_files(repo_root: str) -> None:
@@ -87,7 +88,7 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
             pass
 
 
-def ensure_interop_staging_dir(state: Any) -> str:
+def ensure_interop_staging_dir(state: WrapperSessionState) -> str:
     """Per-session staging directory for PEM and sidecar files (``state.staging_dir``)."""
     staging = (getattr(state, "staging_dir", None) or "").strip()
     if staging:
@@ -118,14 +119,14 @@ def cleanup_interop_staging_dir(staging_dir: str) -> None:
     shutil.rmtree(root, ignore_errors=True)
 
 
-def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
+def tls_mode_12_or_13(config: TlsConfigLike | None) -> TlsModeLiteral:
     """Maps ``TlsConfig.version`` to TLS 1.2 or TLS 1.3 mode."""
     if config is None:
         return "1.3"
-    return tls_mode_from_version(config.version)
+    return tls_mode_from_version(TlsConfigView(config).version)
 
 
-def is_server_role(role: Any | None) -> bool:
+def is_server_role(role: RoleLike | None) -> bool:
     if role is None:
         return True
     try:
@@ -168,13 +169,8 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
 
 
 def _run_async(coro: Any) -> Any:
-    """Run a coroutine from sync gRPC handler code (no nested event loop on this thread)."""
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return asyncio.run(coro)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, coro).result()
+    """Run a coroutine from sync gRPC handler threads (no event loop on the worker thread)."""
+    return asyncio.run(coro)
 
 
 async def _read_fd_async(loop: asyncio.AbstractEventLoop, fd: int, nbytes: int) -> bytes:

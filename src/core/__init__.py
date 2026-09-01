@@ -1,1 +1,1 @@
-"""``capabilities``, ``matrix``, ``validation``, ``identity``, ``utils``, and ``runner`` (local wrappers + gRPC driver)."""
+"""``capabilities``, ``matrix``, ``matrix_cell``, ``validation``, ``identity``, ``tls_config_view``, ``utils``, and ``runner``."""

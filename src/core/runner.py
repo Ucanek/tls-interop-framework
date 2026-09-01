@@ -21,6 +21,7 @@ import grpc
 
 from core.capabilities import(backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools,
     discover_wrapper_ids, load_capabilities, merged_orchestration_env, session_wrapper_env)
+from core.matrix_cell import MatrixCell
 from core.matrix import normalize_cell_tls_micro_params
 from core.utils import norm_token, parse_asymmetric
 from core.validation import cell_capability_skip_reason, tls_version_to_capability_name
@@ -100,10 +101,10 @@ def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
 
 
 def apply_matrix_tls_endpoints(server: str, client: str, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, *, repo: Path, cell: dict[str, str] | None = None,
+    client_conf: interop_pb2.TlsConfig, *, repo: Path, cell: MatrixCell | None = None,
     session: BaseExecutionSession | None = None) -> tuple[str, int]:
     """Return host TCP coordinates for the driver check after ESTABLISH."""
-    port_raw = ((cell or {}).get("tls_port") or "").strip()
+    port_raw = (cell.tls_port or "").strip() if cell is not None else ""
     if port_raw:
         tcp_host, default_port = backend_tls_endpoint(server, repo)
         tcp_port = int(port_raw)
@@ -128,13 +129,13 @@ def required_backends_from_matrix(axis_keys: list[str], combos: list[tuple[Any, 
     needed: set[str] = set()
     skips = 0
     for tup in combos:
-        cell = {k: str(v) for k, v in zip(axis_keys, tup)}
+        cell = MatrixCell.from_axis(axis_keys, tup)
         cell = normalize_cell_tls_micro_params(cell, args_template, repo)
         if cell_capability_skip_reason(cell, repo):
             skips += 1
             continue
-        srv = (cell.get("server") or "").strip().lower()
-        cli = (cell.get("client") or "").strip().lower()
+        srv = cell.server
+        cli = cell.client
         if srv in known:
             needed.add(srv)
         if cli in known:
@@ -356,32 +357,6 @@ class WorkerSlotPool:
             session.stop()
 
 
-def _cell_truthy(val: str | None) -> bool:
-    return (val or "").strip().lower() in ("true", "1", "yes", "on")
-
-
-def _pick_cell_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
-    raw = (cell.get(field) or "").strip()
-    if not raw:
-        return ""
-    if ":" in raw:
-        left, right = parse_asymmetric(raw)
-        return left if server else right
-    return raw
-
-
-def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
-    raw = (cell.get(field) or "").strip()
-    if not raw:
-        return []
-    left, right = split_asymmetric_csv(raw)
-    return list(left if server else right)
-
-
-def _server_signature_schemes_from_cell(cell: dict[str, str]) -> list[str]:
-    return _pick_cell_list(cell, "signature_schemes", server=True)
-
-
 def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
     """False when wrapper uses out-of-band identity (e.g. NSS DB nicknames)."""
     try:
@@ -392,49 +367,64 @@ def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
     return "certificate" not in blocked and "private_key" not in blocked
 
 
-def _attach_cell_server_identity(cfg: interop_pb2.TlsConfig, cell: dict[str, str], *, repo: Path) -> None:
+def _cell_log_basename(server: str, client: str, cell: MatrixCell | None, *, kind: str) -> str:
+    base = f"{server}_x_{client}"
+    if cell:
+        tags: list[str] = []
+        mapping = cell.to_mapping()
+        for key in ("tls_version", "cipher_suite", "supported_groups", "signature_schemes", "alpn", "tls_port"):
+            raw = (mapping.get(key) or "").strip()
+            if raw:
+                safe = re.sub(r"[^\w.-]+", "-", raw)[:48]
+                tags.append(safe)
+        if tags:
+            base = f"{base}_{'_'.join(tags)}"
+    prefix = f"{kind.lower()}_" if kind else "fail_"
+    return f"{prefix}{base}.log"
+
+
+def _attach_cell_server_identity(cfg: interop_pb2.TlsConfig, cell: MatrixCell, *, repo: Path) -> None:
     """Load server leaf PEM bytes from ``certs/{prefix}.*`` for this cell's sig schemes."""
     from core.identity import(get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes, read_identity_pem_bytes)
 
-    schemes = _server_signature_schemes_from_cell(cell)
+    schemes = cell.list_tokens("signature_schemes", server=True)
     if schemes:
         prefix = get_cert_prefix_for_schemes(schemes)
     else:
-        cs = _pick_cell_scalar(cell, "cipher_suite", server=True)
-        prefix = get_cert_prefix_for_cipher_suite(cs)
+        prefix = get_cert_prefix_for_cipher_suite(cell.cipher_id(server=True))
     cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
     if cert_b and key_b:
         cfg.certificate = cert_b
         cfg.private_key = key_b
 
 
-def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None = None) -> interop_pb2.TlsConfig:
-    """Build ``TlsConfig`` for one matrix role from a normalized cell dict."""
+def tls_config_from_cell(cell: MatrixCell, role: int, *, repo: Path | None = None) -> interop_pb2.TlsConfig:
+    """Build ``TlsConfig`` for one matrix role from a normalized cell."""
     server = role == interop_pb2.SERVER
     cfg = interop_pb2.TlsConfig()
-    ver = _pick_cell_scalar(cell, "tls_version", server=server)
+    ver = cell.scalar("tls_version", server=server)
     if ver:
         cfg.version = ver
     else:
         cfg.version = "1.3"
-    cs = _pick_cell_scalar(cell, "cipher_suite", server=server)
+    cs = cell.scalar("cipher_suite", server=server)
     if cs:
         cfg.cipher_suite = cs
-    port_raw = _pick_cell_scalar(cell, "tls_port", server=server)
+    port_raw = cell.scalar("tls_port", server=server)
     if port_raw:
         cfg.port = int(port_raw)
-    elif (cell.get("tls_port") or "").strip() == "":
+    elif not (cell.tls_port or "").strip():
         cfg.port = 5555
-    cfg.supported_groups.extend(_pick_cell_list(cell, "supported_groups", server=server))
-    cfg.signature_schemes.extend(_pick_cell_list(cell, "signature_schemes", server=server))
-    cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn", server=server))
+    cfg.supported_groups.extend(cell.list_tokens("supported_groups", server=server))
+    cfg.signature_schemes.extend(cell.list_tokens("signature_schemes", server=server))
+    cfg.alpn_protocols.extend(cell.list_tokens("alpn", server=server))
     from core.capabilities import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
-    if _cell_truthy(cell.get("expect_hrr")):
+    if cell.truthy("expect_hrr"):
         cfg.expect_hrr = True
     if server and repo is not None:
-        backend = (cell.get("server") or "").strip().lower()
+        backend = cell.server
         if _server_accepts_inline_pem_identity(backend, repo):
             _attach_cell_server_identity(cfg, cell, repo=repo)
     return cfg
@@ -621,21 +611,6 @@ class DebugRunLogs:
         return self._dir
 
 
-def _cell_log_basename(server: str, client: str, cell: dict[str, str] | None, *, kind: str) -> str:
-    base = f"{server}_x_{client}"
-    if cell:
-        tags: list[str] = []
-        for key in ("tls_version", "cipher_suite", "supported_groups", "signature_schemes", "alpn", "tls_port"):
-            raw = (cell.get(key) or "").strip()
-            if raw:
-                safe = re.sub(r"[^\w.-]+", "-", raw)[:48]
-                tags.append(safe)
-        if tags:
-            base = f"{base}_{'_'.join(tags)}"
-    prefix = f"{kind.lower()}_" if kind else "fail_"
-    return f"{prefix}{base}.log"
-
-
 def _unique_log_path(run_dir: Path, basename: str) -> Path:
     path = run_dir / basename
     if not path.exists():
@@ -650,7 +625,7 @@ def _unique_log_path(run_dir: Path, basename: str) -> Path:
 
 def write_cell_debug_log(repo: Path, *, server: str, client: str,
     server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig,
-    driver: "InteropDriver", debug_logs: DebugRunLogs, cell: dict[str, str] | None = None,
+    driver: "InteropDriver", debug_logs: DebugRunLogs, cell: MatrixCell | None = None,
     tcp_host: str = "", tcp_port: int = 0, extra_error: str = "", result_kind: str = "FAIL") -> Path:
     """Write one cell log into the run's debug directory; return the log file path."""
     debug_run_dir = debug_logs.ensure_dir()
@@ -664,7 +639,7 @@ def write_cell_debug_log(repo: Path, *, server: str, client: str,
         f"client: {client}",
     ]
     if cell:
-        parts.append("matrix_cell: " + ", ".join(f"{k}={v}" for k, v in sorted(cell.items()) if str(v).strip()))
+        parts.append("matrix_cell: " + ", ".join(f"{k}={v}" for k, v in sorted(cell.to_mapping().items()) if str(v).strip()))
     if driver._last_failure:
         label, status, detail = driver._last_failure
         parts.append(f"last_failure: label={label} status={status}")
@@ -701,7 +676,7 @@ def write_cell_debug_log(repo: Path, *, server: str, client: str,
 
 def write_fail_debug_log(repo: Path, *, server: str, client: str,
     server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig,
-    driver: "InteropDriver", debug_logs: DebugRunLogs, cell: dict[str, str] | None = None,
+    driver: "InteropDriver", debug_logs: DebugRunLogs, cell: MatrixCell | None = None,
     tcp_host: str = "", tcp_port: int = 0, extra_error: str = "") -> Path:
     return write_cell_debug_log(repo, server=server, client=client, server_conf=server_conf,
         client_conf=client_conf, driver=driver, debug_logs=debug_logs, cell=cell, tcp_host=tcp_host,
@@ -741,12 +716,12 @@ def _run_driver_test_timed(driver: InteropDriver, server_conf: interop_pb2.TlsCo
     return None, True, holder["exc"]
 
 
-def run_matrix_cell_grpc(cell: dict[str, str], session: BaseExecutionSession, *, verbose: bool,
+def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, verbose: bool,
     debug_logs: DebugRunLogs | None = None, cell_timeout_s: float = _DEFAULT_CELL_TIMEOUT_S,
     console_lock: threading.Lock | None = None) -> int:
     """Run one matrix cell over persistent local wrappers."""
-    server = (cell.get("server") or "").strip().lower()
-    client = (cell.get("client") or "").strip().lower()
+    server = cell.server
+    client = cell.client
     _console_print(console_lock, f"========== {server}x{client} ==========")
 
     repo = session.repo

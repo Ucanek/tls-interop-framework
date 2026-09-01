@@ -13,6 +13,7 @@ from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon
     cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities, repository_root)
 from core.identity import(cipher_catalog_id_uses_dsa_auth, dsa_cipher_setup_error, has_inline_identity_pem,
     repeated_config_tokens, resolve_client_trust_pem_path, resolve_dsa_cipher_cert_paths)
+from core.tls_config_view import RoleLike, TlsConfigLike, TlsConfigView
 from core.utils import norm_catalog_token
 from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
@@ -24,9 +25,9 @@ CAPABILITIES = load_local_capabilities(__file__)
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
 
 
-def _gnutls_session_state_paths(config: Any) -> tuple[str, str]:
+def _gnutls_session_state_paths(config: TlsConfigLike) -> tuple[str, str]:
     """Session blob and 0-RTT payload paths under ``TlsConfig.repo_root`` (or repo root)."""
-    raw = (getattr(config, "repo_root", None) or "").strip()
+    raw = TlsConfigView(config).repo_root
     root = Path(raw).resolve() if raw else repository_root()
     return str(root / "session.ticket"), str(root / "early_data.txt")
 
@@ -58,7 +59,7 @@ def _gnutls_psk_passwd_file(identity: str, secret_hex: str, staging_dir: str | N
     return path
 
 
-def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str,
+def _gnutls_psk_argv(role: RoleLike | None, identity: str, secret_hex: str,
     staging_dir: str | None = None) -> list[str]:
     if is_server_role(role):
         return ["--pskpasswd", _gnutls_psk_passwd_file(identity, secret_hex, staging_dir)]
@@ -71,7 +72,7 @@ def _interop_dhparams_pem() -> str:
     return str(interop_certs_dir() / "dh2048.pem")
 
 
-def _profile_key(config: Any, role: Any | None, capabilities: dict[str, Any]) -> str:
+def _profile_key(config: TlsConfigLike, role: RoleLike | None, capabilities: dict[str, Any]) -> str:
     mode = tls_mode_12_or_13(config)
     side = "server" if is_server_role(role) else "client"
     return f"{side}:{mode}"
@@ -95,7 +96,7 @@ def _gnutls_join_priority_tokens(items: Sequence[str], token_map: dict[str, str]
     return "".join(parts)
 
 
-def _build_tls_argv(config: Any, *, role: Any | None = None,
+def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
     capabilities: dict[str, Any] | None = None, staging_dir: str | None = None) -> TranslationResult:
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
@@ -111,7 +112,7 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
         if base:
             gprio.append(str(base))
 
-    raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
+    raw_cipher = TlsConfigView(config).cipher_suite
     if raw_cipher:
         key = norm_catalog_token(raw_cipher)
         cap_mode = cap13 if mode == "1.3" else cap12
@@ -162,7 +163,7 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(config: Any, *, role: Any | None = None,
+def tls_argv_for_config(config: TlsConfigLike, *, role: RoleLike | None = None,
     capabilities: dict[str, Any] | None = None, staging_dir: str | None = None) -> TranslationResult:
     return _build_tls_argv(config, role=role, capabilities=capabilities, staging_dir=staging_dir)
 
@@ -204,7 +205,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
     def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str,
         state: WrapperSessionState) -> bool:
         """gnutls-cli does not log HRR explicitly; infer from single-key-share + negotiated group."""
-        if not getattr(config, "expect_hrr", False):
+        if not TlsConfigView(config).expect_hrr:
             return False
         if "--single-key-share" not in (state.last_client_cmd or ""):
             return False
@@ -223,20 +224,20 @@ class GnuTLSWrapper(BaseTemplateWrapper):
                 return True
         return False
 
-    def _ensure_cert_paths(self, config, state: WrapperSessionState):
+    def _ensure_cert_paths(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         dsa = resolve_dsa_cipher_cert_paths(config)
         if dsa:
             return dsa
-        if cipher_catalog_id_uses_dsa_auth(str(getattr(config, "cipher_suite", None) or "")):
+        if cipher_catalog_id_uses_dsa_auth(TlsConfigView(config).cipher_suite):
             if has_inline_identity_pem(config):
                 return super()._ensure_cert_paths(config, state)
             raise WrapperSetupError(dsa_cipher_setup_error())
         return super()._ensure_cert_paths(config, state)
 
-    def _client_x509_cafile(self, config) -> str:
+    def _client_x509_cafile(self, config: interop_pb2.TlsConfig) -> str:
         return resolve_client_trust_pem_path(config)
 
-    def _start_server(self, config, state: WrapperSessionState):
+    def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
         cert_path, key_path = self._ensure_cert_paths(config, state)
@@ -258,11 +259,11 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
 
-    def _start_client(self, config, state: WrapperSessionState):
+    def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         session_file, early_data_file = _gnutls_session_state_paths(config)
-        step = (getattr(config, "resumption_step", None) or "").strip()
+        step = TlsConfigView(config).resumption_step
 
         host = config.server_hostname or "localhost"
         staging = self._session_staging_dir(state)
@@ -287,7 +288,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         alpn = alpn_cli_protocol_list(config)
         if alpn:
             cmd.extend(["--alpn", alpn])
-        if getattr(config, "expect_hrr", False):
+        if TlsConfigView(config).expect_hrr:
             cmd.extend(["--single-key-share"])
         cmd.append(host)
         cwd = os.getcwd()

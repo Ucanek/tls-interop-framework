@@ -16,6 +16,7 @@ from typing import Any
 
 from core.capabilities import discover_wrapper_ids, grpc_port_overrides_from_args, print_catalog_options, repository_root
 from core.matrix import matrix_axis_plan, normalize_cell_tls_micro_params
+from core.matrix_cell import MatrixCell
 from core.validation import cell_capability_skip_reason, validate_run_args
 from core.runner import(EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, WrapperSession,
     WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_interop_certs, remove_interop_certs,
@@ -197,12 +198,13 @@ def enforce_suite_cli_exclusivity(args: argparse.Namespace, parser: argparse.Arg
             "put them under 'matrix' in the suite file instead")
 
 
-def _cell_summary_label(cell: dict[str, str]) -> str:
-    s, c = cell["server"], cell["client"]
+def _cell_summary_label(cell: MatrixCell) -> str:
+    s, c = cell.server, cell.client
     ordered = ("tls_version", "cipher_suite", "supported_groups", "signature_schemes", "alpn")
     parts: list[str] = []
+    mapping = cell.to_mapping()
     for k in ordered:
-        v = (cell.get(k) or "").strip().replace("\n", " ")
+        v = (mapping.get(k) or "").strip().replace("\n", " ")
         parts.append(v or "-")
     mid = " / ".join(parts)
     return f"{s} x {c} | {mid}"
@@ -213,7 +215,7 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
     session: BaseExecutionSession | None = None, debug_logs: DebugRunLogs | None = None,
     slot_pool: WorkerSlotPool | None = None, slot_queue: queue.Queue[int] | None = None,
     console_lock: threading.Lock | None = None) -> tuple[str, int]:
-    cell = {k: str(v) for k, v in zip(axis_keys, tup)}
+    cell = MatrixCell.from_axis(axis_keys, tup)
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
     label = _cell_summary_label(cell)
     skip = cell_capability_skip_reason(cell, repo)
@@ -236,8 +238,9 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
 
     try:
         cell_ns = copy.copy(args_template)
+        mapping = cell.to_mapping()
         for k in axis_keys:
-            setattr(cell_ns, k, cell[k])
+            setattr(cell_ns, k, mapping[k])
         validate_run_args(cell_ns, known_wrappers=known, repo=repo)
         rc = run_matrix_cell_grpc(cell, active_session, verbose=bool(args_template.verbose), debug_logs=debug_logs,
             cell_timeout_s=float(args_template.cell_timeout), console_lock=console_lock)

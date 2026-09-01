@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, Sequence
 
+from core.matrix_cell import MatrixCell
+from core.tls_config_view import RoleLike, TlsConfigLike
 from core.utils import norm_catalog_token
 
 TlsMode = Literal["1.2", "1.3"]
@@ -419,8 +421,8 @@ def metadata_from_capabilities(capabilities: dict[str, Any], *,
     return versions, cipher_ids, groups
 
 
-def tls_argv_for_config(config: Any, backend: str, capabilities: dict[str, Any],
-    *, role: Any | None = None) -> TranslationResult:
+def tls_argv_for_config(config: TlsConfigLike, backend: str, capabilities: dict[str, Any],
+    *, role: RoleLike | None = None) -> TranslationResult:
     """Delegate argv translation to ``wrappers.<backend>.wrapper.tls_argv_for_config``."""
     name = (backend or "").strip().lower()
     mod = importlib.import_module(f"wrappers.{name}.wrapper")
@@ -502,8 +504,8 @@ def parse_test_features_enabled(raw: str) -> frozenset[str]:
     return frozenset(p.strip().lower() for p in str(raw).split(",") if p.strip())
 
 
-def enabled_test_features_from_cell(cell: dict[str, str]) -> frozenset[str]:
-    return parse_test_features_enabled(str(cell.get("test_features") or ""))
+def enabled_test_features_from_cell(cell: MatrixCell) -> frozenset[str]:
+    return parse_test_features_enabled(cell.test_features)
 
 
 def psk_key_bits_for_cipher(cipher_id: str) -> int:

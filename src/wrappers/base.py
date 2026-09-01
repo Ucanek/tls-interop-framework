@@ -16,6 +16,7 @@ from grpc import ServicerContext
 from core.utils import split_asymmetric_csv
 from core.validation import catalog_parameter_conflicts
 from core.identity import catalog_identity_pem_paths_for_config
+from core.tls_config_view import TlsConfigView
 from interop_proto import interop_pb2
 from interop_proto import interop_pb2_grpc
 from wrappers.utils import(capability, drain_merged_stdout, format_cli_debug_logs, format_executed_command,
@@ -167,8 +168,8 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     def _ensure_cert_paths(self, config: interop_pb2.TlsConfig,
         state: WrapperSessionState) -> tuple[str, str]:
         """Resolves cert/key paths from config, cwd, or a short-lived ``openssl req`` run."""
-        cert_b = getattr(config, "certificate", None) or b""
-        key_b = getattr(config, "private_key", None) or b""
+        cert_b = TlsConfigView(config).certificate
+        key_b = TlsConfigView(config).private_key
         eph_cert, eph_key = self._session_ephemeral_pem_paths(state)
 
         if cert_b.strip() and key_b.strip():
@@ -377,7 +378,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return "127.0.0.1"
 
     def _client_peer_host(self, config: interop_pb2.TlsConfig) -> str:
-        return (getattr(config, "server_hostname", None) or "localhost").strip() or "localhost"
+        return (TlsConfigView(config).server_hostname or "localhost").strip() or "localhost"
 
     def _server_tcp_ready_timeout_seconds(self) -> float:
         return 30.0

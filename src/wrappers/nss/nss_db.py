@@ -8,7 +8,7 @@ import shutil
 import subprocess
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from core.tls_config_view import TlsConfigLike
 
 from core.identity import(IDENTITY_PREFIXES, catalog_identity_pem_paths_for_prefix,
     cipher_catalog_id_uses_dsa_auth, get_cert_prefix_for_config, get_cert_prefix_for_schemes, identity_pem_present)
@@ -129,7 +129,7 @@ def nss_server_nickname_for_signature_schemes(schemes: Sequence[str]) -> str:
     return nss_nickname_for_prefix(get_cert_prefix_for_schemes(schemes))
 
 
-def nss_server_nickname_for_config(config: Any, *, repo: Path | None = None) -> str:
+def nss_server_nickname_for_config(config: TlsConfigLike, *, repo: Path | None = None) -> str:
     """``selfserv -n`` nickname from server ``signature_schemes`` / ``cipher_suite``."""
     raw_cipher = str(getattr(config, "cipher_suite", None) or "").strip()
     if cipher_catalog_id_uses_dsa_auth(raw_cipher):
