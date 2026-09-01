@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CERT_DIR="${ROOT}/certs"
 mkdir -p "${CERT_DIR}"
 SUBJ_BASE="/CN=server_node"
-SAN=(-addext "subjectAltName=DNS:server_node")
+SAN=(-addext "subjectAltName=DNS:server_node,DNS:localhost,IP:127.0.0.1")
 
 gen_rsa_default() {
   openssl req -x509 -newkey "rsa:3072" \
@@ -17,7 +17,9 @@ gen_rsa_default() {
 }
 
 gen_rsa_pss_pure() {
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+  openssl genpkey -algorithm RSA-PSS \
+    -pkeyopt rsa_keygen_bits:3072 \
+    -pkeyopt rsa_pss_keygen_md:sha256 \
     -out "${CERT_DIR}/rsa_pss_pure.key"
   openssl req -new -key "${CERT_DIR}/rsa_pss_pure.key" \
     -out "${CERT_DIR}/rsa_pss_pure.csr" \

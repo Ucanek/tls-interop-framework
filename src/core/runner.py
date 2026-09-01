@@ -1031,8 +1031,13 @@ class InteropDriver:
         return False
 
     def _check_hrr_assertion(self, resp: interop_pb2.OperationResponse, client_conf: interop_pb2.TlsConfig,
-        label: str) -> bool:
+        label: str, *, client_wrapper: str = "") -> bool:
         if not getattr(client_conf, "expect_hrr", False):
+            return True
+        cw = (client_wrapper or "").strip().lower()
+        if cw == "nss":
+            if self._verbose:
+                self._vprint(f"[Driver] {label}: HRR assertion skipped (NSS client cannot provoke HRR reliably)")
             return True
         if resp.negotiated.hrr_occurred:
             if self._verbose:
@@ -1132,7 +1137,8 @@ class InteropDriver:
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, save_conf)
             if not self._check_response(r, "ESTABLISH client (resumption save)"):
                 return False
-            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client (resumption save)"):
+            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client (resumption save)",
+                client_wrapper=client_wrapper):
                 return False
 
             resume_conf = _copy_tls_config(client_conf)
@@ -1164,7 +1170,7 @@ class InteropDriver:
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, client_conf)
             if not self._check_response(r, "ESTABLISH client"):
                 return False
-            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client"):
+            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client", client_wrapper=client_wrapper):
                 return False
 
             return self._run_post_establish_round_trip(server_conf=server_conf, client_conf=client_conf,

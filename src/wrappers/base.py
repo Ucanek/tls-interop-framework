@@ -253,6 +253,10 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         """Optional fallback when CLI logs lack explicit HRR markers."""
         return False
 
+    def _client_establish_output_indicates_failure(self, text: str) -> str | None:
+        """Hook: return a short reason when merged client ESTABLISH output shows handshake failure."""
+        return None
+
     def _format_client_connect_failure(self, proc: subprocess.Popen[bytes] | None,
         base: str = "Client process exited (connection failed)", *, detail: str | None = None) -> str:
         text = detail if detail is not None else self._drain_process_output(proc)
@@ -471,6 +475,14 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                             negotiated.hrr_occurred = True
                     logs = self._build_cli_debug_logs(role=interop_pb2.CLIENT, cmd=cmd_logs, proc=self.client_proc,
                         output=merged)
+                    if self.client_proc and self.client_proc.poll() is not None:
+                        status = interop_pb2.OperationResponse.FAILURE
+                        msg = "Client process exited after handshake"
+                    else:
+                        establish_err = self._client_establish_output_indicates_failure(merged)
+                        if establish_err:
+                            status = interop_pb2.OperationResponse.FAILURE
+                            msg = f"Client handshake failed ({establish_err})"
 
         return status, msg, logs, b"", negotiated
 

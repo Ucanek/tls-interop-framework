@@ -137,20 +137,35 @@ def _gnutls_nss_pair_enabled() -> bool:
     return os.environ.get(_GNUTLS_NSS_PAIR_ENV, "0").strip().lower() in _TRUTHY_ENV
 
 
+def nss_tstclnt_sni_name(hostname: str) -> str:
+    """SNI / tstclnt ``-a`` name matching generated leaf certs (``CN=server_node``)."""
+    h = (hostname or "").strip()
+    if not h:
+        return "server_node"
+    if h in ("127.0.0.1", "localhost", "::1"):
+        return "server_node"
+    if h.startswith("[") and h.endswith("]"):
+        inner = h[1:-1]
+        if ":" in inner:
+            return "server_node"
+    return h
+
+
 def nss_tstclnt_host_and_extra_argv(hostname, port):
     """(tstclnt -h value, extra argv after -p). See README (GnuTLS server × NSS client)."""
     h = hostname or "localhost"
     p = int(port)
+    sni = nss_tstclnt_sni_name(h)
     if not _gnutls_nss_pair_enabled():
-        return h, ["-a", h]
+        return h, ["-a", sni]
     try:
         for fam in (socket.AF_INET, socket.AF_INET6):
             infos = socket.getaddrinfo(h, p, family=fam, type=socket.SOCK_STREAM)
             if infos:
-                return str(infos[0][4][0]), []
+                return str(infos[0][4][0]), ["-a", sni]
     except OSError:
         pass
-    return h, ["-a", h]
+    return h, ["-a", sni]
 
 
 def orchestration_env(active_backends: frozenset[str] | set[str]) -> dict[str, str]:
@@ -232,6 +247,21 @@ class NSSWrapper(BaseTemplateWrapper):
         if m3 := re.search(r"(?:Negotiated\s+ECC|Named\s+Curve|Group)\s*[:=]\s*(\S+)", text, re.IGNORECASE):
             out["named_group"] = m3.group(1).strip()
         return out
+
+    def _client_establish_output_indicates_failure(self, text: str) -> str | None:
+        blob = (text or "").strip()
+        if not blob:
+            return None
+        markers = (
+            "SSL_ERROR_NO_CYPHER_OVERLAP",
+            "read from socket failed",
+            "Cannot communicate securely with peer",
+            "Handshake failed",
+        )
+        for m in markers:
+            if m in blob:
+                return m
+        return None
 
     def _db_spec(self) -> str:
         return f"sql:{os.path.abspath(self._nssdb)}"
