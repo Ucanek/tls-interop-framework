@@ -105,7 +105,7 @@ def get_cert_prefix_for_config(config: Any) -> str:
 def interop_certs_dir(repo: Path | None = None) -> Path:
     if repo is not None:
         return repo / "certs"
-    from core.catalog import repository_root
+    from core.capabilities import repository_root
 
     return repository_root() / "certs"
 

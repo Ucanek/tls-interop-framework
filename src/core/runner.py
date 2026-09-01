@@ -19,10 +19,11 @@ from typing import Any, Mapping
 
 import grpc
 
-from core.catalog import(backend_grpc_addr, backend_tls_endpoint, cell_capability_skip_reason,
-    check_local_cli_tools, discover_wrapper_ids, ensure_import_paths, load_capabilities,
-    merged_orchestration_env, norm_token, normalize_cell_tls_micro_params, parse_asymmetric,
-    session_wrapper_env, tls_version_to_capability_name)
+from core.capabilities import(backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools,
+    discover_wrapper_ids, ensure_import_paths, load_capabilities, merged_orchestration_env, session_wrapper_env)
+from core.matrix import normalize_cell_tls_micro_params
+from core.validation import(cell_capability_skip_reason, norm_token, parse_asymmetric,
+    tls_version_to_capability_name)
 
 ensure_import_paths()
 
@@ -431,7 +432,7 @@ def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None =
     cfg.supported_groups.extend(_pick_cell_list(cell, "supported_groups", server=server))
     cfg.signature_schemes.extend(_pick_cell_list(cell, "signature_schemes", server=server))
     cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn", server=server))
-    from core.catalog import enabled_test_features_from_cell
+    from core.capabilities import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
     if _cell_truthy(cell.get("expect_hrr")):

@@ -8,8 +8,9 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities, repository_root)
+from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities,
+    repository_root)
 from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,

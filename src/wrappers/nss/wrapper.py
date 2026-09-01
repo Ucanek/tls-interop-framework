@@ -16,8 +16,9 @@ import socket
 import threading
 from pathlib import Path
 
-from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities)
+from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities,
+    repository_root, wrappers_plugin_dir)
 from core.identity import repeated_config_tokens
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState,
     format_executed_command, popen_stdio_merged, serve_insecure)
@@ -34,15 +35,11 @@ _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 def nss_db_directory(repo: Path, backend_id: str = "nss") -> Path:
     """Per-backend NSS SQL DB path: ``<repo>/src/wrappers/nss/nssdb/<backend_id>``."""
-    from core.catalog import wrappers_plugin_dir
-
     return wrappers_plugin_dir(repo) / "nss" / "nssdb" / backend_id
 
 
 def _nss_repo_root(_nssdb_path: str) -> Path:
     """Interop repo root (for ``certs/`` and identity import rows)."""
-    from core.catalog import repository_root
-
     return repository_root()
 
 
@@ -197,8 +194,6 @@ class NSSWrapper(BaseTemplateWrapper):
 
     def __init__(self) -> None:
         super().__init__()
-        from core.catalog import repository_root
-
         self._nssdb = os.environ.get("NSSDB", str(nss_db_directory(repository_root(), "nss")))
         self._selfserv = resolve_cli_tool("selfserv") or "selfserv"
         self._tstclnt = resolve_cli_tool("tstclnt") or "tstclnt"

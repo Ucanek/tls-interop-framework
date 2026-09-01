@@ -10,7 +10,8 @@ import subprocess
 import time
 from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
 
-from core.catalog import metadata_from_capabilities, tls_mode_from_version
+from core.capabilities import metadata_from_capabilities
+from core.validation import tls_mode_from_version
 from core.identity import repeated_config_tokens
 from proto import interop_pb2
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from core.catalog import ensure_import_paths
+from core.capabilities import ensure_import_paths
 
 ensure_import_paths()
 
