@@ -78,6 +78,8 @@ message TlsConfig {
   string resumption_step = 36;
   // Writable repo root inside the wrapper process (host repository path).
   string repo_root = 37;
+  // Driver: require Hello Retry Request during handshake (assert via negotiated.hrr_occurred).
+  bool expect_hrr = 38;
 }
 
 message OperationRequest {
@@ -98,6 +100,7 @@ message NegotiatedTlsParameters {
   string protocol_version = 1;
   string cipher_suite = 2;
   string named_group = 3;
+  bool hrr_occurred = 4;
 }
 
 message OperationResponse {

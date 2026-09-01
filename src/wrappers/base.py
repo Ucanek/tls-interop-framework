@@ -15,9 +15,10 @@ from core.catalog import catalog_parameter_conflicts
 from core.identity import catalog_identity_pem_paths_for_config
 from proto import interop_pb2
 from proto import interop_pb2_grpc
-from wrappers.utils import(capability, format_cli_debug_logs, format_executed_command, is_server_role,
-    parse_version_line, popen_stdio_merged, read_nonblocking_stdout, run_cli_version, serve_insecure,
-    split_asymmetric_csv, standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
+from wrappers.utils import(capability, format_cli_debug_logs, format_executed_command, hrr_detected_in_cli_output,
+    is_server_role, parse_version_line, popen_stdio_merged, read_nonblocking_stdout, run_cli_version,
+    serve_insecure, split_asymmetric_csv, standard_library_metadata, test_feature_enabled_in_config,
+    tls_mode_12_or_13)
 
 FAIL_LOG_TAIL: int = 65536
 
@@ -248,6 +249,10 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         ``named_group``.
         """
 
+    def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str) -> bool:
+        """Optional fallback when CLI logs lack explicit HRR markers."""
+        return False
+
     def _format_client_connect_failure(self, proc: subprocess.Popen[bytes] | None,
         base: str = "Client process exited (connection failed)", *, detail: str | None = None) -> str:
         text = detail if detail is not None else self._drain_process_output(proc)
@@ -361,9 +366,11 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         pv = (d.get("protocol_version") or "").strip()
         cs = (d.get("cipher_suite") or "").strip()
         ng = (d.get("named_group") or "").strip()
-        if not (pv or cs or ng):
+        hrr = hrr_detected_in_cli_output(text or "")
+        if not (pv or cs or ng or hrr):
             return None
-        return interop_pb2.NegotiatedTlsParameters(protocol_version=pv, cipher_suite=cs, named_group=ng)
+        return interop_pb2.NegotiatedTlsParameters(protocol_version=pv, cipher_suite=cs, named_group=ng,
+            hrr_occurred=hrr)
 
     def _handle_establish(self,
         request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
@@ -439,10 +446,31 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                         output=out)
                 else:
                     early = self._peek_merged_output(self.client_proc)
-                    self._remember_role_cli(interop_pb2.CLIENT, cmd_logs, early)
-                    negotiated = self._build_negotiated(self.client_proc, early)
+                    pause = self._post_establish_pause_seconds()
+                    if pause > 0:
+                        time.sleep(pause)
+                    server_chunks = self._last_server_output
+                    if self.server_proc is not None:
+                        server_extra = read_nonblocking_stdout(self.server_proc, timeout_s=2.0).decode(
+                            errors="replace")
+                        server_out = "\n".join(x for x in (server_chunks, server_extra) if x.strip()).strip()
+                    else:
+                        server_out = server_chunks
+                    client_extra = read_nonblocking_stdout(self.client_proc, timeout_s=1.0).decode(errors="replace")
+                    client_out = "\n".join(x for x in (early, client_extra) if x.strip()).strip()
+                    merged = client_out
+                    if server_out.strip():
+                        merged = f"{server_out}\n{client_out}"
+                    self._remember_role_cli(interop_pb2.CLIENT, cmd_logs, merged)
+                    if server_out.strip():
+                        self._remember_role_cli(interop_pb2.SERVER, self._last_server_cmd, server_out)
+                    negotiated = self._build_negotiated(self.client_proc, merged)
+                    if negotiated is not None and not negotiated.hrr_occurred:
+                        inferred = self._infer_hrr_from_negotiation(request.config, merged)
+                        if inferred:
+                            negotiated.hrr_occurred = True
                     logs = self._build_cli_debug_logs(role=interop_pb2.CLIENT, cmd=cmd_logs, proc=self.client_proc,
-                        output=early)
+                        output=merged)
 
         return status, msg, logs, b"", negotiated
 

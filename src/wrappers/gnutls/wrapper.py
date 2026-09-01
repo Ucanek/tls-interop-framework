@@ -214,7 +214,30 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             out["cipher_suite"] = m2.group(1).strip()
         if m3 := re.search(r"Group:\s*(\S+)", text, re.IGNORECASE):
             out["named_group"] = m3.group(1).strip()
+        if m4 := re.search(r"Description:\s*\([^)]+\)-\(([^)]+)\)-", text, re.IGNORECASE):
+            out["named_group"] = m4.group(1).strip()
         return out
+
+    def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str) -> bool:
+        """gnutls-cli does not log HRR explicitly; infer from single-key-share + negotiated group."""
+        if not getattr(config, "expect_hrr", False):
+            return False
+        if "--single-key-share" not in (self._last_client_cmd or ""):
+            return False
+        m = re.search(r"Description:\s*\([^)]+\)-\(([^)]+)\)-", text or "", re.IGNORECASE)
+        if not m:
+            return False
+        negotiated = m.group(1).lower().replace("-", "")
+        groups = repeated_config_tokens(config, "supported_groups")
+        if len(groups) < 2:
+            return False
+        first = groups[0].lower().replace("-", "")
+        if first in negotiated:
+            return False
+        for g in groups[1:]:
+            if g.lower().replace("-", "") in negotiated:
+                return True
+        return False
 
     def _ensure_cert_paths(self, config):
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
@@ -291,6 +314,8 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         alpn = alpn_cli_protocol_list(config)
         if alpn:
             cmd.extend(["--alpn", alpn])
+        if getattr(config, "expect_hrr", False):
+            cmd.extend(["--single-key-share"])
         cmd.append(host)
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd, env=_gnutls_popen_env(session_env=session_env))

@@ -24,35 +24,35 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rinterop.proto\x12\x0btls.interop\"B\n\nCapability\x12\x0c\n\x04name\x18\x01 \x01(\t\x12&\n\x05\x66lags\x18\x02 \x03(\x0e\x32\x17.tls.interop.ModifyFlag\"\xea\x01\n\x0fLibraryMetadata\x12\x16\n\x0e\x63omponent_name\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12 \n\x05roles\x18\x03 \x03(\x0e\x32\x11.tls.interop.Role\x12\x33\n\x12supported_versions\x18\x04 \x03(\x0b\x32\x17.tls.interop.Capability\x12.\n\rcipher_suites\x18\x05 \x03(\x0b\x32\x17.tls.interop.Capability\x12\'\n\x06groups\x18\x06 \x03(\x0b\x32\x17.tls.interop.Capability\"\xea\x06\n\tTlsConfig\x12\x0f\n\x07version\x18\x01 \x01(\t\x12\x14\n\x0c\x63ipher_suite\x18\x02 \x01(\t\x12\x17\n\x0fserver_hostname\x18\x03 \x01(\t\x12\x0c\n\x04port\x18\x04 \x01(\x05\x12\x13\n\x0b\x63\x65rtificate\x18\x05 \x01(\x0c\x12\x13\n\x0bprivate_key\x18\x06 \x01(\x0c\x12\x18\n\x10supported_groups\x18\x07 \x03(\t\x12\x19\n\x11signature_schemes\x18\x08 \x03(\t\x12\x1e\n\x16signature_schemes_cert\x18\t \x03(\t\x12\x16\n\x0e\x61lpn_protocols\x18\n \x03(\t\x12\x1a\n\x12supported_versions\x18\x0b \x03(\t\x12\x11\n\tpsk_modes\x18\x0e \x03(\t\x12\x15\n\rticket_cipher\x18\x0f \x01(\t\x12\x17\n\x0fticket_lifetime\x18\x10 \x01(\x03\x12\x16\n\x0emax_early_data\x18\x11 \x01(\x03\x12\x19\n\x11\x65nable_early_data\x18\x12 \x01(\x08\x12\x1d\n\x15prefer_server_ciphers\x18\x13 \x01(\x08\x12\x1c\n\x14use_encrypt_then_mac\x18\x14 \x01(\x08\x12\"\n\x1ause_extended_master_secret\x18\x15 \x01(\x08\x12&\n\x1erequire_extended_master_secret\x18\x16 \x01(\x08\x12\x19\n\x11record_size_limit\x18\x17 \x01(\x05\x12\x1b\n\x13max_fragment_length\x18\x18 \x01(\t\x12\x1f\n\x17session_tickets_enabled\x18\x19 \x01(\x08\x12\x15\n\rocsp_stapling\x18\x1a \x01(\x08\x12\x15\n\rrenegotiation\x18\x1b \x01(\t\x12\x1b\n\x13post_handshake_auth\x18\x1c \x01(\x08\x12\x0f\n\x07\x63\x61_file\x18\x1f \x01(\t\x12\x0f\n\x07\x63\x61_path\x18  \x01(\t\x12$\n\x1c\x63\x65rtificate_compression_send\x18\" \x03(\t\x12\'\n\x1f\x63\x65rtificate_compression_receive\x18# \x03(\t\x12\x17\n\x0fresumption_step\x18$ \x01(\t\x12\x11\n\trepo_root\x18% \x01(\tJ\x04\x08\x0c\x10\rJ\x04\x08\r\x10\x0eJ\x04\x08\x1d\x10\x1eJ\x04\x08\x1e\x10\x1fJ\x04\x08!\x10\"\"\xe2\x01\n\x10OperationRequest\x12\x32\n\x04type\x18\x01 \x01(\x0e\x32$.tls.interop.OperationRequest.OpType\x12\x1f\n\x04role\x18\x02 \x01(\x0e\x32\x11.tls.interop.Role\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12&\n\x06\x63onfig\x18\x04 \x01(\x0b\x32\x16.tls.interop.TlsConfig\"@\n\x06OpType\x12\r\n\tESTABLISH\x10\x00\x12\x0c\n\x08TRANSMIT\x10\x01\x12\x0e\n\nKEY_UPDATE\x10\x02\x12\t\n\x05\x43LOSE\x10\x03\"^\n\x17NegotiatedTlsParameters\x12\x18\n\x10protocol_version\x18\x01 \x01(\t\x12\x14\n\x0c\x63ipher_suite\x18\x02 \x01(\t\x12\x13\n\x0bnamed_group\x18\x03 \x01(\t\"\xe7\x01\n\x11OperationResponse\x12\x35\n\x06status\x18\x01 \x01(\x0e\x32%.tls.interop.OperationResponse.Status\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0boutput_data\x18\x03 \x01(\x0c\x12\x0c\n\x04logs\x18\x04 \x01(\t\x12\x38\n\nnegotiated\x18\x05 \x01(\x0b\x32$.tls.interop.NegotiatedTlsParameters\"-\n\x06Status\x12\x0b\n\x07SUCCESS\x10\x00\x12\x0b\n\x07\x46\x41ILURE\x10\x01\x12\t\n\x05\x45RROR\x10\x02\"\x07\n\x05\x45mpty*4\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\n\n\x06\x43LIENT\x10\x01\x12\n\n\x06SERVER\x10\x02*?\n\nModifyFlag\x12\x0f\n\x0bUNSUPPORTED\x10\x00\x12\x08\n\x04READ\x10\x01\x12\x07\n\x03SET\x10\x02\x12\r\n\tNEGOTIATE\x10\x04\x32\xa7\x01\n\x11TlsInteropWrapper\x12?\n\x0bGetMetadata\x12\x12.tls.interop.Empty\x1a\x1c.tls.interop.LibraryMetadata\x12Q\n\x10\x45xecuteOperation\x12\x1d.tls.interop.OperationRequest\x1a\x1e.tls.interop.OperationResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\rinterop.proto\x12\x0btls.interop\"B\n\nCapability\x12\x0c\n\x04name\x18\x01 \x01(\t\x12&\n\x05\x66lags\x18\x02 \x03(\x0e\x32\x17.tls.interop.ModifyFlag\"\xea\x01\n\x0fLibraryMetadata\x12\x16\n\x0e\x63omponent_name\x18\x01 \x01(\t\x12\x0f\n\x07version\x18\x02 \x01(\t\x12 \n\x05roles\x18\x03 \x03(\x0e\x32\x11.tls.interop.Role\x12\x33\n\x12supported_versions\x18\x04 \x03(\x0b\x32\x17.tls.interop.Capability\x12.\n\rcipher_suites\x18\x05 \x03(\x0b\x32\x17.tls.interop.Capability\x12\'\n\x06groups\x18\x06 \x03(\x0b\x32\x17.tls.interop.Capability\"\xfe\x06\n\tTlsConfig\x12\x0f\n\x07version\x18\x01 \x01(\t\x12\x14\n\x0c\x63ipher_suite\x18\x02 \x01(\t\x12\x17\n\x0fserver_hostname\x18\x03 \x01(\t\x12\x0c\n\x04port\x18\x04 \x01(\x05\x12\x13\n\x0b\x63\x65rtificate\x18\x05 \x01(\x0c\x12\x13\n\x0bprivate_key\x18\x06 \x01(\x0c\x12\x18\n\x10supported_groups\x18\x07 \x03(\t\x12\x19\n\x11signature_schemes\x18\x08 \x03(\t\x12\x1e\n\x16signature_schemes_cert\x18\t \x03(\t\x12\x16\n\x0e\x61lpn_protocols\x18\n \x03(\t\x12\x1a\n\x12supported_versions\x18\x0b \x03(\t\x12\x11\n\tpsk_modes\x18\x0e \x03(\t\x12\x15\n\rticket_cipher\x18\x0f \x01(\t\x12\x17\n\x0fticket_lifetime\x18\x10 \x01(\x03\x12\x16\n\x0emax_early_data\x18\x11 \x01(\x03\x12\x19\n\x11\x65nable_early_data\x18\x12 \x01(\x08\x12\x1d\n\x15prefer_server_ciphers\x18\x13 \x01(\x08\x12\x1c\n\x14use_encrypt_then_mac\x18\x14 \x01(\x08\x12\"\n\x1ause_extended_master_secret\x18\x15 \x01(\x08\x12&\n\x1erequire_extended_master_secret\x18\x16 \x01(\x08\x12\x19\n\x11record_size_limit\x18\x17 \x01(\x05\x12\x1b\n\x13max_fragment_length\x18\x18 \x01(\t\x12\x1f\n\x17session_tickets_enabled\x18\x19 \x01(\x08\x12\x15\n\rocsp_stapling\x18\x1a \x01(\x08\x12\x15\n\rrenegotiation\x18\x1b \x01(\t\x12\x1b\n\x13post_handshake_auth\x18\x1c \x01(\x08\x12\x0f\n\x07\x63\x61_file\x18\x1f \x01(\t\x12\x0f\n\x07\x63\x61_path\x18  \x01(\t\x12$\n\x1c\x63\x65rtificate_compression_send\x18\" \x03(\t\x12\'\n\x1f\x63\x65rtificate_compression_receive\x18# \x03(\t\x12\x17\n\x0fresumption_step\x18$ \x01(\t\x12\x11\n\trepo_root\x18% \x01(\t\x12\x12\n\nexpect_hrr\x18& \x01(\x08J\x04\x08\x0c\x10\rJ\x04\x08\r\x10\x0eJ\x04\x08\x1d\x10\x1eJ\x04\x08\x1e\x10\x1fJ\x04\x08!\x10\"\"\xe2\x01\n\x10OperationRequest\x12\x32\n\x04type\x18\x01 \x01(\x0e\x32$.tls.interop.OperationRequest.OpType\x12\x1f\n\x04role\x18\x02 \x01(\x0e\x32\x11.tls.interop.Role\x12\x0f\n\x07payload\x18\x03 \x01(\x0c\x12&\n\x06\x63onfig\x18\x04 \x01(\x0b\x32\x16.tls.interop.TlsConfig\"@\n\x06OpType\x12\r\n\tESTABLISH\x10\x00\x12\x0c\n\x08TRANSMIT\x10\x01\x12\x0e\n\nKEY_UPDATE\x10\x02\x12\t\n\x05\x43LOSE\x10\x03\"t\n\x17NegotiatedTlsParameters\x12\x18\n\x10protocol_version\x18\x01 \x01(\t\x12\x14\n\x0c\x63ipher_suite\x18\x02 \x01(\t\x12\x13\n\x0bnamed_group\x18\x03 \x01(\t\x12\x14\n\x0chrr_occurred\x18\x04 \x01(\x08\"\xe7\x01\n\x11OperationResponse\x12\x35\n\x06status\x18\x01 \x01(\x0e\x32%.tls.interop.OperationResponse.Status\x12\x0f\n\x07message\x18\x02 \x01(\t\x12\x13\n\x0boutput_data\x18\x03 \x01(\x0c\x12\x0c\n\x04logs\x18\x04 \x01(\t\x12\x38\n\nnegotiated\x18\x05 \x01(\x0b\x32$.tls.interop.NegotiatedTlsParameters\"-\n\x06Status\x12\x0b\n\x07SUCCESS\x10\x00\x12\x0b\n\x07\x46\x41ILURE\x10\x01\x12\t\n\x05\x45RROR\x10\x02\"\x07\n\x05\x45mpty*4\n\x04Role\x12\x14\n\x10ROLE_UNSPECIFIED\x10\x00\x12\n\n\x06\x43LIENT\x10\x01\x12\n\n\x06SERVER\x10\x02*?\n\nModifyFlag\x12\x0f\n\x0bUNSUPPORTED\x10\x00\x12\x08\n\x04READ\x10\x01\x12\x07\n\x03SET\x10\x02\x12\r\n\tNEGOTIATE\x10\x04\x32\xa7\x01\n\x11TlsInteropWrapper\x12?\n\x0bGetMetadata\x12\x12.tls.interop.Empty\x1a\x1c.tls.interop.LibraryMetadata\x12Q\n\x10\x45xecuteOperation\x12\x1d.tls.interop.OperationRequest\x1a\x1e.tls.interop.OperationResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'interop_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_ROLE']._serialized_start=1780
-  _globals['_ROLE']._serialized_end=1832
-  _globals['_MODIFYFLAG']._serialized_start=1834
-  _globals['_MODIFYFLAG']._serialized_end=1897
+  _globals['_ROLE']._serialized_start=1822
+  _globals['_ROLE']._serialized_end=1874
+  _globals['_MODIFYFLAG']._serialized_start=1876
+  _globals['_MODIFYFLAG']._serialized_end=1939
   _globals['_CAPABILITY']._serialized_start=30
   _globals['_CAPABILITY']._serialized_end=96
   _globals['_LIBRARYMETADATA']._serialized_start=99
   _globals['_LIBRARYMETADATA']._serialized_end=333
   _globals['_TLSCONFIG']._serialized_start=336
-  _globals['_TLSCONFIG']._serialized_end=1210
-  _globals['_OPERATIONREQUEST']._serialized_start=1213
-  _globals['_OPERATIONREQUEST']._serialized_end=1439
-  _globals['_OPERATIONREQUEST_OPTYPE']._serialized_start=1375
-  _globals['_OPERATIONREQUEST_OPTYPE']._serialized_end=1439
-  _globals['_NEGOTIATEDTLSPARAMETERS']._serialized_start=1441
-  _globals['_NEGOTIATEDTLSPARAMETERS']._serialized_end=1535
-  _globals['_OPERATIONRESPONSE']._serialized_start=1538
-  _globals['_OPERATIONRESPONSE']._serialized_end=1769
-  _globals['_OPERATIONRESPONSE_STATUS']._serialized_start=1724
-  _globals['_OPERATIONRESPONSE_STATUS']._serialized_end=1769
-  _globals['_EMPTY']._serialized_start=1771
-  _globals['_EMPTY']._serialized_end=1778
-  _globals['_TLSINTEROPWRAPPER']._serialized_start=1900
-  _globals['_TLSINTEROPWRAPPER']._serialized_end=2067
+  _globals['_TLSCONFIG']._serialized_end=1230
+  _globals['_OPERATIONREQUEST']._serialized_start=1233
+  _globals['_OPERATIONREQUEST']._serialized_end=1459
+  _globals['_OPERATIONREQUEST_OPTYPE']._serialized_start=1395
+  _globals['_OPERATIONREQUEST_OPTYPE']._serialized_end=1459
+  _globals['_NEGOTIATEDTLSPARAMETERS']._serialized_start=1461
+  _globals['_NEGOTIATEDTLSPARAMETERS']._serialized_end=1577
+  _globals['_OPERATIONRESPONSE']._serialized_start=1580
+  _globals['_OPERATIONRESPONSE']._serialized_end=1811
+  _globals['_OPERATIONRESPONSE_STATUS']._serialized_start=1766
+  _globals['_OPERATIONRESPONSE_STATUS']._serialized_end=1811
+  _globals['_EMPTY']._serialized_start=1813
+  _globals['_EMPTY']._serialized_end=1820
+  _globals['_TLSINTEROPWRAPPER']._serialized_start=1942
+  _globals['_TLSINTEROPWRAPPER']._serialized_end=2109
 # @@protoc_insertion_point(module_scope)

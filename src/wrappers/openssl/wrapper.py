@@ -238,6 +238,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             if not ca_path or not os.path.isfile(ca_path):
                 ca_path = cert_path
             cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]
+        if tls_mode_12_or_13(config) == "1.3" or getattr(config, "expect_hrr", False):
+            cmd = list(cmd) + ["-state"]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Server started"
@@ -262,6 +264,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config)
             cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
+        if tls_mode_12_or_13(config) == "1.3" or getattr(config, "expect_hrr", False):
+            cmd = list(cmd) + ["-state"]
         cwd = os.getcwd()
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Client connected"

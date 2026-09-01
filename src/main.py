@@ -314,6 +314,10 @@ def main() -> int:
         known = frozenset(discover_wrapper_ids(repo))
         axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
         if getattr(args, "suite_cases", None):
+            for case in args.suite_cases:
+                for k in case:
+                    if k not in axis_keys:
+                        axis_keys.append(k)
             combos = suite_cases_to_combos(args, axis_keys)
             n_tests = len(combos)
         else:

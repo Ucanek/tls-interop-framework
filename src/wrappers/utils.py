@@ -16,6 +16,33 @@ from proto import interop_pb2
 
 TlsModeLiteral = Literal["1.2", "1.3"]
 
+_HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.IGNORECASE) for p in (
+        r"hello\s*retry\s*request",
+        r"helloretryrequest",
+        r"hello_retry_request",
+        r"received\s+hrr",
+        r"retry\s+request",
+    ))
+
+
+def hrr_detected_in_cli_output(text: str) -> bool:
+    """Best-effort Hello Retry Request detection from merged CLI stdout/stderr."""
+    blob = (text or "").strip()
+    if not blob:
+        return False
+    for pat in _HRR_OUTPUT_PATTERNS:
+        if pat.search(blob):
+            return True
+    lower = blob.lower()
+    if lower.count("write client hello") >= 2:
+        return True
+    if lower.count("read client hello") >= 2:
+        return True
+    if len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2:
+        return True
+    return False
+
 
 def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
     """

@@ -358,6 +358,10 @@ class WorkerSlotPool:
             session.stop()
 
 
+def _cell_truthy(val: str | None) -> bool:
+    return (val or "").strip().lower() in ("true", "1", "yes", "on")
+
+
 def _pick_cell_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
     raw = (cell.get(field) or "").strip()
     if not raw:
@@ -429,6 +433,8 @@ def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None =
     from core.catalog import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
+    if _cell_truthy(cell.get("expect_hrr")):
+        cfg.expect_hrr = True
     if server and repo is not None:
         backend = (cell.get("server") or "").strip().lower()
         if _server_accepts_inline_pem_identity(backend, repo):
@@ -483,6 +489,8 @@ def _negotiated_debug_text(neg: interop_pb2.NegotiatedTlsParameters | None) -> s
         parts.append(f"cipher_suite={neg.cipher_suite}")
     if (neg.named_group or "").strip():
         parts.append(f"named_group={neg.named_group}")
+    if neg.hrr_occurred:
+        parts.append("hrr_occurred=true")
     return ", ".join(parts) if parts else "(empty negotiated block)"
 
 
@@ -551,6 +559,7 @@ def _tls_config_debug_text(label: str, cfg: interop_pb2.TlsConfig) -> str:
         f"ocsp_stapling: {cfg.ocsp_stapling}",
         f"renegotiation: {cfg.renegotiation or '-'}",
         f"post_handshake_auth: {cfg.post_handshake_auth}",
+        f"expect_hrr: {cfg.expect_hrr}",
     ]
     return "\n".join(lines)
 
@@ -901,7 +910,8 @@ class InteropDriver:
 
     def _record_response(self, resp: interop_pb2.OperationResponse, label: str) -> OpTrace:
         neg = None
-        if resp.negotiated.protocol_version or resp.negotiated.cipher_suite or resp.negotiated.named_group:
+        if (resp.negotiated.protocol_version or resp.negotiated.cipher_suite or resp.negotiated.named_group
+            or resp.negotiated.hrr_occurred):
             neg = interop_pb2.NegotiatedTlsParameters()
             neg.CopyFrom(resp.negotiated)
         trace = OpTrace(label=label, status=resp.status, message=(resp.message or "").strip(),
@@ -1020,6 +1030,20 @@ class InteropDriver:
             print(f"{RED}[Driver] {label}: {lab} - {fail_summary}{RESET}")
         return False
 
+    def _check_hrr_assertion(self, resp: interop_pb2.OperationResponse, client_conf: interop_pb2.TlsConfig,
+        label: str) -> bool:
+        if not getattr(client_conf, "expect_hrr", False):
+            return True
+        if resp.negotiated.hrr_occurred:
+            if self._verbose:
+                self._vprint(f"{GREEN}[Driver] {label}: HRR assertion OK{RESET}")
+            return True
+        summary = "expected Hello Retry Request (expect_hrr=true) but negotiated.hrr_occurred is false"
+        self._last_failure = (label, FAILURE, summary)
+        if self._verbose:
+            print(f"{RED}[Driver] {label}: FAILURE - {summary}{RESET}")
+        return False
+
     def _execute_establish(self, stub: interop_pb2_grpc.TlsInteropWrapperStub,
         role: int, cfg: interop_pb2.TlsConfig) -> interop_pb2.OperationResponse:
         return stub.ExecuteOperation(interop_pb2.OperationRequest(type=interop_pb2.OperationRequest.ESTABLISH,
@@ -1108,6 +1132,8 @@ class InteropDriver:
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, save_conf)
             if not self._check_response(r, "ESTABLISH client (resumption save)"):
                 return False
+            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client (resumption save)"):
+                return False
 
             resume_conf = _copy_tls_config(client_conf)
             resume_conf.resumption_step = "resume"
@@ -1137,6 +1163,8 @@ class InteropDriver:
                 return False
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, client_conf)
             if not self._check_response(r, "ESTABLISH client"):
+                return False
+            if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client"):
                 return False
 
             return self._run_post_establish_round_trip(server_conf=server_conf, client_conf=client_conf,
