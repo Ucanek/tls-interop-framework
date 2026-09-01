@@ -6,7 +6,9 @@ import fcntl
 import os
 import re
 import shlex
+import shutil
 import subprocess
+import tempfile
 import time
 from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
 
@@ -101,18 +103,35 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
             pass
 
 
-def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
-    """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
+def ensure_interop_staging_dir(state: Any) -> str:
+    """Per-session staging directory for PEM and sidecar files (``state.staging_dir``)."""
+    staging = (getattr(state, "staging_dir", None) or "").strip()
+    if staging:
+        return staging
+    staging = tempfile.mkdtemp(prefix="interop_staging_")
+    state.staging_dir = staging
+    return staging
 
 
-def interop_staging_sidecar_path(prefix: str, name: str) -> str:
-    """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot suffix."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_{name}{suffix}"
+def interop_staging_pem_paths(staging_dir: str) -> tuple[str, str]:
+    """Cert/key PEM paths inside a session staging directory."""
+    root = os.path.abspath(staging_dir)
+    return os.path.join(root, "cert.pem"), os.path.join(root, "key.pem")
+
+
+def interop_staging_sidecar_path(staging_dir: str, name: str) -> str:
+    """Auxiliary file path inside a session staging directory (e.g. GnuTLS PSK passwd)."""
+    root = os.path.abspath(staging_dir)
+    safe = name.replace("/", "_").replace("\\", "_").strip() or "sidecar"
+    return os.path.join(root, safe)
+
+
+def cleanup_interop_staging_dir(staging_dir: str) -> None:
+    """Remove a session staging directory tree."""
+    root = (staging_dir or "").strip()
+    if not root:
+        return
+    shutil.rmtree(root, ignore_errors=True)
 
 
 def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:

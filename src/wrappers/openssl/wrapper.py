@@ -15,8 +15,8 @@ from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identit
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
-from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path,
-    standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
+from wrappers.utils import(alpn_cli_protocol_list, standard_library_metadata, test_feature_enabled_in_config,
+    tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
 
@@ -144,10 +144,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     @property
     def _component_name(self) -> str:
         return "OpenSSL"
-
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return interop_staging_pem_paths("openssl")
 
     def _generate_fallback_rsa_identity(self, cert_path: str, key_path: str,
         state: WrapperSessionState) -> tuple[str, str]:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
@@ -16,7 +17,7 @@ from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identit
 from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
-from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path, is_server_role,
+from wrappers.utils import(alpn_cli_protocol_list, interop_staging_sidecar_path, is_server_role,
     standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
@@ -45,17 +46,22 @@ def _gnutls_popen_env(*, session_env: dict[str, str]) -> dict[str, str]:
     return env
 
 
-def _gnutls_psk_passwd_file(identity: str, secret_hex: str) -> str:
+def _gnutls_psk_passwd_file(identity: str, secret_hex: str, staging_dir: str | None = None) -> str:
     """``gnutls-serv`` reads PSK credentials from ``identity:hexkey`` lines."""
-    path = interop_staging_sidecar_path("gnutls", "pskpasswd.txt")
+    if staging_dir:
+        path = interop_staging_sidecar_path(staging_dir, "pskpasswd.txt")
+    else:
+        fd, path = tempfile.mkstemp(prefix="interop_gnutls_", suffix="_pskpasswd.txt")
+        os.close(fd)
     with open(path, "w", encoding="ascii") as f:
         f.write(f"{identity}:{secret_hex}\n")
     return path
 
 
-def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str) -> list[str]:
+def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str,
+    staging_dir: str | None = None) -> list[str]:
     if is_server_role(role):
-        return ["--pskpasswd", _gnutls_psk_passwd_file(identity, secret_hex)]
+        return ["--pskpasswd", _gnutls_psk_passwd_file(identity, secret_hex, staging_dir)]
     return ["--pskusername", identity, "--pskkey", secret_hex]
 
 
@@ -90,7 +96,7 @@ def _gnutls_join_priority_tokens(items: Sequence[str], token_map: dict[str, str]
 
 
 def _build_tls_argv(config: Any, *, role: Any | None = None,
-    capabilities: dict[str, Any] | None = None) -> TranslationResult:
+    capabilities: dict[str, Any] | None = None, staging_dir: str | None = None) -> TranslationResult:
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
     extras: list[str] = []
@@ -137,7 +143,7 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
         and cipher_catalog_id_requires_psk(raw_cipher)):
         mat = psk_material_from_capabilities(caps, raw_cipher)
         if mat:
-            extras.extend(_gnutls_psk_argv(role, mat[0], mat[1]))
+            extras.extend(_gnutls_psk_argv(role, mat[0], mat[1], staging_dir))
         else:
             unsupported.append("psk (missing or wrong-length test_features.psk secret_hex_* for cipher)")
 
@@ -157,8 +163,8 @@ def _build_tls_argv(config: Any, *, role: Any | None = None,
 
 
 def tls_argv_for_config(config: Any, *, role: Any | None = None,
-    capabilities: dict[str, Any] | None = None) -> TranslationResult:
-    return _build_tls_argv(config, role=role, capabilities=capabilities)
+    capabilities: dict[str, Any] | None = None, staging_dir: str | None = None) -> TranslationResult:
+    return _build_tls_argv(config, role=role, capabilities=capabilities, staging_dir=staging_dir)
 
 
 def _split_priority_argv(argv: list[str]) -> tuple[str, list[str]]:
@@ -173,10 +179,6 @@ class GnuTLSWrapper(BaseTemplateWrapper):
     @property
     def _component_name(self) -> str:
         return "GnuTLS"
-
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return interop_staging_pem_paths("gnutls")
 
     def _version_command(self) -> list[str]:
         return ["gnutls-cli", "--version"]
@@ -253,7 +255,9 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
         cert_path, key_path = self._ensure_cert_paths(config, state)
-        prio, mid = _split_priority_argv(list(_build_tls_argv(config, role=interop_pb2.SERVER).argv))
+        staging = self._session_staging_dir(state)
+        prio, mid = _split_priority_argv(
+            list(_build_tls_argv(config, role=interop_pb2.SERVER, staging_dir=staging).argv))
         if not prio:
             raise RuntimeError("empty GnuTLS priority string")
         client_cert_flag = ("--require-client-cert" if test_feature_enabled_in_config(config, "mtls")
@@ -276,7 +280,9 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         step = (getattr(config, "resumption_step", None) or "").strip()
 
         host = config.server_hostname or "localhost"
-        prio, mid = _split_priority_argv(list(_build_tls_argv(config, role=interop_pb2.CLIENT).argv))
+        staging = self._session_staging_dir(state)
+        prio, mid = _split_priority_argv(
+            list(_build_tls_argv(config, role=interop_pb2.CLIENT, staging_dir=staging).argv))
         if not prio:
             raise RuntimeError("empty GnuTLS priority string")
         cmd = ["gnutls-cli", "-p", str(config.port), "--disable-sni", "--insecure", "--x509cafile",

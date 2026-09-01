@@ -67,6 +67,7 @@ class WrapperSessionState:
     client_proc: subprocess.Popen[bytes] | None = None
     used_ephemeral_pem: bool = False
     session_artifact_repo_root: str = ""
+    staging_dir: str = ""
     ephemeral_pem_cert: str = ""
     ephemeral_pem_key: str = ""
     last_server_cmd: str = ""
@@ -77,11 +78,6 @@ class WrapperSessionState:
 
 def _exc_message(phase: str, exc: BaseException) -> str:
     return f"[{phase}] {type(exc).__name__}: {exc}"
-
-
-def _safe_session_tag(session_id: str) -> str:
-    raw = (session_id or "").strip().replace("/", "_").replace("\\", "_")
-    return raw[:32] if raw else "default"
 
 
 class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
@@ -151,20 +147,21 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         state: WrapperSessionState) -> Tuple[subprocess.Popen[bytes], str, str]:
         """Starts the client; returns ``(popen, logs, human message)``."""
 
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        """Paths for inline-generated PEM files (override to avoid backend clashes)."""
-        return ("/tmp/interop_tls_cert.pem", "/tmp/interop_tls_key.pem")
+    def _session_staging_dir(self, state: WrapperSessionState) -> str:
+        from wrappers.utils import ensure_interop_staging_dir
+
+        return ensure_interop_staging_dir(state)
 
     def _session_ephemeral_pem_paths(self, state: WrapperSessionState) -> tuple[str, str]:
-        """Per-session staging paths so concurrent sessions do not clobber the same files."""
+        """Per-session PEM paths under a private ``tempfile.mkdtemp`` directory."""
         if state.ephemeral_pem_cert and state.ephemeral_pem_key:
             return state.ephemeral_pem_cert, state.ephemeral_pem_key
-        base_cert, base_key = self._ephemeral_pem_paths
-        tag = _safe_session_tag(state.session_id)
-        state.ephemeral_pem_cert = f"{base_cert}.{tag}"
-        state.ephemeral_pem_key = f"{base_key}.{tag}"
-        return state.ephemeral_pem_cert, state.ephemeral_pem_key
+        from wrappers.utils import interop_staging_pem_paths
+
+        cert, key = interop_staging_pem_paths(self._session_staging_dir(state))
+        state.ephemeral_pem_cert = cert
+        state.ephemeral_pem_key = key
+        return cert, key
 
     def _ensure_cert_paths(self, config: interop_pb2.TlsConfig,
         state: WrapperSessionState) -> tuple[str, str]:
@@ -357,13 +354,11 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return False
 
     def _extra_cleanup(self, state: WrapperSessionState) -> None:
-        if state.used_ephemeral_pem:
-            cert_path, key_path = self._session_ephemeral_pem_paths(state)
-            for path in (cert_path, key_path):
-                try:
-                    os.remove(path)
-                except OSError:
-                    pass
+        if state.staging_dir:
+            from wrappers.utils import cleanup_interop_staging_dir
+
+            cleanup_interop_staging_dir(state.staging_dir)
+            state.staging_dir = ""
             state.used_ephemeral_pem = False
             state.ephemeral_pem_cert = ""
             state.ephemeral_pem_key = ""
