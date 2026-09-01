@@ -2,19 +2,20 @@
 
 from __future__ import annotations
 
-import fcntl
+import asyncio
+import concurrent.futures
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
-import time
-from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
+from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, Type
 
 from core.capabilities import metadata_from_capabilities
-from core.validation import tls_mode_from_version
 from core.identity import repeated_config_tokens
+from core.utils import split_asymmetric_csv
+from core.validation import tls_mode_from_version
 from interop_proto import interop_pb2
 
 TlsModeLiteral = Literal["1.2", "1.3"]
@@ -45,9 +46,6 @@ def hrr_detected_in_cli_output(text: str) -> bool:
     if len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2:
         return True
     return False
-
-
-from core.utils import split_asymmetric_csv
 
 
 def parse_version_line(out: str | None) -> str:
@@ -169,49 +167,122 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
     return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
 
 
-def _make_non_blocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+def _run_async(coro: Any) -> Any:
+    """Run a coroutine from sync gRPC handler code (no nested event loop on this thread)."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
+async def _read_fd_async(loop: asyncio.AbstractEventLoop, fd: int, nbytes: int) -> bytes:
+    fut = loop.create_future()
+
+    def _on_read() -> None:
+        if fut.done():
+            return
+        try:
+            chunk = os.read(fd, nbytes)
+        except OSError as exc:
+            loop.remove_reader(fd)
+            fut.set_exception(exc)
+            return
+        loop.remove_reader(fd)
+        fut.set_result(chunk)
+
+    loop.add_reader(fd, _on_read)
+    try:
+        return await fut
+    finally:
+        if not fut.done():
+            loop.remove_reader(fd)
+
+
+async def _read_merged_async(fd: int, *, timeout_s: float, idle_s: float, max_bytes: int) -> bytes:
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + max(0.0, timeout_s)
+    chunks: list[bytes] = []
+    total = 0
+    last_data_at: float | None = None
+    poll_s = 0.02
+
+    while loop.time() < deadline and total < max_bytes:
+        remaining = deadline - loop.time()
+        if remaining <= 0:
+            break
+        wait_s = min(poll_s, remaining)
+        piece: bytes | None = None
+        try:
+            piece = await asyncio.wait_for(
+                _read_fd_async(loop, fd, min(4096, max_bytes - total)),
+                timeout=max(0.001, wait_s),
+            )
+        except asyncio.TimeoutError:
+            piece = b""
+        except OSError:
+            break
+        if piece:
+            chunks.append(piece)
+            total += len(piece)
+            last_data_at = loop.time()
+            continue
+        if last_data_at is not None and (loop.time() - last_data_at) >= idle_s:
+            break
+
+    return b"".join(chunks)
+
+
+def read_merged_stdout(stream: BinaryIO | None, *, timeout_s: float = 2.0, idle_s: float = 0.05,
+    max_bytes: int = 1 << 20) -> bytes:
+    """Read merged stdout/stderr until ``timeout_s`` or ``idle_s`` without new data."""
+    if stream is None:
+        return b""
+    return _run_async(_read_merged_async(stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes))
+
+
+def peek_merged_stdout(stream: BinaryIO | None, *, limit: int = 65536, idle_s: float = 0.05) -> bytes:
+    """Best-effort read of early merged output without waiting for process exit."""
+    if stream is None:
+        return b""
+    data = read_merged_stdout(stream, timeout_s=idle_s + 0.15, idle_s=idle_s, max_bytes=limit)
+    return data[:limit]
+
+
+def drain_merged_stdout(stream: BinaryIO | None, *, limit: int = 1 << 20) -> bytes:
+    """Read available merged output; blocking tail read when the pipe still has buffered data."""
+    if stream is None:
+        return b""
+    peeked = peek_merged_stdout(stream, limit=limit)
+    if peeked:
+        return peeked
+    try:
+        tail = stream.read(limit) or b""
+    except OSError:
+        return peeked
+    if not tail:
+        return peeked
+    combined = peeked + tail
+    return combined[:limit]
 
 
 def popen_stdio_merged(cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
     env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
-    """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    """Starts subprocess with stdin and merged stdout/stderr (``stderr=STDOUT``)."""
+    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         cwd=os.fspath(cwd) if cwd is not None else None, env=dict(env) if env is not None else None)
-    if p.stdout:
-        _make_non_blocking(p.stdout.fileno())
-    return p
 
 
 def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0,
     idle_s: float = 0.05, poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
     """
     Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
+
+    ``poll_s`` is accepted for API compatibility; asyncio event-loop polling replaces manual sleep.
     """
-    if proc.stdout is None:
-        return b""
-    deadline = time.monotonic() + max(0.0, timeout_s)
-    chunks: list[bytes] = []
-    total = 0
-    last_data_at: float | None = None
-    while time.monotonic() < deadline and total < max_bytes:
-        try:
-            piece = proc.stdout.read(min(4096, max_bytes - total))
-        except BlockingIOError:
-            piece = None
-        except OSError:
-            break
-        if piece:
-            chunks.append(piece)
-            total += len(piece)
-            last_data_at = time.monotonic()
-            if len(piece) < 4096:
-                continue
-        elif last_data_at is not None and (time.monotonic() - last_data_at) >= idle_s:
-            break
-        time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
-    return b"".join(chunks)
+    del poll_s
+    return read_merged_stdout(proc.stdout, timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes)
 
 
 def capability(name: str, *flags: interop_pb2.ModifyFlag.ValueType) -> interop_pb2.Capability:

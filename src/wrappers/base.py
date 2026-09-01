@@ -13,15 +13,15 @@ from typing import Tuple
 
 from grpc import ServicerContext
 
+from core.utils import split_asymmetric_csv
 from core.validation import catalog_parameter_conflicts
 from core.identity import catalog_identity_pem_paths_for_config
 from interop_proto import interop_pb2
 from interop_proto import interop_pb2_grpc
-from wrappers.utils import(capability, format_cli_debug_logs, format_executed_command, hrr_detected_in_cli_output,
-    is_server_role, parse_version_line, popen_stdio_merged, read_nonblocking_stdout, run_cli_version,
-    serve_insecure, standard_library_metadata, test_feature_enabled_in_config,
-    tls_mode_12_or_13)
-from core.utils import split_asymmetric_csv
+from wrappers.utils import(capability, drain_merged_stdout, format_cli_debug_logs, format_executed_command,
+    hrr_detected_in_cli_output, is_server_role, parse_version_line, peek_merged_stdout, popen_stdio_merged,
+    read_nonblocking_stdout, run_cli_version, serve_insecure, standard_library_metadata,
+    test_feature_enabled_in_config, tls_mode_12_or_13)
 
 FAIL_LOG_TAIL: int = 65536
 
@@ -232,7 +232,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         if proc is None or proc.stdout is None:
             return ""
         try:
-            raw = (proc.stdout.read() or b"").decode(errors="replace")[-limit:]
+            raw = (drain_merged_stdout(proc.stdout, limit=limit) or b"").decode(errors="replace")[-limit:]
             return raw.strip()
         except OSError:
             return ""
@@ -242,30 +242,20 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         if proc is None or proc.stdout is None:
             return ""
         try:
-            chunks: list[bytes] = []
-            total = 0
-            while total < limit:
-                try:
-                    piece = proc.stdout.read(4096)
-                except (BlockingIOError, OSError):
-                    break
-                if not piece:
-                    break
-                chunks.append(piece)
-                total += len(piece)
-                if len(piece) < 4096:
-                    break
-            raw = b"".join(chunks)[:limit].decode(errors="replace")
+            raw = peek_merged_stdout(proc.stdout, limit=limit).decode(errors="replace")
             return raw
         except OSError:
             return ""
 
     def _drain_process_output(self, proc: subprocess.Popen[bytes] | None, *, limit: int = FAIL_LOG_TAIL) -> str:
         """Read remaining merged stdout/stderr; prefer full text over a single-line tail."""
-        peeked = self._peek_merged_output(proc, limit=limit)
-        if peeked.strip():
-            return peeked
-        return self._tail_merged_output(proc, limit=limit)
+        if proc is None or proc.stdout is None:
+            return ""
+        try:
+            raw = drain_merged_stdout(proc.stdout, limit=limit).decode(errors="replace")
+            return raw.strip()
+        except OSError:
+            return ""
 
     def _build_cli_debug_logs(self, state: WrapperSessionState, *, role: int, cmd: str = "",
         proc: subprocess.Popen[bytes] | None = None, output: str | None = None) -> str:
