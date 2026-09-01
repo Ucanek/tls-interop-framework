@@ -3,14 +3,6 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-# ``src/`` on path so ``core`` imports work before ``ensure_import_paths``.
-_src = Path(__file__).resolve().parent
-if str(_src) not in sys.path:
-    sys.path.insert(0, str(_src))
-
 import argparse
 import copy
 import queue
@@ -22,12 +14,9 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from core.capabilities import(discover_wrapper_ids, ensure_import_paths, grpc_port_overrides_from_args,
-    print_catalog_options, repository_root)
+from core.capabilities import discover_wrapper_ids, grpc_port_overrides_from_args, print_catalog_options, repository_root
 from core.matrix import matrix_axis_plan, normalize_cell_tls_micro_params
 from core.validation import cell_capability_skip_reason, validate_run_args
-
-ensure_import_paths()
 from core.runner import(EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, WrapperSession,
     WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_interop_certs, remove_interop_certs,
     required_backends_from_matrix, run_matrix_cell_grpc)

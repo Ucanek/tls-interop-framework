@@ -5,7 +5,6 @@ from __future__ import annotations
 import importlib
 import json
 import re
-import sys
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
@@ -43,10 +42,10 @@ TLS13_ORTHOGONAL_DIMS: frozenset[str] = frozenset({"supported_groups", "signatur
 
 
 def repository_root() -> Path:
-    """Repository root (directory containing ``proto/interop_pb2.py``)."""
+    """Repository root (directory containing ``interop_proto/interop_pb2.py``)."""
     cur = Path(__file__).resolve().parent
     while True:
-        if (cur / "proto" / "interop_pb2.py").is_file():
+        if (cur / "interop_proto" / "interop_pb2.py").is_file():
             return cur
         parent = cur.parent
         if parent == cur:
@@ -54,48 +53,9 @@ def repository_root() -> Path:
         cur = parent
     p = Path(__file__).resolve()
     for candidate in (p.parents[2], p.parents[1]):
-        if (candidate / "proto" / "interop_pb2.py").is_file():
+        if (candidate / "interop_proto" / "interop_pb2.py").is_file():
             return candidate
     return p.parents[2]
-
-
-_purged_foreign_proto = False
-
-
-def _purge_foreign_proto_module() -> None:
-    """Drop unrelated PyPI ``proto`` (proto-plus) so ``import proto`` hits this repo."""
-    global _purged_foreign_proto
-    if _purged_foreign_proto:
-        return
-    mod = sys.modules.get("proto")
-    if mod is not None and not hasattr(mod, "interop_pb2"):
-        for key in list(sys.modules):
-            if key == "proto" or key.startswith("proto."):
-                del sys.modules[key]
-    _purged_foreign_proto = True
-
-
-def ensure_import_paths() -> Path:
-    """
-    Put repo root on ``sys.path[0]`` and ``src/`` on ``[1]`` before ``import proto``.
-
-    Call once at process entry (``main``, ``driver``) or rely on ``proto/__init__.py``.
-    """
-    root = repository_root()
-    if not (root / "proto" / "interop_pb2.py").is_file():
-        raise ImportError(f"project proto/ not found under {root}")
-    rs = str(root)
-    while rs in sys.path:
-        sys.path.remove(rs)
-    sys.path.insert(0, rs)
-    src = root / "src"
-    if src.is_dir():
-        ss = str(src)
-        if ss in sys.path:
-            sys.path.remove(ss)
-        sys.path.insert(1, ss)
-    _purge_foreign_proto_module()
-    return root
 
 
 @dataclass(frozen=True)
@@ -136,14 +96,6 @@ def discover_wrapper_ids(repo: Path) -> tuple[str, ...]:
         if (path / "wrapper.py").is_file() and (path / "capabilities.json").is_file():
             found.append(path.name)
     return tuple(found)
-
-
-def _ensure_src_importable(repo: Path | None = None) -> Path:
-    src = (repo or repository_root()) / "src"
-    src_s = str(src)
-    if src_s not in sys.path:
-        sys.path.insert(0, src_s)
-    return src
 
 
 def load_capabilities(backend_name: str, repo: Path | None = None) -> dict[str, Any]:
@@ -292,7 +244,6 @@ def load_backend_component(backend_name: str, repo: Path | None = None) -> tuple
     Returns ``(wrapper_module, capabilities)``.
     """
     name = (backend_name or "").strip().lower()
-    _ensure_src_importable(repo)
     capabilities = load_capabilities(name, repo)
     module = importlib.import_module(f"wrappers.{name}.wrapper")
     return module, capabilities

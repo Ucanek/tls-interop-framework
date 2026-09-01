@@ -9,16 +9,20 @@ Cross-test TLS 1.2/1.3 between **OpenSSL**, **GnuTLS**, and **Mozilla NSS**. The
 sudo dnf install openssl gnutls-bin nss-tools
 sudo apt-get install openssl gnutls-bin libnss3-tools
 
-pip install 'grpcio>=1.60' 'protobuf>=4.21' 'PyYAML>=6.0'
+pip install -e .
 
 make gnutls-hook   # GnuTLS session resumption LD_PRELOAD hook (needs gcc + libgnutls dev)
 
-python3 src/main.py --server openssl --client gnutls
-python3 src/main.py --suite scenarios/pairwise-tls13.yaml   # 9 cells, TLS 1.3 3×3
+tls-interop --server openssl --client gnutls
+tls-interop --suite scenarios/pairwise-tls13.yaml   # 9 cells, TLS 1.3 3×3
 
-python3 src/main.py --list-wrappers
-python3 src/main.py --list-options     # catalog ids: aes-128-gcm, x25519, …
+tls-interop --list-wrappers
+tls-interop --list-options     # catalog ids: aes-128-gcm, x25519, …
 ```
+
+After `pip install -e .`, you can also run `python -m main` or `python3 src/main.py` from the repo root.
+
+Protobuf/gRPC stubs live in `interop_proto/` (not `proto`, to avoid clashing with the unrelated PyPI `proto` package).
 
 `certs/` is created on first run (`scripts/gen_interop_certs.sh`).
 
@@ -35,9 +39,9 @@ Wrappers live in `src/wrappers/<backend>/` (`wrapper.py` + `capabilities.json`).
 ## CLI matrix
 
 ```bash
-python3 src/main.py --server ALL --client ALL
-python3 src/main.py --server openssl --client nss -v
-python3 src/main.py --server openssl --client openssl --tls-port 4433
+tls-interop --server ALL --client ALL
+tls-interop --server openssl --client nss -v
+tls-interop --server openssl --client openssl --tls-port 4433
 ```
 
 
@@ -54,8 +58,8 @@ Applies to `--server`, `--client`, `--cipher-suite`, `--tls-version`, `--support
 ## YAML suites
 
 ```bash
-python3 src/main.py --suite scenarios/pairwise-tls13.yaml
-python3 src/main.py -s scenarios/ciphers-tls13.yaml -v
+tls-interop --suite scenarios/pairwise-tls13.yaml
+tls-interop -s scenarios/ciphers-tls13.yaml -v
 ```
 
 With `--suite`, do not pass `--server` / `--client` or other matrix flags — values come from the file. See `scenarios/` (start with `pairwise-tls13.yaml`, then `pairwise-tls12.yaml`; `smoke.yaml` is the full 162-cell run).
@@ -83,19 +87,19 @@ Use `--attach` when you want to **run wrappers yourself** and let the driver onl
 
 ```bash
 # Terminal 1 — server backend (openssl example)
-GRPC_PORT=15051 PYTHONPATH=src:proto python3 -m wrappers.openssl.wrapper
+GRPC_PORT=15051 python3 -m wrappers.openssl.wrapper
 
 # Terminal 2 — client backend (gnutls example)
-GRPC_PORT=15052 PYTHONPATH=src:proto python3 -m wrappers.gnutls.wrapper
+GRPC_PORT=15052 python3 -m wrappers.gnutls.wrapper
 
 # Terminal 3 — driver
-python3 src/main.py --server openssl --client gnutls --attach -v
+tls-interop --server openssl --client gnutls --attach -v
 ```
 
-Start both wrappers **before** the driver. `GRPC_PORT` must match the gRPC port the driver uses (defaults from `capabilities.json`: openssl `15051`, gnutls `15052`, nss `15053`). If you use other ports:
+Start both wrappers **before** the driver. `GRPC_PORT` must match the gRPC port the driver uses (defaults from `capabilities.json`: openssl `15051`, gnutls `15052`, nss `15053`). Requires `pip install -e .` so wrapper modules resolve without `PYTHONPATH`. If you use other ports:
 
 ```bash
-python3 src/main.py --server openssl --client gnutls --attach \
+tls-interop --server openssl --client gnutls --attach \
   --server-grpc-port 15051 --client-grpc-port 15052 -v
 ```
 
@@ -113,4 +117,4 @@ Notes:
 
 ## New wrapper
 
-Add `src/wrappers/<id>/wrapper.py` + `capabilities.json` (copy `openssl`), unique gRPC/TLS ports, then `python3 src/main.py --list-wrappers`.
+Add `src/wrappers/<id>/wrapper.py` + `capabilities.json` (copy `openssl`), unique gRPC/TLS ports, then `tls-interop --list-wrappers`.

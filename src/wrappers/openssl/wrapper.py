@@ -204,7 +204,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return out
 
     def _build_common_args(self, config, *, for_server: bool) -> list[str]:
-        from proto import interop_pb2
+        from interop_proto import interop_pb2
 
         role = interop_pb2.SERVER if for_server else interop_pb2.CLIENT
         args = list(_build_tls_argv(config, role=role).argv)

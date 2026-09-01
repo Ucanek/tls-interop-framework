@@ -255,7 +255,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
 
 
 def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[str]) -> None:
-    from proto import interop_pb2
+    from interop_proto import interop_pb2
 
     for attr, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
         wid = (getattr(args, attr, None) or "").strip().lower()

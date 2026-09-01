@@ -20,15 +20,13 @@ from typing import Any, Mapping
 import grpc
 
 from core.capabilities import(backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools,
-    discover_wrapper_ids, ensure_import_paths, load_capabilities, merged_orchestration_env, session_wrapper_env)
+    discover_wrapper_ids, load_capabilities, merged_orchestration_env, session_wrapper_env)
 from core.matrix import normalize_cell_tls_micro_params
 from core.validation import(cell_capability_skip_reason, norm_token, parse_asymmetric,
     tls_version_to_capability_name)
 
-ensure_import_paths()
-
 from wrappers.utils import remove_tls_session_artifact_files
-from proto import interop_pb2, interop_pb2_grpc
+from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
 
 # Distinct from 0 (pass) and 1 (fail) so matrix runners can show SKIP vs OK / TIMEOUT.
@@ -199,9 +197,6 @@ class WrapperSession(BaseExecutionSession):
         env["GRPC_PORT"] = str(grpc_port)
         env["WRAPPER"] = backend
         env.update(session_wrapper_env(backend, self.repo, self.backends))
-        src_s = str(self.repo / "src")
-        prev = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = src_s if not prev else f"{src_s}{os.pathsep}{prev}"
         return env
 
     def _wrapper_cmd(self, backend: str) -> list[str]:

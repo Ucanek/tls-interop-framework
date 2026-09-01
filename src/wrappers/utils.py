@@ -13,7 +13,7 @@ from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
 from core.capabilities import metadata_from_capabilities
 from core.validation import tls_mode_from_version
 from core.identity import repeated_config_tokens
-from proto import interop_pb2
+from interop_proto import interop_pb2
 
 TlsModeLiteral = Literal["1.2", "1.3"]
 
@@ -250,7 +250,7 @@ def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
     from concurrent import futures
 
     import grpc
-    from proto import interop_pb2_grpc
+    from interop_proto import interop_pb2_grpc
 
     port = int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

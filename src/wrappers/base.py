@@ -15,8 +15,8 @@ from grpc import ServicerContext
 
 from core.validation import catalog_parameter_conflicts
 from core.identity import catalog_identity_pem_paths_for_config
-from proto import interop_pb2
-from proto import interop_pb2_grpc
+from interop_proto import interop_pb2
+from interop_proto import interop_pb2_grpc
 from wrappers.utils import(capability, format_cli_debug_logs, format_executed_command, hrr_detected_in_cli_output,
     is_server_role, parse_version_line, popen_stdio_merged, read_nonblocking_stdout, run_cli_version,
     serve_insecure, split_asymmetric_csv, standard_library_metadata, test_feature_enabled_in_config,

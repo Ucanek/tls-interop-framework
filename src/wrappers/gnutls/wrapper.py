@@ -13,7 +13,7 @@ from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon
     repository_root)
 from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
-from proto import interop_pb2
+from interop_proto import interop_pb2
 from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path, is_server_role,
