@@ -93,6 +93,8 @@ message OperationRequest {
   Role role = 2;
   bytes payload = 3;
   TlsConfig config = 4;
+  // Isolates wrapper subprocess state across concurrent gRPC requests.
+  string session_id = 5;
 }
 
 // Best-effort TLS parameters observed from backend CLI output after handshake.

@@ -19,7 +19,7 @@ from pathlib import Path
 from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
     cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities)
 from core.identity import repeated_config_tokens
-from wrappers.base import(BaseTemplateWrapper,
+from wrappers.base import(BaseTemplateWrapper, WrapperSessionState,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.nss.nss_db import(_ensure_nss_db_identities, get_nss_library_version,
     nss_interop_identity_import_rows, nss_server_nickname_for_config, resolve_cli_tool)
@@ -278,7 +278,7 @@ class NSSWrapper(BaseTemplateWrapper):
     def _nss_server_nickname(self, config) -> str:
         return nss_server_nickname_for_config(config, repo=self._nss_repo())
 
-    def _start_server(self, config):
+    def _start_server(self, config, state: WrapperSessionState):
         self._ensure_nss_db_ready()
         nss_ver = _tls_version_range(config)
         port = int(config.port)
@@ -291,7 +291,7 @@ class NSSWrapper(BaseTemplateWrapper):
         logs = format_executed_command(cmd, cwd)
         return popen_stdio_merged(cmd, cwd=cwd), logs, "NSS Server started"
 
-    def _start_client(self, config):
+    def _start_client(self, config, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         step = (getattr(config, "resumption_step", None) or "").strip()
@@ -314,9 +314,10 @@ class NSSWrapper(BaseTemplateWrapper):
     def _server_transmit_poll(self) -> bool:
         return True
 
-    def _extra_cleanup(self) -> None:
-        super()._extra_cleanup()
-        self._cleanup_nss_db()
+    def _after_session_removed(self, session_id: str) -> None:
+        del session_id
+        if not self._sessions:
+            self._cleanup_nss_db()
 
 
 if __name__ == "__main__":

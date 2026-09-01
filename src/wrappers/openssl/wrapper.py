@@ -12,7 +12,7 @@ from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cip
     cipher_maps_from_capabilities, load_local_capabilities, norm_catalog_token, psk_material_from_capabilities, repository_root)
 from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
-from wrappers.base import(BaseTemplateWrapper, WrapperSetupError,
+from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path,
     standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
@@ -148,7 +148,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
         return interop_staging_pem_paths("openssl")
 
-    def _generate_fallback_rsa_identity(self, cert_path: str, key_path: str) -> tuple[str, str]:
+    def _generate_fallback_rsa_identity(self, cert_path: str, key_path: str,
+        state: WrapperSessionState) -> tuple[str, str]:
         """One-day RSA leaf when catalog/cwd PEMs are unavailable (ephemeral paths)."""
         subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-keyout", key_path, "-out", cert_path,
                 "-days", "1", "-nodes", "-subj", "/CN=localhost"],
@@ -157,10 +158,10 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             os.chmod(key_path, 0o600)
         except OSError:
             pass
-        self._used_ephemeral_pem = True
+        state.used_ephemeral_pem = True
         return cert_path, key_path
 
-    def _ensure_cert_paths(self, config):
+    def _ensure_cert_paths(self, config, state: WrapperSessionState):
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         if _openssl_cipher_needs_legacy_dss(raw_cipher):
             cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
@@ -169,14 +170,14 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             cert_b = getattr(config, "certificate", None) or b""
             key_b = getattr(config, "private_key", None) or b""
             if cert_b.strip() and key_b.strip():
-                return super()._ensure_cert_paths(config)
+                return super()._ensure_cert_paths(config, state)
             raise WrapperSetupError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key ",
                 "(run scripts/gen_interop_certs.sh)")
         try:
-            return super()._ensure_cert_paths(config)
+            return super()._ensure_cert_paths(config, state)
         except WrapperSetupError:
-            cert_path, key_path = self._ephemeral_pem_paths
-            return self._generate_fallback_rsa_identity(cert_path, key_path)
+            cert_path, key_path = self._session_ephemeral_pem_paths(state)
+            return self._generate_fallback_rsa_identity(cert_path, key_path, state)
 
     def _version_command(self) -> list[str]:
         return ["openssl", "version"]
@@ -219,11 +220,11 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             return ["-noservername"]
         return ["-servername", host]
 
-    def _start_server(self, config):
+    def _start_server(self, config, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
-        cert_path, key_path = self._ensure_cert_paths(config)
+        cert_path, key_path = self._ensure_cert_paths(config, state)
         cmd = (["openssl", "s_server"] + _openssl_legacy_provider_argv(config)
             + ["-accept", f"0.0.0.0:{config.port}", "-cert", cert_path, "-key", key_path]
             + self._build_common_args(config, for_server=True))
@@ -244,7 +245,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "Server started"
 
-    def _start_client(self, config):
+    def _start_client(self, config, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         session_file, early_data_file = _openssl_session_state_paths(config)
@@ -262,7 +263,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
                 Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
                 cmd = list(cmd) + ["-early_data", early_data_file]
         if test_feature_enabled_in_config(config, "mtls"):
-            client_cert, client_key = self._ensure_cert_paths(config)
+            client_cert, client_key = self._ensure_cert_paths(config, state)
             cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
         if tls_mode_12_or_13(config) == "1.3" or getattr(config, "expect_hrr", False):
             cmd = list(cmd) + ["-state"]

@@ -14,7 +14,7 @@ from core.catalog import(TranslationResult, cipher_catalog_id_requires_anon, cip
 from core.identity import(catalog_identity_pem_paths_for_prefix, catalog_identity_trust_pem_path,
     cipher_catalog_id_uses_dsa_auth, repeated_config_tokens, server_trust_signature_schemes_tokens)
 from proto import interop_pb2
-from wrappers.base import(BaseTemplateWrapper, WrapperSetupError,
+from wrappers.base import(BaseTemplateWrapper, WrapperSessionState, WrapperSetupError,
     format_executed_command, popen_stdio_merged, serve_insecure)
 from wrappers.utils import(alpn_cli_protocol_list, interop_staging_pem_paths, interop_staging_sidecar_path, is_server_role,
     standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
@@ -218,11 +218,12 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             out["named_group"] = m4.group(1).strip()
         return out
 
-    def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str) -> bool:
+    def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str,
+        state: WrapperSessionState) -> bool:
         """gnutls-cli does not log HRR explicitly; infer from single-key-share + negotiated group."""
         if not getattr(config, "expect_hrr", False):
             return False
-        if "--single-key-share" not in (self._last_client_cmd or ""):
+        if "--single-key-share" not in (state.last_client_cmd or ""):
             return False
         m = re.search(r"Description:\s*\([^)]+\)-\(([^)]+)\)-", text or "", re.IGNORECASE)
         if not m:
@@ -239,7 +240,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
                 return True
         return False
 
-    def _ensure_cert_paths(self, config):
+    def _ensure_cert_paths(self, config, state: WrapperSessionState):
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         if cipher_catalog_id_uses_dsa_auth(raw_cipher):
             cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
@@ -248,10 +249,10 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             cert_b = getattr(config, "certificate", None) or b""
             key_b = getattr(config, "private_key", None) or b""
             if cert_b.strip() and key_b.strip():
-                return super()._ensure_cert_paths(config)
+                return super()._ensure_cert_paths(config, state)
             raise WrapperSetupError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
                 "(run scripts/gen_interop_certs.sh)")
-        return super()._ensure_cert_paths(config)
+        return super()._ensure_cert_paths(config, state)
 
     def _client_x509_cafile(self, config) -> str:
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
@@ -267,10 +268,10 @@ class GnuTLSWrapper(BaseTemplateWrapper):
                 return candidate
         return "cert.pem"
 
-    def _start_server(self, config):
+    def _start_server(self, config, state: WrapperSessionState):
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
 
-        cert_path, key_path = self._ensure_cert_paths(config)
+        cert_path, key_path = self._ensure_cert_paths(config, state)
         prio, mid = _split_priority_argv(list(_build_tls_argv(config, role=interop_pb2.SERVER).argv))
         if not prio:
             raise RuntimeError("empty GnuTLS priority string")
@@ -287,7 +288,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         proc = popen_stdio_merged(cmd, cwd=cwd)
         return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
 
-    def _start_client(self, config):
+    def _start_client(self, config, state: WrapperSessionState):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         session_file, early_data_file = _gnutls_session_state_paths(config)
@@ -309,7 +310,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
                 Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
                 cmd.extend(["--earlydata", early_data_file])
         if test_feature_enabled_in_config(config, "mtls"):
-            client_cert, client_key = self._ensure_cert_paths(config)
+            client_cert, client_key = self._ensure_cert_paths(config, state)
             cmd.extend(["--x509certfile", client_cert, "--x509keyfile", client_key])
         alpn = alpn_cli_protocol_list(config)
         if alpn:

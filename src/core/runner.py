@@ -13,6 +13,7 @@ import signal
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -892,6 +893,7 @@ class InteropDriver:
         self._op_traces: list[OpTrace] = []
         self._last_transmit_client_data: bytes = b""
         self._last_transmit_server_data: bytes = b""
+        self.session_id = uuid.uuid4().hex
         self.server_metadata: interop_pb2.LibraryMetadata | None = None
         self.client_metadata: interop_pb2.LibraryMetadata | None = None
         self._channels: list[grpc.Channel] = []
@@ -1049,14 +1051,25 @@ class InteropDriver:
             print(f"{RED}[Driver] {label}: FAILURE - {summary}{RESET}")
         return False
 
+    def _operation_request(self, op_type: int, *, role: int = 0, payload: bytes = b"",
+        config: interop_pb2.TlsConfig | None = None) -> interop_pb2.OperationRequest:
+        req = interop_pb2.OperationRequest(type=op_type, session_id=self.session_id)
+        if role:
+            req.role = role
+        if payload:
+            req.payload = payload
+        if config is not None:
+            req.config.CopyFrom(config)
+        return req
+
     def _execute_establish(self, stub: interop_pb2_grpc.TlsInteropWrapperStub,
         role: int, cfg: interop_pb2.TlsConfig) -> interop_pb2.OperationResponse:
-        return stub.ExecuteOperation(interop_pb2.OperationRequest(type=interop_pb2.OperationRequest.ESTABLISH,
+        return stub.ExecuteOperation(self._operation_request(interop_pb2.OperationRequest.ESTABLISH,
             role=role, config=cfg))
 
     def _cleanup(self) -> None:
         self._vprint("[Driver] Cleaning up...")
-        close_req = interop_pb2.OperationRequest(type=interop_pb2.OperationRequest.CLOSE)
+        close_req = self._operation_request(interop_pb2.OperationRequest.CLOSE)
         for stub, role in [(self.server_stub, "server"), (self.client_stub, "client")]:
             try:
                 self._check_response(stub.ExecuteOperation(close_req), f"CLOSE {role}")
@@ -1066,7 +1079,7 @@ class InteropDriver:
 
     def emergency_cleanup(self, *, grpc_timeout_s: float = _EMERGENCY_CLOSE_GRPC_S) -> None:
         """On cell timeout: CLOSE both roles with a short gRPC deadline (kills wrapper CLI procs)."""
-        close_req = interop_pb2.OperationRequest(type=interop_pb2.OperationRequest.CLOSE)
+        close_req = self._operation_request(interop_pb2.OperationRequest.CLOSE)
         for stub, role in [(self.server_stub, "server"), (self.client_stub, "client")]:
             try:
                 resp = stub.ExecuteOperation(close_req, timeout=max(0.5, grpc_timeout_s))
@@ -1098,14 +1111,14 @@ class InteropDriver:
             time.sleep(_NSS_RESUMPTION_PRE_TRANSMIT_S)
 
         self._vprint(f"[Driver] Transmitting: {_TEST_PAYLOAD.decode()}")
-        r_tx = self.client_stub.ExecuteOperation(interop_pb2.OperationRequest(
-            type=interop_pb2.OperationRequest.TRANSMIT, role=interop_pb2.CLIENT, payload=_TEST_PAYLOAD))
+        r_tx = self.client_stub.ExecuteOperation(self._operation_request(
+            interop_pb2.OperationRequest.TRANSMIT, role=interop_pb2.CLIENT, payload=_TEST_PAYLOAD))
         if not self._check_response(r_tx, "TRANSMIT client"):
             return False
 
         time.sleep(_TRANSMIT_GAP_S)
-        r_srv = self.server_stub.ExecuteOperation(interop_pb2.OperationRequest(
-            type=interop_pb2.OperationRequest.TRANSMIT, role=interop_pb2.SERVER))
+        r_srv = self.server_stub.ExecuteOperation(self._operation_request(
+            interop_pb2.OperationRequest.TRANSMIT, role=interop_pb2.SERVER))
         if not self._check_response(r_srv, "TRANSMIT server"):
             return False
 
