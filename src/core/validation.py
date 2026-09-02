@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+import logging
 import re
-import sys
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -21,6 +21,8 @@ from core.tls_config_view import RoleLike, TlsConfigInput
 
 
 from core.utils import(asymmetric_role_part, norm_token, parse_asymmetric, split_csv_tokens)
+
+logger = logging.getLogger(__name__)
 
 
 def tls_mode_from_version(version: str | None) -> TlsMode:
@@ -195,7 +197,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
     def _pair(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
         return _coerce_cipher_tls13_only(cipher_side, ver_side, caps)
 
-    warn = ("[catalog] TLS 1.3-only cipher with --tls-version 1.2: ",
+    warn_msg = ("[catalog] TLS 1.3-only cipher with --tls-version 1.2: "
         "adjusting protocol version to 1.3 to avoid handshake mismatch.")
 
     if ":" in cs_s and ":" in tv_s:
@@ -204,7 +206,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         nl = _pair(lc.strip(), lv.strip(), srv_caps)
         nr = _pair(rc.strip(), rv.strip(), cli_caps)
         if nl or nr:
-            print(warn, file=sys.stderr)
+            logger.warning("%s", warn_msg)
             setattr(args, "tls_version", f"{nl or lv.strip()}:{nr or rv.strip()}")
         return
     if ":" in tv_s:
@@ -212,7 +214,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         nl = _pair(cs_s, lv.strip(), srv_caps)
         nr = _pair(cs_s, rv.strip(), cli_caps)
         if nl or nr:
-            print(warn, file=sys.stderr)
+            logger.warning("%s", warn_msg)
             setattr(args, "tls_version", f"{nl or lv.strip()}:{nr or rv.strip()}")
         return
     if ":" in cs_s:
@@ -220,7 +222,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         n1 = _pair(lc.strip(), tv_s, srv_caps)
         n2 = _pair(rc.strip(), tv_s, cli_caps)
         if n1 or n2:
-            print(warn, file=sys.stderr)
+            logger.warning("%s", warn_msg)
             setattr(args, "tls_version", f"{n1 or tv_s}:{n2 or tv_s}")
         return
     caps = srv_caps if server and not client else cli_caps
@@ -232,7 +234,7 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
             caps = srv_caps
     n = _pair(cs_s, tv_s, caps)
     if n:
-        print(warn, file=sys.stderr)
+        logger.warning("%s", warn_msg)
         setattr(args, "tls_version", n)
 
 

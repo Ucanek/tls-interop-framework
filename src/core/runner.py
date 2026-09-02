@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 import re
 import threading
@@ -31,15 +32,11 @@ from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.base import wait_tcp_connect
 from core.utils import split_asymmetric_csv
 
+logger = logging.getLogger(__name__)
+
 # Distinct from 0 (pass) and 1 (fail) so matrix runners can show SKIP vs OK / TIMEOUT.
 EXIT_SKIP = 77
 EXIT_TIMEOUT = 78
-
-GREEN = "\033[92m"
-RED = "\033[91m"
-YELLOW = "\033[93m"
-ORANGE = "\033[33m"
-RESET = "\033[0m"
 
 _DEFAULT_GRPC_STARTUP_S = 90.0
 _GRPC_STARTUP_POLL_S = 0.4
@@ -86,7 +83,7 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
         raise FileNotFoundError(f"Missing certs/ bundles ({', '.join(missing)}); "
             f"run scripts/gen_interop_certs.sh or create certs/ manually")
     if verbose:
-        print(f"{YELLOW}Generating identity PEMs ({', '.join(missing)}) via {script}{RESET}")
+        logger.debug("Generating identity PEMs (%s) via %s", ", ".join(missing), script)
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
 
 
@@ -96,7 +93,7 @@ def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
     if not cert_dir.is_dir():
         return
     if verbose:
-        print(f"{YELLOW}Removing generated {cert_dir}{RESET}")
+        logger.debug("Removing generated %s", cert_dir)
     shutil.rmtree(cert_dir, ignore_errors=True)
 
 
@@ -209,7 +206,7 @@ class WrapperSession(BaseExecutionSession):
             return
         if self.attach:
             targets = ", ".join(f"{b} @ {self.grpc_addr(b)}" for b in self.backends)
-            print(f"Attach mode: connecting to existing wrapper(s) on localhost ({targets})")
+            logger.info("Attach mode: connecting to existing wrapper(s) on localhost (%s)", targets)
             return
         try:
             import grpc  # noqa: F401
@@ -227,11 +224,11 @@ class WrapperSession(BaseExecutionSession):
             if in_use:
                 raise RuntimeError(f"Port {port} already in use ({addr}); stop other wrapper processes")
         if self.verbose:
-            print(f"{YELLOW}Starting wrappers: {', '.join(self.backends)}{RESET}")
+            logger.debug("Starting wrappers: %s", ", ".join(self.backends))
         for backend in self.backends:
             cmd = self._wrapper_cmd(backend)
             if self.verbose:
-                print(f"[Wrapper] {backend}: {' '.join(cmd)} (GRPC_PORT from env)")
+                logger.debug("[Wrapper] %s: %s (GRPC_PORT from env)", backend, " ".join(cmd))
             proc = subprocess.Popen(cmd, cwd=self.repo, env=self._wrapper_env(backend), stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE if self.verbose else subprocess.DEVNULL,
                 stderr=subprocess.STDOUT if self.verbose else subprocess.DEVNULL, start_new_session=True)
@@ -350,7 +347,7 @@ class WorkerSlotPool:
         for session in self._sessions:
             session.start()
         if self.verbose:
-            print(f"{YELLOW}Parallel workers: {len(self._sessions)} slot(s), port stride {_WORKER_PORT_STRIDE}{RESET}")
+            logger.debug("Parallel workers: %d slot(s), port stride %d", len(self._sessions), _WORKER_PORT_STRIDE)
 
     def stop(self) -> None:
         for session in self._sessions:
@@ -437,14 +434,6 @@ def wrapper_filesystem_root(session: BaseExecutionSession) -> str:
         root.mkdir(parents=True, exist_ok=True)
         return str(root.resolve())
     return str(session.repo.resolve())
-
-
-def _console_print(console_lock: threading.Lock | None, *args: Any, **kwargs: Any) -> None:
-    if console_lock is not None:
-        with console_lock:
-            print(*args, **kwargs)
-    else:
-        print(*args, **kwargs)
 
 
 def _copy_tls_config(cfg: interop_pb2.TlsConfig) -> interop_pb2.TlsConfig:
@@ -685,7 +674,7 @@ def write_fail_debug_log(repo: Path, *, server: str, client: str,
 
 def _run_driver_test_timed(driver: InteropDriver, server_conf: interop_pb2.TlsConfig,
     client_conf: interop_pb2.TlsConfig, *, tcp_host: str, tcp_port: int, client_wrapper: str,
-    cell_timeout_s: float, verbose: bool) -> tuple[bool | None, bool, Exception | None]:
+    cell_timeout_s: float) -> tuple[bool | None, bool, Exception | None]:
     """
     Run one cell in a worker thread. Returns ``(ok, timed_out, worker_exception)``.
     ``ok`` is None when ``timed_out`` is True.
@@ -707,22 +696,20 @@ def _run_driver_test_timed(driver: InteropDriver, server_conf: interop_pb2.TlsCo
     if not thread.is_alive():
         return holder["ok"], False, holder["exc"]
 
-    if verbose:
-        print(f"{ORANGE}[Driver] cell timeout ({cell_timeout_s}s): sending CLOSE to wrappers{RESET}")
+    logger.debug("[Driver] cell timeout (%.0fs): sending CLOSE to wrappers", cell_timeout_s)
     driver.emergency_cleanup()
     thread.join(timeout=_CELL_TIMEOUT_CLEANUP_WAIT_S)
-    if thread.is_alive() and verbose:
-        print(f"{ORANGE}[Driver] worker still running after emergency cleanup; continuing matrix{RESET}")
+    if thread.is_alive():
+        logger.debug("[Driver] worker still running after emergency cleanup; continuing matrix")
     return None, True, holder["exc"]
 
 
 def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, verbose: bool,
-    debug_logs: DebugRunLogs | None = None, cell_timeout_s: float = _DEFAULT_CELL_TIMEOUT_S,
-    console_lock: threading.Lock | None = None) -> int:
+    debug_logs: DebugRunLogs | None = None, cell_timeout_s: float = _DEFAULT_CELL_TIMEOUT_S) -> int:
     """Run one matrix cell over persistent local wrappers."""
     server = cell.server
     client = cell.client
-    _console_print(console_lock, f"========== {server}x{client} ==========")
+    logger.info("========== %sx%s ==========", server, client)
 
     repo = session.repo
     server_conf = tls_config_from_cell(cell, interop_pb2.SERVER, repo=repo)
@@ -734,23 +721,22 @@ def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, ver
         server_conf, client_conf, repo=session.repo, cell=cell, session=session)
     driver: InteropDriver | None = None
     try:
-        driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
+        driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client))
         driver.server_metadata = session.metadata.get(server)
         driver.client_metadata = session.metadata.get(client)
 
         if skip := driver.scenario_skip_reason_for_configs(server_conf, client_conf):
             if verbose:
-                _console_print(console_lock, f"{YELLOW}[Driver] SKIP: {skip}{RESET}")
+                logger.debug("[Driver] SKIP: %s", skip)
             else:
                 short = skip[:120].replace("\n", " ")
-                _console_print(console_lock, f"{YELLOW}○{RESET}  interop  ({short})")
+                logger.info("SKIP  interop  (%s)", short)
             return EXIT_SKIP
 
         driver._last_skip_reason = None
         driver._last_failure = None
         ok, timed_out, worker_exc = _run_driver_test_timed(driver, server_conf, client_conf,
-            tcp_host=tcp_host, tcp_port=tcp_port, client_wrapper=client, cell_timeout_s=cell_timeout_s,
-            verbose=verbose)
+            tcp_host=tcp_host, tcp_port=tcp_port, client_wrapper=client, cell_timeout_s=cell_timeout_s)
 
         if timed_out:
             summary = f"cell exceeded {cell_timeout_s}s wall-clock limit (CLOSE sent, CLI processes killed)"
@@ -760,11 +746,11 @@ def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, ver
                     server_conf=server_conf, client_conf=client_conf, driver=driver, debug_logs=debug_logs,
                     cell=cell, tcp_host=tcp_host, tcp_port=tcp_port, result_kind="TIMEOUT")
                 rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path
-                _console_print(console_lock, f"{ORANGE}⏱ TEST TIMEOUT! Details saved to: {rel}{RESET}")
+                logger.error("TEST TIMEOUT! Details saved to: %s", rel)
             if verbose:
-                _console_print(console_lock, f"{ORANGE}[Driver] TIMEOUT: {summary}{RESET}")
+                logger.debug("[Driver] TIMEOUT: %s", summary)
             else:
-                _console_print(console_lock, f"{ORANGE}⏱{RESET}  interop  ({summary})")
+                logger.info("TIMEOUT  interop  (%s)", summary)
             return EXIT_TIMEOUT
 
         if worker_exc is not None:
@@ -772,10 +758,10 @@ def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, ver
 
         if driver._last_skip_reason:
             if verbose:
-                _console_print(console_lock, f"{YELLOW}[Driver] SKIP: {driver._last_skip_reason}{RESET}")
+                logger.debug("[Driver] SKIP: %s", driver._last_skip_reason)
                 return EXIT_SKIP
             short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-            _console_print(console_lock, f"{YELLOW}○{RESET}  interop  ({short})")
+            logger.info("SKIP  interop  (%s)", short)
             return EXIT_SKIP
         if not ok:
             if debug_logs is not None:
@@ -783,22 +769,22 @@ def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, ver
                     server_conf=server_conf, client_conf=client_conf, driver=driver, debug_logs=debug_logs,
                     cell=cell, tcp_host=tcp_host, tcp_port=tcp_port)
                 rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path
-                _console_print(console_lock, f"{RED}❌ TEST FAILED! Details saved to: {rel}{RESET}")
+                logger.error("TEST FAILED! Details saved to: %s", rel)
             if verbose:
                 return 1
             detail = ""
             if driver._last_failure:
                 detail = (driver._last_failure[2] or "").replace("\n", " ").strip()[:220]
             suf = f"  ({detail})" if detail else ""
-            _console_print(console_lock, f"{RED}✗{RESET}  interop{suf}")
+            logger.info("FAIL  interop%s", suf)
             return 1
         if verbose:
             return 0
-        _console_print(console_lock, f"{GREEN}✓{RESET}  interop")
+        logger.info("OK  interop")
         return 0
     except Exception as e:
         if driver is None:
-            driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
+            driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client))
             driver._last_failure = ("grpc", FAILURE, str(e))
         else:
             driver._last_failure = driver._last_failure or ("grpc", FAILURE, str(e))
@@ -807,11 +793,11 @@ def run_matrix_cell_grpc(cell: MatrixCell, session: BaseExecutionSession, *, ver
                 server_conf=server_conf, client_conf=client_conf, driver=driver, debug_logs=debug_logs,
                 cell=cell, tcp_host=tcp_host, tcp_port=tcp_port, extra_error=str(e))
             rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path
-            _console_print(console_lock, f"{RED}❌ TEST FAILED! Details saved to: {rel}{RESET}")
+            logger.error("TEST FAILED! Details saved to: %s", rel)
         if verbose:
-            _console_print(console_lock, f"{RED}[Driver] exception: {e}{RESET}")
+            logger.debug("[Driver] exception: %s", e)
         else:
-            _console_print(console_lock, f"{RED}✗{RESET}  interop  ({str(e).replace(chr(10), ' ').strip()[:220]})")
+            logger.info("FAIL  interop  (%s)", str(e).replace("\n", " ").strip()[:220])
         return 1
     finally:
         remove_tls_session_artifact_files(wroot)
@@ -836,7 +822,7 @@ def _wait_grpc_channel_ready(address: str, *, deadline: float, verbose: bool) ->
             return False
         grpc.channel_ready_future(channel).result(timeout=min(3.0, remaining))
         if verbose:
-            print(f"{GREEN}[Driver] gRPC reachable: {address}{RESET}")
+            logger.debug("[Driver] gRPC reachable: %s", address)
         return True
     except (grpc.FutureTimeoutError, Exception):
         return False
@@ -856,8 +842,7 @@ def _operation_response_detail(resp: interop_pb2.OperationResponse) -> str:
 
 
 class InteropDriver:
-    def __init__(self, server_addr: str, client_addr: str, verbose: bool = False) -> None:
-        self._verbose = verbose
+    def __init__(self, server_addr: str, client_addr: str) -> None:
         self.server_addr = server_addr
         self.client_addr = client_addr
         self._last_failure: tuple[str, int, str] | None = None
@@ -897,21 +882,17 @@ class InteropDriver:
             self._last_transmit_server_data = trace.output_data
         return trace
 
-    def _vprint(self, *args: Any, **kwargs: Any) -> None:
-        if self._verbose:
-            print(*args, **kwargs)
-
     def _log_metadata(self, label: str, metadata: interop_pb2.LibraryMetadata) -> None:
         role_names: Mapping[int, str] = {
             interop_pb2.CLIENT: "CLIENT",
             interop_pb2.SERVER: "SERVER",
         }
         roles_str = [role_names.get(r, str(r)) for r in metadata.roles]
-        self._vprint(f"[Driver] {label}: {metadata.component_name} {metadata.version}")
-        self._vprint(f"         roles={roles_str}")
+        logger.debug("[Driver] %s: %s %s", label, metadata.component_name, metadata.version)
+        logger.debug("         roles=%s", roles_str)
         versions = [c.name for c in metadata.supported_versions]
         suf = "..." if len(versions) > 5 else ""
-        self._vprint(f"         supported_versions={versions[:5]}{suf}")
+        logger.debug("         supported_versions=%s%s", versions[:5], suf)
 
     def _metadata_can_negotiate_version(self, metadata: interop_pb2.LibraryMetadata | None,
         capability_name: str, role: int) -> bool:
@@ -989,19 +970,17 @@ class InteropDriver:
         msg = trace.message
         if resp.status == SUCCESS and msg.lower().startswith("skip:"):
             self._last_skip_reason = msg[5:].strip() or "wrapper reported unsupported option"
-            if self._verbose:
-                print(f"{YELLOW}[Driver] {label}: SKIP - {self._last_skip_reason}{RESET}")
+            logger.debug("[Driver] %s: SKIP - %s", label, self._last_skip_reason)
             return False
         if resp.status == SUCCESS:
-            if self._verbose and trace.logs:
+            if trace.logs:
                 first = trace.logs.split("\n", 1)[0]
-                self._vprint(f"[Driver] {label} (wrapper cmd): {first}")
+                logger.debug("[Driver] %s (wrapper cmd): %s", label, first)
             return True
         fail_summary = msg or "no message"
         self._last_failure = (label, resp.status, fail_summary)
-        if self._verbose:
-            lab = "FAILURE" if resp.status == FAILURE else "ERROR"
-            print(f"{RED}[Driver] {label}: {lab} - {fail_summary}{RESET}")
+        lab = "FAILURE" if resp.status == FAILURE else "ERROR"
+        logger.debug("[Driver] %s: %s - %s", label, lab, fail_summary)
         return False
 
     def _check_hrr_assertion(self, resp: interop_pb2.OperationResponse, client_conf: interop_pb2.TlsConfig,
@@ -1010,17 +989,14 @@ class InteropDriver:
             return True
         cw = (client_wrapper or "").strip().lower()
         if cw == "nss":
-            if self._verbose:
-                self._vprint(f"[Driver] {label}: HRR assertion skipped (NSS client cannot provoke HRR reliably)")
+            logger.debug("[Driver] %s: HRR assertion skipped (NSS client cannot provoke HRR reliably)", label)
             return True
         if resp.negotiated.hrr_occurred:
-            if self._verbose:
-                self._vprint(f"{GREEN}[Driver] {label}: HRR assertion OK{RESET}")
+            logger.debug("[Driver] %s: HRR assertion OK", label)
             return True
         summary = "expected Hello Retry Request (expect_hrr=true) but negotiated.hrr_occurred is false"
         self._last_failure = (label, FAILURE, summary)
-        if self._verbose:
-            print(f"{RED}[Driver] {label}: FAILURE - {summary}{RESET}")
+        logger.debug("[Driver] %s: FAILURE - %s", label, summary)
         return False
 
     def _operation_request(self, op_type: int, *, role: int = 0, payload: bytes = b"",
@@ -1040,14 +1016,13 @@ class InteropDriver:
             role=role, config=cfg))
 
     def _cleanup(self) -> None:
-        self._vprint("[Driver] Cleaning up...")
+        logger.debug("[Driver] Cleaning up...")
         close_req = self._operation_request(interop_pb2.OperationRequest.CLOSE)
         for stub, role in [(self.server_stub, "server"), (self.client_stub, "client")]:
             try:
                 self._check_response(stub.ExecuteOperation(close_req), f"CLOSE {role}")
             except Exception as e:
-                msg = f"[Driver] CLOSE {role} exception: {e}"
-                print(msg if self._verbose else f"{RED}FAIL{RESET}  CLOSE {role}: {e}")
+                logger.info("FAIL  CLOSE %s: %s", role, e)
 
     def emergency_cleanup(self, *, grpc_timeout_s: float = _EMERGENCY_CLOSE_GRPC_S) -> None:
         """On cell timeout: CLOSE both roles with a short gRPC deadline (kills wrapper CLI procs)."""
@@ -1060,15 +1035,14 @@ class InteropDriver:
                 trace = OpTrace(label=f"CLOSE {role} (timeout watchdog)", status=interop_pb2.OperationResponse.ERROR,
                     message=str(e), logs="", negotiated=None, output_data=b"")
                 self._op_traces.append(trace)
-                if self._verbose:
-                    print(f"{ORANGE}[Driver] emergency CLOSE {role}: {e}{RESET}")
+                logger.debug("[Driver] emergency CLOSE %s: %s", role, e)
 
     def _run_post_establish_round_trip(self, *, server_conf: interop_pb2.TlsConfig,
         client_conf: interop_pb2.TlsConfig, tcp_host: str, tcp_port: int, ver: str, client_wrapper: str = "") -> bool:
         """Host TCP check, TRANSMIT client→server, verify echoed payload."""
         ok_peer, tcp_err = wait_tcp_connect(tcp_host, int(tcp_port), timeout_s=_TCP_AFTER_ESTABLISH_S)
         if not ok_peer:
-            self._vprint(f"{RED}[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}{RESET}")
+            logger.debug("[Driver] Timeout waiting for TCP %s:%s", tcp_host, tcp_port)
             summary = f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH ({tcp_err})"
             establish_hints: list[str] = []
             for trace in self._op_traces:
@@ -1082,7 +1056,7 @@ class InteropDriver:
         if (client_wrapper or "").strip().lower() == "nss" and tls_config_resumption_or_0rtt_active(client_conf):
             time.sleep(_NSS_RESUMPTION_PRE_TRANSMIT_S)
 
-        self._vprint(f"[Driver] Transmitting: {_TEST_PAYLOAD.decode()}")
+        logger.debug("[Driver] Transmitting: %s", _TEST_PAYLOAD.decode())
         r_tx = self.client_stub.ExecuteOperation(self._operation_request(
             interop_pb2.OperationRequest.TRANSMIT, role=interop_pb2.CLIENT, payload=_TEST_PAYLOAD))
         if not self._check_response(r_tx, "TRANSMIT client"):
@@ -1095,9 +1069,9 @@ class InteropDriver:
             return False
 
         if _TEST_PAYLOAD in r_srv.output_data:
-            self._vprint(f"{GREEN}>>> PASSED: payload echoed (TLS {ver}) <<<{RESET}")
+            logger.debug(">>> PASSED: payload echoed (TLS %s) <<<", ver)
             return True
-        self._vprint(f"{RED}>>> FAILED: echo mismatch <<<{RESET}")
+        logger.debug(">>> FAILED: echo mismatch <<<")
         summary = "server output did not contain echoed payload"
         summary += "\nexpected payload: " + _TEST_PAYLOAD.decode(errors="replace")
         summary += "\nTRANSMIT client output_data:\n" + _format_output_data(self._last_transmit_client_data)
@@ -1110,15 +1084,15 @@ class InteropDriver:
         """Server stays up; client save handshake then resume (final result + logs from resume)."""
         ver = (server_conf.version or "").strip() or "default"
         try:
-            self._vprint(f"[Driver] Resumption/0-RTT round-trip (TLS {ver})")
-            self._vprint("[Driver] Establishing server (persistent)...")
+            logger.debug("[Driver] Resumption/0-RTT round-trip (TLS %s)", ver)
+            logger.debug("[Driver] Establishing server (persistent)...")
             r = self._execute_establish(self.server_stub, interop_pb2.SERVER, server_conf)
             if not self._check_response(r, "ESTABLISH server"):
                 return False
 
             save_conf = _copy_tls_config(client_conf)
             save_conf.resumption_step = "save"
-            self._vprint("[Driver] Resumption step 1: save session ticket...")
+            logger.debug("[Driver] Resumption step 1: save session ticket...")
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, save_conf)
             if not self._check_response(r, "ESTABLISH client (resumption save)"):
                 return False
@@ -1128,7 +1102,7 @@ class InteropDriver:
 
             resume_conf = _copy_tls_config(client_conf)
             resume_conf.resumption_step = "resume"
-            self._vprint("[Driver] Resumption step 2: resume session...")
+            logger.debug("[Driver] Resumption step 2: resume session...")
             r = self._execute_establish(self.client_stub, interop_pb2.CLIENT, resume_conf)
             if not self._check_response(r, "ESTABLISH client (resumption resume)"):
                 return False
@@ -1147,8 +1121,8 @@ class InteropDriver:
                 tcp_host=tcp_host, tcp_port=tcp_port, client_wrapper=client_wrapper)
         ver = (server_conf.version or "").strip() or "default"
         try:
-            self._vprint(f"[Driver] Round-trip (TLS {ver})")
-            self._vprint("[Driver] Establishing connection...")
+            logger.debug("[Driver] Round-trip (TLS %s)", ver)
+            logger.debug("[Driver] Establishing connection...")
             r = self._execute_establish(self.server_stub, interop_pb2.SERVER, server_conf)
             if not self._check_response(r, "ESTABLISH server"):
                 return False

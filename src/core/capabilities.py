@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import logging
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -463,10 +464,11 @@ def option_choice_tokens(item: dict[str, Any]) -> list[str]:
 
 
 def print_catalog_options(repo: Path | None = None) -> None:
+    log = logging.getLogger(__name__)
     for item in load_options_catalog(repo):
         choices = item.get("choices") or []
         ctext = f" choices={choices}" if choices else ""
-        print(f"{item.get('id')}{ctext}")
+        log.info("%s%s", item.get("id"), ctext)
 
 
 def test_features_block(capabilities: dict[str, Any]) -> dict[str, Any]:

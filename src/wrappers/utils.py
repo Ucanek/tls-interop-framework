@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import re
 import shlex
@@ -324,10 +325,11 @@ def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
     import grpc
     from interop_proto import interop_pb2_grpc
 
+    log = logging.getLogger(__name__)
     port = int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
     interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
     server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
-    print(f"{display_name} wrapper listening on {port}...")
+    log.info("%s wrapper listening on %d...", display_name, port)
     server.wait_for_termination()

@@ -5,10 +5,10 @@ from __future__ import annotations
 
 import argparse
 import copy
+import logging
 import queue
 import subprocess
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from itertools import product
 from pathlib import Path
@@ -22,11 +22,7 @@ from core.runner import(EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunL
     WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_interop_certs, remove_interop_certs,
     required_backends_from_matrix, run_matrix_cell_grpc)
 
-GREEN = "\033[92m"
-RED = "\033[91m"
-YELLOW = "\033[93m"
-ORANGE = "\033[33m"
-RESET = "\033[0m"
+logger = logging.getLogger(__name__)
 
 # With ``--suite``, these must not appear on the command line (values come from YAML).
 _SUITE_MATRIX_CLI: dict[str, str] = {"server": "--server", "client": "--client", "cipher_suite": "--cipher-suite",
@@ -34,15 +30,26 @@ _SUITE_MATRIX_CLI: dict[str, str] = {"server": "--server", "client": "--client",
     "test_features": "--test-features"}
 
 
-def _status_for_rc(rc: int) -> tuple[str, str]:
-    """Human label and optional ANSI SGR prefix for stdout (TTY only)."""
+def configure_logging(verbose: bool) -> None:
+    """Configure root logging: INFO by default, DEBUG with ``-v`` / ``--verbose``."""
+    level = logging.DEBUG if verbose else logging.INFO
+    if verbose:
+        fmt = "%(asctime)s %(name)s %(levelname)s %(message)s"
+        datefmt = "%H:%M:%S"
+    else:
+        fmt = "%(message)s"
+        datefmt = None
+    logging.basicConfig(level=level, format=fmt, datefmt=datefmt, stream=sys.stdout, force=True)
+
+
+def _status_for_rc(rc: int) -> str:
     if rc == 0:
-        return "OK", GREEN
+        return "OK"
     if rc == EXIT_SKIP:
-        return "SKIP", YELLOW
+        return "SKIP"
     if rc == EXIT_TIMEOUT:
-        return "TIMEOUT", ORANGE
-    return "FAIL", RED
+        return "TIMEOUT"
+    return "FAIL"
 
 
 def build_parser(_repo: Path) -> argparse.ArgumentParser:
@@ -213,8 +220,7 @@ def _cell_summary_label(cell: MatrixCell) -> str:
 def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
     args_template: argparse.Namespace, repo: Path, known: frozenset[str],
     session: BaseExecutionSession | None = None, debug_logs: DebugRunLogs | None = None,
-    slot_pool: WorkerSlotPool | None = None, slot_queue: queue.Queue[int] | None = None,
-    console_lock: threading.Lock | None = None) -> tuple[str, int]:
+    slot_pool: WorkerSlotPool | None = None, slot_queue: queue.Queue[int] | None = None) -> tuple[str, int]:
     cell = MatrixCell.from_axis(axis_keys, tup)
     cell = normalize_cell_tls_micro_params(cell, args_template, repo)
     label = _cell_summary_label(cell)
@@ -222,10 +228,10 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
     if skip:
         skip_s = skip if isinstance(skip, str) else " ".join(str(x) for x in skip)
         if args_template.verbose:
-            print(f"SKIP (pre-run): {skip_s}", file=sys.stderr)
+            logger.debug("SKIP (pre-run): %s", skip_s)
         else:
             short = skip_s[:120].replace("\n", " ")
-            print(f"{label} | SKIP  ({short})")
+            logger.info("%s | SKIP  (%s)", label, short)
         return label, EXIT_SKIP
 
     slot_id: int | None = None
@@ -243,7 +249,7 @@ def _run_matrix_cell(tup: tuple[Any, ...], *, axis_keys: list[str],
             setattr(cell_ns, k, mapping[k])
         validate_run_args(cell_ns, known_wrappers=known, repo=repo)
         rc = run_matrix_cell_grpc(cell, active_session, verbose=bool(args_template.verbose), debug_logs=debug_logs,
-            cell_timeout_s=float(args_template.cell_timeout), console_lock=console_lock)
+            cell_timeout_s=float(args_template.cell_timeout))
         return label, rc
     finally:
         if slot_pool is not None and slot_queue is not None and slot_id is not None:
@@ -255,19 +261,18 @@ def _run_matrix_parallel(combos: list[tuple[Any, ...]], *, axis_keys: list[str],
     jobs: int) -> list[tuple[str, int]]:
     effective_jobs = min(max(1, jobs), len(combos), _MAX_PARALLEL_JOBS)
     if effective_jobs < jobs:
-        print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
+        logger.info("Note: --jobs %d capped to %d for this matrix", jobs, effective_jobs)
     slot_pool = WorkerSlotPool(repo, backends, effective_jobs, verbose=bool(args.verbose),
         grpc_base_overrides=grpc_port_overrides_from_args(args))
     slot_queue: queue.Queue[int] = queue.Queue()
     for i in range(effective_jobs):
         slot_queue.put(i)
-    console_lock = threading.Lock()
     slot_pool.start()
     try:
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
             return list(executor.map(
                 lambda tup: _run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo, known=known,
-                    debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue, console_lock=console_lock),
+                    debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue),
                 combos))
     finally:
         slot_pool.stop()
@@ -277,6 +282,7 @@ def main() -> int:
     repo = repository_root()
     parser = build_parser(repo)
     args = parser.parse_args()
+    configure_logging(bool(args.verbose))
     cleanup_certs = False
     try:
         enforce_suite_cli_exclusivity(args, parser)
@@ -285,7 +291,7 @@ def main() -> int:
 
         if args.list_wrappers:
             for name in discover_wrapper_ids(repo):
-                print(name)
+                logger.info(name)
             return 0
         if args.list_options:
             print_catalog_options(repo)
@@ -319,7 +325,7 @@ def main() -> int:
             for av in axis_vals:
                 n_tests *= len(av)
             combos = list(product(*axis_vals))
-        print(f"Running matrix of {n_tests} tests...")
+        logger.info("Running matrix of %d tests...", n_tests)
         debug_logs: DebugRunLogs | None = DebugRunLogs(repo) if combos else None
         if combos:
             ensure_interop_certs(repo, verbose=bool(args.verbose))
@@ -343,35 +349,31 @@ def main() -> int:
                     results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
                         known=known, session=session, debug_logs=debug_logs))
         except TimeoutError as e:
-            print(e, file=sys.stderr)
+            logger.error("%s", e)
             return 2
         except subprocess.CalledProcessError as e:
-            print(f"Backend startup failed: {e}", file=sys.stderr)
+            logger.error("Backend startup failed: %s", e)
             return 2
         except RuntimeError as e:
-            print(f"Wrapper startup failed: {e}", file=sys.stderr)
+            logger.error("Wrapper startup failed: %s", e)
             return 2
         finally:
             if session is not None:
                 session.stop()
 
-        print("\n--- Results ---")
-        use_color = sys.stdout.isatty()
+        logger.info("")
+        logger.info("--- Results ---")
         for label, rc in results:
-            text, color = _status_for_rc(rc)
-            if use_color:
-                print(f"{label} | {color}{text}{RESET}")
-            else:
-                print(f"{label} | {text}")
+            logger.info("%s | %s", label, _status_for_rc(rc))
         if any(rc not in (0, EXIT_SKIP) for _, rc in results):
             if debug_logs is not None and debug_logs.ready:
                 run_dir = debug_logs.path
                 rel = run_dir.relative_to(repo) if run_dir and run_dir.is_relative_to(repo) else run_dir
-                print(f"{RED}Debug logs for this run: {rel}/{RESET}")
+                logger.error("Debug logs for this run: %s/", rel)
             return 1
         return 0
     except ValueError as e:
-        print(e, file=sys.stderr)
+        logger.error("%s", e)
         return 2
     finally:
         if cleanup_certs:
