@@ -21,18 +21,39 @@ from typing import Any
 
 from core.constants import TlsFeature
 from core.orchestration_context import active_orchestration_context
-from core.capabilities import(TranslationResult, cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities, load_local_capabilities, psk_material_from_capabilities, repository_root)
+from core.capabilities import (
+    TranslationResult,
+    cipher_catalog_id_requires_anon,
+    cipher_catalog_id_requires_psk,
+    cipher_maps_from_capabilities,
+    load_local_capabilities,
+    psk_material_from_capabilities,
+    repository_root,
+)
 from core.registry import wrappers_plugin_dir
 from core.identity import repeated_config_tokens
 from core.tls_config_view import RoleLike, TlsConfigLike
 from core.utils import norm_catalog_token
 from interop_proto import interop_pb2
-from wrappers.base import(BaseTemplateWrapper, WrapperSessionState,
-    format_executed_command, popen_stdio_merged, serve_insecure)
-from wrappers.nss.nss_db import(_ensure_nss_db_identities, get_nss_library_version,
-    nss_interop_identity_import_rows, nss_server_nickname_for_config, resolve_cli_tool as nss_resolve_cli_tool)
-from wrappers.utils import(standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
+from wrappers.base import (
+    BaseTemplateWrapper,
+    WrapperSessionState,
+    format_executed_command,
+    popen_stdio_merged,
+    serve_insecure,
+)
+from wrappers.nss.nss_db import (
+    _ensure_nss_db_identities,
+    get_nss_library_version,
+    nss_interop_identity_import_rows,
+    nss_server_nickname_for_config,
+    resolve_cli_tool as nss_resolve_cli_tool,
+)
+from wrappers.utils import (
+    standard_library_metadata,
+    test_feature_enabled_in_config,
+    tls_mode_12_or_13,
+)
 
 CAPABILITIES = load_local_capabilities(__file__)
 
@@ -84,8 +105,11 @@ def _nss_psk_z_argv(config: TlsConfigLike, caps: dict[str, Any]) -> list[str]:
     if tls_mode_12_or_13(config) != "1.3":
         return []
     raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
-    cipher_for_psk = (raw_cipher if raw_cipher and cipher_catalog_id_requires_psk(raw_cipher)
-        else "psk-aes-128-gcm-sha256")
+    cipher_for_psk = (
+        raw_cipher
+        if raw_cipher and cipher_catalog_id_requires_psk(raw_cipher)
+        else "psk-aes-128-gcm-sha256"
+    )
     mat = psk_material_from_capabilities(caps, cipher_for_psk)
     if not mat:
         return []
@@ -93,8 +117,12 @@ def _nss_psk_z_argv(config: TlsConfigLike, caps: dict[str, Any]) -> list[str]:
     return ["-z", f"0x{secret_hex}:{identity}"]
 
 
-def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
-    capabilities: dict[str, Any] | None = None) -> TranslationResult:
+def _build_tls_argv(
+    config: TlsConfigLike,
+    *,
+    role: RoleLike | None = None,
+    capabilities: dict[str, Any] | None = None,
+) -> TranslationResult:
     del role
     caps = capabilities if capabilities is not None else CAPABILITIES
     argv: list[str] = []
@@ -112,7 +140,10 @@ def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
             unsupported.append(f"cipher_suite:{raw_cipher!r} (no NSS -c mapping)")
 
     if mode == "1.3":
-        for field, csv_flag in (("supported_groups", "-I"), ("signature_schemes", "-J")):
+        for field, csv_flag in (
+            ("supported_groups", "-I"),
+            ("signature_schemes", "-J"),
+        ):
             items = repeated_config_tokens(config, field)
             if not items:
                 continue
@@ -189,8 +220,13 @@ class NSSWrapper(BaseTemplateWrapper):
     CAPABILITIES = CAPABILITIES
 
     @classmethod
-    def tls_argv_for_config(cls, config: Any, *, role: Any | None = None,
-        capabilities: dict[str, Any] | None = None) -> TranslationResult:
+    def tls_argv_for_config(
+        cls,
+        config: Any,
+        *,
+        role: Any | None = None,
+        capabilities: dict[str, Any] | None = None,
+    ) -> TranslationResult:
         return _build_tls_argv(config, role=role, capabilities=capabilities)
 
     @classmethod
@@ -198,20 +234,25 @@ class NSSWrapper(BaseTemplateWrapper):
         return nss_resolve_cli_tool(exe)
 
     @classmethod
-    def orchestration_env(cls, active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+    def orchestration_env(
+        cls, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]:
         if "gnutls" in active_backends and "nss" in active_backends:
             return {_GNUTLS_NSS_PAIR_ENV: "1"}
         return {_GNUTLS_NSS_PAIR_ENV: "0"}
 
     @classmethod
-    def local_wrapper_env(cls, repo: Path, backend_id: str,
-        active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+    def local_wrapper_env(
+        cls, repo: Path, backend_id: str, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]:
         del active_backends
         return {"NSSDB": str(nss_db_directory(repo, backend_id))}
 
     def __init__(self) -> None:
         super().__init__()
-        self._nssdb = os.environ.get("NSSDB", str(nss_db_directory(repository_root(), "nss")))
+        self._nssdb = os.environ.get(
+            "NSSDB", str(nss_db_directory(repository_root(), "nss"))
+        )
         self._selfserv = type(self).resolve_cli_tool("selfserv") or "selfserv"
         self._tstclnt = type(self).resolve_cli_tool("tstclnt") or "tstclnt"
         self._nss_db_ready = False
@@ -225,7 +266,9 @@ class NSSWrapper(BaseTemplateWrapper):
             if self._nss_db_ready:
                 return
             repo = _nss_repo_root(self._nssdb)
-            _ensure_nss_db_identities(self._nssdb, nss_interop_identity_import_rows(repo=repo))
+            _ensure_nss_db_identities(
+                self._nssdb, nss_interop_identity_import_rows(repo=repo)
+            )
             self._nss_db_ready = True
 
     def _cleanup_nss_db(self) -> None:
@@ -249,7 +292,9 @@ class NSSWrapper(BaseTemplateWrapper):
     def GetMetadata(self, request, context):
         self._ensure_nss_db_ready()
         version = get_nss_library_version() or "unknown"
-        return standard_library_metadata(self._component_name, version, capabilities=CAPABILITIES)
+        return standard_library_metadata(
+            self._component_name, version, capabilities=CAPABILITIES
+        )
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
         text = stdout or ""
@@ -259,7 +304,11 @@ class NSSWrapper(BaseTemplateWrapper):
             out["protocol_version"] = m.group(1).strip()
         if m2 := re.search(r"Cipher\s*Suite\s*:\s*(\S+)", text, re.IGNORECASE):
             out["cipher_suite"] = m2.group(1).strip()
-        if m3 := re.search(r"(?:Negotiated\s+ECC|Named\s+Curve|Group)\s*[:=]\s*(\S+)", text, re.IGNORECASE):
+        if m3 := re.search(
+            r"(?:Negotiated\s+ECC|Named\s+Curve|Group)\s*[:=]\s*(\S+)",
+            text,
+            re.IGNORECASE,
+        ):
             out["named_group"] = m3.group(1).strip()
         return out
 
@@ -297,7 +346,9 @@ class NSSWrapper(BaseTemplateWrapper):
         self._ensure_nss_db_ready()
         return _tls_version_range(config)
 
-    def _build_common_args(self, config: interop_pb2.TlsConfig, *, for_server: bool) -> list[str]:
+    def _build_common_args(
+        self, config: interop_pb2.TlsConfig, *, for_server: bool
+    ) -> list[str]:
         args = list(self._nss_tls_argv(config))
         if for_server:
             if test_feature_enabled_in_config(config, "mtls"):
@@ -319,8 +370,19 @@ class NSSWrapper(BaseTemplateWrapper):
     def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
         nss_ver = self._nss_prepare(config)
         port = int(config.port)
-        cmd = ["stdbuf", "-o0", self._selfserv, "-d", self._db_spec(), "-n", self._nss_server_nickname(config),
-            "-p", str(port), *self._nss_version_args(nss_ver), *self._build_common_args(config, for_server=True)]
+        cmd = [
+            "stdbuf",
+            "-o0",
+            self._selfserv,
+            "-d",
+            self._db_spec(),
+            "-n",
+            self._nss_server_nickname(config),
+            "-p",
+            str(port),
+            *self._nss_version_args(nss_ver),
+            *self._build_common_args(config, for_server=True),
+        ]
         proc, logs = self._popen_merged_cmd(cmd)
         return proc, logs, "NSS Server started"
 
@@ -333,12 +395,25 @@ class NSSWrapper(BaseTemplateWrapper):
         host = config.server_hostname or "localhost"
         port = int(config.port)
         peer, extra = nss_tstclnt_host_and_extra_argv(host, port)
-        cmd = [self._tstclnt, "-d", self._db_spec(), "-h", peer,
-            *self._build_common_args(config, for_server=False)]
+        cmd = [
+            self._tstclnt,
+            "-d",
+            self._db_spec(),
+            "-h",
+            peer,
+            *self._build_common_args(config, for_server=False),
+        ]
         if (has_resumption or has_0rtt) and step == "resume":
             cmd.append("-R")
-        cmd.extend(["-p", str(port), *extra, *self._nss_version_args(nss_ver),
-            *self._session_ticket_args(config)])
+        cmd.extend(
+            [
+                "-p",
+                str(port),
+                *extra,
+                *self._nss_version_args(nss_ver),
+                *self._session_ticket_args(config),
+            ]
+        )
         proc, logs = self._popen_merged_cmd(cmd)
         return proc, logs, "NSS Client connected"
 

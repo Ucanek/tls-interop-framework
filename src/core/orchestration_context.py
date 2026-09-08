@@ -22,8 +22,12 @@ _current: OrchestrationContext | None = None
 def orchestration_context_from_environ() -> OrchestrationContext:
     pair_raw = (os.environ.get("INTEROP_GNUTLS_NSS_PAIR") or "0").strip().lower()
     return OrchestrationContext(
-        server_signature_schemes=(os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES") or "").strip(),
-        asymmetric_signature_schemes=(os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip(),
+        server_signature_schemes=(
+            os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES") or ""
+        ).strip(),
+        asymmetric_signature_schemes=(
+            os.environ.get("INTEROP_SIGNATURE_SCHEMES") or ""
+        ).strip(),
         gnutls_nss_pair=pair_raw in frozenset({"1", "true", "yes", "on"}),
     )
 

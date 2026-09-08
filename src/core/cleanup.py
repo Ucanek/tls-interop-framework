@@ -12,7 +12,9 @@ from pathlib import Path
 logger = logging.getLogger(__name__)
 
 
-def remove_directory_tree(path: Path | str, *, verbose: bool = False, label: str = "") -> None:
+def remove_directory_tree(
+    path: Path | str, *, verbose: bool = False, label: str = ""
+) -> None:
     """Remove a directory tree when it exists."""
     root = Path(path)
     if not root.is_dir():
@@ -31,14 +33,20 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
     from core.identity import IDENTITY_PREFIXES
 
     cert_dir = repo / "certs"
-    missing = [prefix for prefix in IDENTITY_PREFIXES if not (cert_dir / f"{prefix}.crt").is_file()
-        or not (cert_dir / f"{prefix}.key").is_file()]
+    missing = [
+        prefix
+        for prefix in IDENTITY_PREFIXES
+        if not (cert_dir / f"{prefix}.crt").is_file()
+        or not (cert_dir / f"{prefix}.key").is_file()
+    ]
     if not missing:
         return
     script = repo / "scripts" / "gen_interop_certs.sh"
     if not script.is_file():
-        raise FileNotFoundError(f"Missing certs/ bundles ({', '.join(missing)}); "
-            f"run scripts/gen_interop_certs.sh or create certs/ manually")
+        raise FileNotFoundError(
+            f"Missing certs/ bundles ({', '.join(missing)}); "
+            f"run scripts/gen_interop_certs.sh or create certs/ manually"
+        )
     if verbose:
         logger.debug("Generating identity PEMs (%s) via %s", ", ".join(missing), script)
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
@@ -50,7 +58,9 @@ def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
 
 
 @contextmanager
-def matrix_identity_certs(repo: Path, *, enabled: bool, verbose: bool = False) -> Iterator[None]:
+def matrix_identity_certs(
+    repo: Path, *, enabled: bool, verbose: bool = False
+) -> Iterator[None]:
     """Ensure repo ``certs/`` for a matrix run and remove the tree on exit when ``enabled``."""
     if not enabled:
         yield

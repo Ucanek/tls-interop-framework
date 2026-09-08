@@ -34,8 +34,10 @@ def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
+        return (
+            [p.strip() for p in left.split(",") if p.strip()],
+            [p.strip() for p in right.split(",") if p.strip()],
+        )
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
 

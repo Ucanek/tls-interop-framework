@@ -6,12 +6,24 @@ import re
 from pathlib import Path
 from typing import Any, Sequence
 
-from core.capabilities import(CAPABILITY_DIMENSIONS, NON_MATRIX_OPTION_IDS, NON_TLS_OPTION_IDS, TlsMode,
-    backend_cipher_modes, capability_dimension_name, default_cipher_for_tls_mode, dimension_keys,
-    load_capabilities, load_capabilities_cache, load_options_catalog, option_choice_tokens, repository_root,
-    union_cipher_suite_ids_for_wrappers)
+from core.capabilities import (
+    CAPABILITY_DIMENSIONS,
+    NON_MATRIX_OPTION_IDS,
+    NON_TLS_OPTION_IDS,
+    TlsMode,
+    backend_cipher_modes,
+    capability_dimension_name,
+    default_cipher_for_tls_mode,
+    dimension_keys,
+    load_capabilities,
+    load_capabilities_cache,
+    load_options_catalog,
+    option_choice_tokens,
+    repository_root,
+    union_cipher_suite_ids_for_wrappers,
+)
 from core.matrix_cell import MatrixCell
-from core.utils import asymmetric_role_part, parse_asymmetric, split_csv_tokens
+from core.utils import parse_asymmetric
 from core.validation import tls_mode_filter_from_args, tls_mode_from_version
 
 
@@ -53,13 +65,21 @@ def expand_dimension(value: str, choices: Sequence[str]) -> list[str]:
         raise ValueError(f"Empty dimension value: {value!r}")
     bad = [p for p in parts if p not in base]
     if bad:
-        raise ValueError(f"Unknown value(s) {bad!r}; known: {', '.join(sorted(set(base)))}")
+        raise ValueError(
+            f"Unknown value(s) {bad!r}; known: {', '.join(sorted(set(base)))}"
+        )
     return parts
 
 
-def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequence[str],
-    caps_by_wrapper: dict[str, dict[str, Any]], catalog_choices: Sequence[str],
-    tls_mode: TlsMode | None = None) -> list[str]:
+def expand_capability_dimension(
+    value: str,
+    dimension: str,
+    *,
+    wrapper_ids: Sequence[str],
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    catalog_choices: Sequence[str],
+    tls_mode: TlsMode | None = None,
+) -> list[str]:
     """Expand ALL / lists using per-backend ``capabilities.json`` keys."""
     v = (value or "").strip()
     catalog_tokens = [str(c).strip() for c in catalog_choices if c and str(c).strip()]
@@ -68,10 +88,18 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
     if re.match(r"(?is)^ALL\s*$", v):
         keys: set[str] = set()
         if dimension == "cipher_suite" and cipher_mode is not None:
-            keys.update(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
         else:
             for wid in wrapper_ids:
-                keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode))
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode
+                    )
+                )
         if keys:
             return sorted(keys)
         return list(catalog_tokens)
@@ -81,10 +109,18 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
         excl = {x.strip() for x in sub.group(1).split(",") if x.strip()}
         keys: set[str] = set()
         if dimension == "cipher_suite" and cipher_mode is not None:
-            keys.update(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
         else:
             for wid in wrapper_ids:
-                keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode))
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode
+                    )
+                )
         if not keys:
             keys = set(catalog_tokens)
         out = sorted(k for k in keys if k not in excl)
@@ -98,7 +134,11 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
     expanded = expand_dimension(v, catalog_tokens)
     if dimension != "cipher_suite" or cipher_mode is None:
         return expanded
-    allowed = set(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(
+            caps_by_wrapper, wrapper_ids, mode=cipher_mode
+        )
+    )
     filtered = [x for x in expanded if x in allowed]
     if not filtered and not v.strip():
         default = default_cipher_for_tls_mode(cipher_mode, allowed=allowed)
@@ -108,8 +148,13 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
     return filtered
 
 
-def expand_alpn_matrix_axis(value: str, *, wrapper_ids: Sequence[str],
-    caps_by_wrapper: dict[str, dict[str, Any]], catalog_choices: Sequence[str]) -> list[str]:
+def expand_alpn_matrix_axis(
+    value: str,
+    *,
+    wrapper_ids: Sequence[str],
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    catalog_choices: Sequence[str],
+) -> list[str]:
     """
     Expand ALPN matrix values into ``server:client`` pairs.
 
@@ -120,10 +165,20 @@ def expand_alpn_matrix_axis(value: str, *, wrapper_ids: Sequence[str],
     if not v:
         return [""]
     if ":" in v:
-        return expand_capability_dimension(v, "alpn_protocols", wrapper_ids=wrapper_ids,
-            caps_by_wrapper=caps_by_wrapper, catalog_choices=catalog_choices)
-    tokens = expand_capability_dimension(v, "alpn_protocols", wrapper_ids=wrapper_ids,
-        caps_by_wrapper=caps_by_wrapper, catalog_choices=catalog_choices)
+        return expand_capability_dimension(
+            v,
+            "alpn_protocols",
+            wrapper_ids=wrapper_ids,
+            caps_by_wrapper=caps_by_wrapper,
+            catalog_choices=catalog_choices,
+        )
+    tokens = expand_capability_dimension(
+        v,
+        "alpn_protocols",
+        wrapper_ids=wrapper_ids,
+        caps_by_wrapper=caps_by_wrapper,
+        catalog_choices=catalog_choices,
+    )
     if not tokens or tokens == [""]:
         return [""]
     return [f"{srv}:{cli}" for srv in tokens for cli in tokens]
@@ -133,7 +188,9 @@ def _cell_cipher_id(cell: MatrixCell, *, server: bool) -> str:
     return cell.cipher_id(server=server)
 
 
-def effective_cell_tls_mode(cell: MatrixCell, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> TlsMode:
+def effective_cell_tls_mode(
+    cell: MatrixCell, srv_caps: dict[str, Any], cli_caps: dict[str, Any]
+) -> TlsMode:
     """Infer TLS 1.2 vs 1.3 from explicit version or cipher capabilities sections."""
     tv = (cell.tls_version or "").strip()
     if tv and ":" not in tv:
@@ -156,7 +213,9 @@ def effective_cell_tls_mode(cell: MatrixCell, srv_caps: dict[str, Any], cli_caps
     return "1.3"
 
 
-def _implicit_tls_version_for_side(cell: MatrixCell, *, server: bool, caps: dict[str, Any]) -> str:
+def _implicit_tls_version_for_side(
+    cell: MatrixCell, *, server: bool, caps: dict[str, Any]
+) -> str:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
         return ""
@@ -168,7 +227,9 @@ def _implicit_tls_version_for_side(cell: MatrixCell, *, server: bool, caps: dict
     return ""
 
 
-def normalize_cell_tls_micro_params(cell: MatrixCell, args_template: Any, repo: Path) -> MatrixCell:
+def normalize_cell_tls_micro_params(
+    cell: MatrixCell, args_template: Any, repo: Path
+) -> MatrixCell:
     """
     Infer ``tls_version`` from cipher ``tls13``/``tls12`` sections; for TLS 1.2 ciphers
     drop orthogonal dims unless the user set them on the CLI.
@@ -196,19 +257,27 @@ def normalize_cell_tls_micro_params(cell: MatrixCell, args_template: Any, repo: 
             else:
                 out["tls_version"] = sv or cv
 
-    if effective_cell_tls_mode(MatrixCell.from_mapping(out), srv_caps, cli_caps) != "1.2":
-        out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
+    if (
+        effective_cell_tls_mode(MatrixCell.from_mapping(out), srv_caps, cli_caps)
+        != "1.2"
+    ):
+        out["test_features"] = str(
+            getattr(args_template, "test_features", "") or ""
+        ).strip()
         return MatrixCell.from_mapping(out)
     for dim in TLS13_ORTHOGONAL_DIMS:
         user_raw = str(getattr(args_template, dim, "") or "").strip()
         if not user_raw:
             out[dim] = ""
-    out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
+    out["test_features"] = str(
+        getattr(args_template, "test_features", "") or ""
+    ).strip()
     return MatrixCell.from_mapping(out)
 
 
-def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
-    repo: Path | None = None) -> tuple[list[str], list[list[Any]]]:
+def matrix_axis_plan(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> tuple[list[str], list[list[Any]]]:
     """Capability-driven matrix axes (ALL/SKIP, TLS 1.2/1.3)."""
     root = repo or repository_root()
     wr = sorted(known_wrappers)
@@ -224,7 +293,11 @@ def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
 
     for item in sorted(catalog, key=lambda x: str(x.get("id", ""))):
         oid = item["id"]
-        if oid in NON_TLS_OPTION_IDS or oid == "tls_port" or oid in NON_MATRIX_OPTION_IDS:
+        if (
+            oid in NON_TLS_OPTION_IDS
+            or oid == "tls_port"
+            or oid in NON_MATRIX_OPTION_IDS
+        ):
             continue
         ch = item.get("choices") or []
         keys.append(oid)
@@ -232,12 +305,25 @@ def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
         raw = str(getattr(args, oid, "") or "")
         if oid in CAPABILITY_DIMENSIONS and tokens:
             if oid == "alpn":
-                vals.append(expand_alpn_matrix_axis(raw, wrapper_ids=sorted(matrix_wrappers),
-                    caps_by_wrapper=caps_cache, catalog_choices=tokens))
+                vals.append(
+                    expand_alpn_matrix_axis(
+                        raw,
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                    )
+                )
             else:
-                vals.append(expand_capability_dimension(raw, capability_dimension_name(oid),
-                    wrapper_ids=sorted(matrix_wrappers), caps_by_wrapper=caps_cache, catalog_choices=tokens,
-                    tls_mode=cipher_tls_mode if oid == "cipher_suite" else None))
+                vals.append(
+                    expand_capability_dimension(
+                        raw,
+                        capability_dimension_name(oid),
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                        tls_mode=cipher_tls_mode if oid == "cipher_suite" else None,
+                    )
+                )
         elif tokens:
             vals.append(expand_dimension(raw, tokens))
         else:

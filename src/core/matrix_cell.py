@@ -72,7 +72,12 @@ class MatrixCell:
         return self.scalar("cipher_suite", server=server)
 
     def truthy(self, field: str) -> bool:
-        return (getattr(self, field, "") or "").strip().lower() in ("true", "1", "yes", "on")
+        return (getattr(self, field, "") or "").strip().lower() in (
+            "true",
+            "1",
+            "yes",
+            "on",
+        )
 
     def with_fields(self, **kwargs: Any) -> MatrixCell:
         return replace(self, **kwargs)

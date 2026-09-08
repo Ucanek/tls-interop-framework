@@ -7,20 +7,51 @@ import re
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Literal
+from typing import Any
 
-from core.crypto_semantics import Tls12CipherMetadata, tls12_cipher_metadata_from_name
-from core.capabilities import(ASYMMETRIC_SCALAR_OPTION_IDS, MULTI_VALUE_OPTION_IDS,
-    NON_TLS_OPTION_IDS, TlsMode, backend_cipher_modes, backend_supports_cipher, backend_supports_token,
-    capability_dimension_name, cipher_catalog_id_requires_identity_pem, cipher_required_test_feature,
-    enabled_test_features_from_cell, load_capabilities, load_options_catalog, option_choice_tokens,
-    parse_test_features_enabled, repository_root, test_feature_supported, test_feature_wired,
-    tls_argv_for_config, wrapper_runtime_config)
+from core.crypto_semantics import tls12_semantic_skip_reason_side
+from core.capabilities import (
+    ASYMMETRIC_SCALAR_OPTION_IDS,
+    MULTI_VALUE_OPTION_IDS,
+    NON_TLS_OPTION_IDS,
+    TLS13_ORTHOGONAL_DIMS,
+    TlsMode,
+    backend_cipher_modes,
+    backend_supports_cipher,
+    backend_supports_token,
+    capability_dimension_name,
+    cipher_catalog_id_requires_identity_pem,
+    cipher_required_test_feature,
+    enabled_test_features_from_cell,
+    is_cipher_tls13_only,
+    load_capabilities,
+    load_capabilities_cache,
+    load_options_catalog,
+    option_choice_tokens,
+    parse_test_features_enabled,
+    repository_root,
+    test_feature_supported,
+    test_feature_wired,
+    tls_argv_for_config,
+    union_cipher_suite_ids_for_wrappers,
+    wrapper_runtime_config,
+)
+from core.identity import (
+    get_cert_prefix_for_cipher_suite,
+    get_cert_prefix_for_schemes,
+    identity_pem_present,
+)
 from core.matrix_cell import MatrixCell
 from core.tls_config_view import RoleLike, TlsConfigInput
+from interop_proto import interop_pb2
 
 
-from core.utils import(asymmetric_role_part, norm_token, parse_asymmetric, split_csv_tokens)
+from core.utils import (
+    asymmetric_role_part,
+    norm_token,
+    parse_asymmetric,
+    split_csv_tokens,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +91,11 @@ def tls_mode_filter_from_args(args: Any) -> TlsMode | None:
         return None
     if ":" in raw:
         left, right = parse_asymmetric(raw)
-        if left and right and tls_mode_from_version(left) == tls_mode_from_version(right):
+        if (
+            left
+            and right
+            and tls_mode_from_version(left) == tls_mode_from_version(right)
+        ):
             return tls_mode_from_version(left)
         return None
     return tls_mode_from_version(raw)
@@ -71,7 +106,9 @@ def parse_csv_values(raw: str, arg_name: str) -> list[str]:
         return []
     values = [part.strip() for part in raw.split(",")]
     if any(not v for v in values):
-        raise ValueError(f"{arg_name} must be a comma-separated list of non-empty values")
+        raise ValueError(
+            f"{arg_name} must be a comma-separated list of non-empty values"
+        )
     return values
 
 
@@ -92,7 +129,9 @@ def _config_has_value(config: TlsConfigInput, field: str) -> bool:
     return bool(str(raw).strip())
 
 
-def unsupported_cli_params(config: TlsConfigInput, backend: str, repo: Path | None = None) -> list[str]:
+def unsupported_cli_params(
+    config: TlsConfigInput, backend: str, repo: Path | None = None
+) -> list[str]:
     """
     Return unsupported non-empty ``TlsConfig`` fields for a backend CLI.
 
@@ -111,8 +150,14 @@ def unsupported_cli_params(config: TlsConfigInput, backend: str, repo: Path | No
     return bad
 
 
-def catalog_parameter_conflicts(config: TlsConfigInput, backend: str, *, role: RoleLike | None = None,
-    capabilities: dict[str, Any] | None = None, repo: Path | None = None) -> list[str]:
+def catalog_parameter_conflicts(
+    config: TlsConfigInput,
+    backend: str,
+    *,
+    role: RoleLike | None = None,
+    capabilities: dict[str, Any] | None = None,
+    repo: Path | None = None,
+) -> list[str]:
     """
     Union of ``unsupported_cli_params`` and capability-translator unsupported
     entries (deduplicated, stable order).
@@ -124,7 +169,9 @@ def catalog_parameter_conflicts(config: TlsConfigInput, backend: str, *, role: R
             seen.add(item)
             out.append(item)
     if capabilities:
-        for item in tls_argv_for_config(config, backend, capabilities, role=role).unsupported:
+        for item in tls_argv_for_config(
+            config, backend, capabilities, role=role
+        ).unsupported:
             if item not in seen:
                 seen.add(item)
                 out.append(item)
@@ -151,16 +198,21 @@ def run_args_tls_config_view(args: Any, *, server: bool) -> SimpleNamespace:
         return split_csv_tokens(asymmetric_role_part(str(raw), server=server))
 
     version = pick_scalar("tls_version") or "1.3"
-    return SimpleNamespace(version=version, cipher_suite=pick_scalar("cipher_suite"),
+    return SimpleNamespace(
+        version=version,
+        cipher_suite=pick_scalar("cipher_suite"),
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
         alpn_protocols=pick_list("alpn"),
-        psk_modes=sorted(parse_test_features_enabled(",".join(pick_list("test_features")))))
+        psk_modes=sorted(
+            parse_test_features_enabled(",".join(pick_list("test_features")))
+        ),
+    )
 
 
-def _coerce_cipher_tls13_only(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
-    from core.capabilities import is_cipher_tls13_only
-
+def _coerce_cipher_tls13_only(
+    cipher_side: str, ver_side: str, caps: dict[str, Any]
+) -> str | None:
     if not tls_version_forces_12(ver_side):
         return None
     cid = (cipher_side or "").strip()
@@ -171,7 +223,9 @@ def _coerce_cipher_tls13_only(cipher_side: str, ver_side: str, caps: dict[str, A
     return None
 
 
-def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = None) -> None:
+def coerce_tls_version_for_cipher_capabilities(
+    args: Any, repo: Path | None = None
+) -> None:
     """
     If ``--tls-version`` pins TLS 1.2 but the cipher exists only under ``tls13`` in
     the active server/client capabilities, bump version to 1.3 for that side.
@@ -197,8 +251,10 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
     def _pair(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
         return _coerce_cipher_tls13_only(cipher_side, ver_side, caps)
 
-    warn_msg = ("[catalog] TLS 1.3-only cipher with --tls-version 1.2: "
-        "adjusting protocol version to 1.3 to avoid handshake mismatch.")
+    warn_msg = (
+        "[catalog] TLS 1.3-only cipher with --tls-version 1.2: "
+        "adjusting protocol version to 1.3 to avoid handshake mismatch."
+    )
 
     if ":" in cs_s and ":" in tv_s:
         lc, rc = cs_s.split(":", 1)
@@ -227,7 +283,9 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         return
     caps = srv_caps if server and not client else cli_caps
     if server and client:
-        modes = backend_cipher_modes(srv_caps, cs_s) | backend_cipher_modes(cli_caps, cs_s)
+        modes = backend_cipher_modes(srv_caps, cs_s) | backend_cipher_modes(
+            cli_caps, cs_s
+        )
         if "1.3" in modes and "1.2" not in modes:
             caps = srv_caps
         else:
@@ -238,9 +296,9 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         setattr(args, "tls_version", n)
 
 
-def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[str]) -> None:
-    from interop_proto import interop_pb2
-
+def _validate_wrapper_config_conflicts(
+    args: Any, *, known_wrappers: frozenset[str]
+) -> None:
     for attr, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
         wid = (getattr(args, attr, None) or "").strip().lower()
         if not wid or wid not in known_wrappers:
@@ -249,14 +307,16 @@ def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[s
         view = run_args_tls_config_view(args, server=(role == interop_pb2.SERVER))
         conflicts = catalog_parameter_conflicts(view, wid, role=role, capabilities=caps)
         if conflicts:
-            raise ValueError(f"{attr} wrapper {wid!r} cannot apply requested parameter(s): "
-                f"{', '.join(conflicts)}")
+            raise ValueError(
+                f"{attr} wrapper {wid!r} cannot apply requested parameter(s): "
+                f"{', '.join(conflicts)}"
+            )
 
 
-def _validate_cipher_suite_for_tls_version(args: Any, *,
-    known_wrappers: frozenset[str], repo: Path | None = None) -> None:
+def _validate_cipher_suite_for_tls_version(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> None:
     """Reject explicit ``--cipher-suite`` tokens that exist only for another TLS version."""
-    from core.capabilities import load_capabilities_cache, union_cipher_suite_ids_for_wrappers
     from core.matrix import expand_dimension
 
     mode = tls_mode_filter_from_args(args)
@@ -283,14 +343,18 @@ def _validate_cipher_suite_for_tls_version(args: Any, *,
         active = set(wr)
 
     caps_cache = load_capabilities_cache(active, root)
-    allowed = set(union_cipher_suite_ids_for_wrappers(caps_cache, sorted(active), mode=mode))
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(caps_cache, sorted(active), mode=mode)
+    )
 
     def _check_part(part: str) -> None:
         p = (part or "").strip()
         if not p or p in allowed:
             return
-        raise ValueError(f"--cipher-suite {p!r} is not available for TLS {mode} "
-            f"(see tls{mode.replace('.', '')} in capabilities.json)")
+        raise ValueError(
+            f"--cipher-suite {p!r} is not available for TLS {mode} "
+            f"(see tls{mode.replace('.', '')} in capabilities.json)"
+        )
 
     if ":" in raw:
         left, right = raw.split(":", 1)
@@ -303,11 +367,17 @@ def _validate_cipher_suite_for_tls_version(args: Any, *,
             _check_part(part)
 
 
-def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None) -> None:
+def validate_run_args(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> None:
     if args.server not in known_wrappers:
-        raise ValueError(f"Unknown --server '{args.server}'. Known: {sorted(known_wrappers)}")
+        raise ValueError(
+            f"Unknown --server '{args.server}'. Known: {sorted(known_wrappers)}"
+        )
     if args.client not in known_wrappers:
-        raise ValueError(f"Unknown --client '{args.client}'. Known: {sorted(known_wrappers)}")
+        raise ValueError(
+            f"Unknown --client '{args.client}'. Known: {sorted(known_wrappers)}"
+        )
     if not (0 <= int(args.tls_port) <= 65535):
         raise ValueError("--tls-port must be in range 0..65535")
     for attr in ("server_grpc_port", "client_grpc_port"):
@@ -331,15 +401,19 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
             raw = str(value).strip()
             if ":" in raw:
                 left_s, right_s = parse_asymmetric(raw)
-                values = parse_csv_values(left_s, arg_name) + parse_csv_values(right_s, arg_name)
+                values = parse_csv_values(left_s, arg_name) + parse_csv_values(
+                    right_s, arg_name
+                )
             else:
                 values = parse_csv_values(raw, arg_name)
             if choices:
                 tokens = option_choice_tokens(item)
                 unknown = sorted(x for x in values if x not in tokens)
                 if unknown:
-                    raise ValueError(f"{arg_name} unknown value(s): {', '.join(unknown)}. "
-                        f"Known: {', '.join(tokens)}")
+                    raise ValueError(
+                        f"{arg_name} unknown value(s): {', '.join(unknown)}. "
+                        f"Known: {', '.join(tokens)}"
+                    )
             continue
         if not choices:
             continue
@@ -348,13 +422,19 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
             tokens = option_choice_tokens(item)
             for part in parse_asymmetric(str(value)):
                 if part and part not in tokens:
-                    raise ValueError(f"{arg_name} must use catalog values; unknown: {part!r}. ",
-                        f"Known: {', '.join(tokens)}")
+                    raise ValueError(
+                        f"{arg_name} must use catalog values; unknown: {part!r}. ",
+                        f"Known: {', '.join(tokens)}",
+                    )
         elif str(value).strip() not in option_choice_tokens(item):
-            raise ValueError(f"{arg_name} must be one of: {', '.join(option_choice_tokens(item))}")
+            raise ValueError(
+                f"{arg_name} must be one of: {', '.join(option_choice_tokens(item))}"
+            )
 
     coerce_tls_version_for_cipher_capabilities(args, repo)
-    _validate_cipher_suite_for_tls_version(args, known_wrappers=known_wrappers, repo=repo)
+    _validate_cipher_suite_for_tls_version(
+        args, known_wrappers=known_wrappers, repo=repo
+    )
     _validate_wrapper_config_conflicts(args, known_wrappers=known_wrappers)
 
 
@@ -366,72 +446,9 @@ def _cell_cipher_id(cell: MatrixCell, *, server: bool) -> str:
     return cell.cipher_id(server=server)
 
 
-def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "dsa", "eddsa", "unknown"]:
-    t = (token or "").strip().lower().replace("_", "").replace("-", "")
-    if not t:
-        return "unknown"
-    if t.startswith("dsa") or t == "dsa":
-        return "dsa"
-    if t.startswith("rsa") or "rsa" in t:
-        return "rsa"
-    if t.startswith("ecdsa") or "ecdsa" in t:
-        return "ecdsa"
-    if t.startswith("ed25519") or t.startswith("ed448") or t.startswith("eddsa"):
-        return "eddsa"
-    return "unknown"
-
-
-def _group_family(token: str) -> Literal["ec", "ffdhe", "other"]:
-    t = (token or "").strip().lower().replace("_", "-")
-    if not t:
-        return "other"
-    if t.startswith("ffdhe"):
-        return "ffdhe"
-    if (t.startswith("secp") or t.startswith("x25519") or t.startswith("x448") or t.startswith("brainpool")
-        or t.startswith("xyber") or t.startswith("mlkem") or "mlkem" in t):
-        return "ec"
-    return "other"
-
-
-def _tls12_semantic_skip_reason_side(cell: MatrixCell, *, server: bool, mode: TlsMode) -> str | None:
-    if mode != "1.2":
-        return None
-    cipher_id = _cell_cipher_id(cell, server=server)
-    if not cipher_id:
-        return None
-    meta = tls12_cipher_metadata_from_name(cipher_id)
-    grp_tokens = _split_cell_list_tokens(cell, "supported_groups", server=server)
-    if grp_tokens and meta.kx == "static-rsa":
-        return "TLS 1.2 static RSA cipher does not support groups"
-    if grp_tokens and meta.kx == "ecdhe":
-        for grp in grp_tokens:
-            fam = _group_family(grp)
-            if fam != "ec":
-                return "TLS 1.2 ECDHE cipher requires EC groups (secp*/x25519/x448)"
-    if grp_tokens and meta.kx == "dhe":
-        for grp in grp_tokens:
-            fam = _group_family(grp)
-            if fam != "ffdhe":
-                return "TLS 1.2 DHE cipher requires FFDHE groups"
-
-    sig_tokens = _split_cell_list_tokens(cell, "signature_schemes", server=server)
-    if not sig_tokens or meta.au == "unknown":
-        return None
-    for sig in sig_tokens:
-        sk = _signature_scheme_auth_kind(sig)
-        if sk == "unknown":
-            continue
-        if meta.au == "rsa" and sk != "rsa":
-            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
-        if meta.au == "ecdsa" and sk != "ecdsa":
-            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
-        if meta.au == "dsa" and sk != "dsa":
-            return "Signature scheme type conflicts with TLS 1.2 cipher authentication"
-    return None
-
-
-def _check_cipher_side(cell: MatrixCell, *, server: bool,
-    wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
+def _check_cipher_side(
+    cell: MatrixCell, *, server: bool, wrapper: str, caps: dict[str, Any], mode: TlsMode
+) -> str | None:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
         return None
@@ -440,14 +457,21 @@ def _check_cipher_side(cell: MatrixCell, *, server: bool,
     modes = backend_cipher_modes(caps, cid)
     if not modes:
         return f"{wrapper} lacks cipher_suite={cid!r}"
-    return (f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} "
-        f"(supported modes: {', '.join(sorted(modes))})")
+    return (
+        f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} "
+        f"(supported modes: {', '.join(sorted(modes))})"
+    )
 
 
-def _check_list_dim(cell: MatrixCell, dim: str, *, server: bool,
-    wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
-    from core.capabilities import TLS13_ORTHOGONAL_DIMS
-
+def _check_list_dim(
+    cell: MatrixCell,
+    dim: str,
+    *,
+    server: bool,
+    wrapper: str,
+    caps: dict[str, Any],
+    mode: TlsMode,
+) -> str | None:
     if mode == "1.2" and dim in TLS13_ORTHOGONAL_DIMS:
         raw = (getattr(cell, dim, "") or "").strip()
         if not raw:
@@ -464,8 +488,6 @@ def _check_list_dim(cell: MatrixCell, dim: str, *, server: bool,
 
 def _required_server_identity_prefix(cell: MatrixCell) -> str | None:
     """``certs/`` filename prefix the server needs for this matrix cell."""
-    from core.identity import get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes
-
     schemes = _split_cell_list_tokens(cell, "signature_schemes", server=True)
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
@@ -477,8 +499,6 @@ def _required_server_identity_prefix(cell: MatrixCell) -> str | None:
 
 def _cell_identity_pem_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
     """Pre-run SKIP when ``certs/{prefix}.crt`` + ``.key`` are required but missing."""
-    from core.identity import identity_pem_present
-
     prefix = _required_server_identity_prefix(cell)
     if not prefix:
         return None
@@ -487,11 +507,20 @@ def _cell_identity_pem_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
     return f"Missing identity PEM: certs/{prefix}.crt and certs/{prefix}.key"
 
 
-def _cell_enabled_test_features_skip_reason(cell: MatrixCell, *, server: str,
-    client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
+def _cell_enabled_test_features_skip_reason(
+    cell: MatrixCell,
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
     """Pre-run SKIP when an enabled ``test_features`` token is unsupported on server or client."""
     for feat in sorted(enabled_test_features_from_cell(cell)):
-        for role_label, caps in ((f"server ({server})", srv_caps), (f"client ({client})", cli_caps)):
+        for role_label, caps in (
+            (f"server ({server})", srv_caps),
+            (f"client ({client})", cli_caps),
+        ):
             if not test_feature_wired(caps, feat):
                 return f"Feature {feat} is not wired in {role_label} wrapper"
             if not test_feature_supported(caps, feat):
@@ -499,8 +528,14 @@ def _cell_enabled_test_features_skip_reason(cell: MatrixCell, *, server: str,
     return None
 
 
-def _cell_test_feature_skip_reason(cell: MatrixCell, *, server: str,
-    client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
+def _cell_test_feature_skip_reason(
+    cell: MatrixCell,
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
     """
     Pre-run SKIP for PSK/anon cipher suites.
 
@@ -515,7 +550,10 @@ def _cell_test_feature_skip_reason(cell: MatrixCell, *, server: str,
         return None
     if feat not in enabled_test_features_from_cell(cell):
         return "Feature disabled"
-    for role_label, caps in ((f"server ({server})", srv_caps), (f"client ({client})", cli_caps)):
+    for role_label, caps in (
+        (f"server ({server})", srv_caps),
+        (f"client ({client})", cli_caps),
+    ):
         if not test_feature_wired(caps, feat):
             return "Not wired"
         if not test_feature_supported(caps, feat):
@@ -547,20 +585,22 @@ def cell_capability_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
         if rv:
             mode_cli = tls_mode_from_version(rv)
 
-    sem_srv = _tls12_semantic_skip_reason_side(cell, server=True, mode=mode_srv)
+    sem_srv = tls12_semantic_skip_reason_side(cell, server=True, mode=mode_srv)
     if sem_srv:
         return sem_srv
-    sem_cli = _tls12_semantic_skip_reason_side(cell, server=False, mode=mode_cli)
+    sem_cli = tls12_semantic_skip_reason_side(cell, server=False, mode=mode_cli)
     if sem_cli:
         return sem_cli
 
-    feat_skip = _cell_enabled_test_features_skip_reason(cell, server=server, client=client,
-        srv_caps=srv_caps, cli_caps=cli_caps)
+    feat_skip = _cell_enabled_test_features_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
     if feat_skip:
         return feat_skip
 
-    feat_skip = _cell_test_feature_skip_reason(cell, server=server, client=client,
-        srv_caps=srv_caps, cli_caps=cli_caps)
+    feat_skip = _cell_test_feature_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
     if feat_skip:
         return feat_skip
 
@@ -568,22 +608,53 @@ def cell_capability_skip_reason(cell: MatrixCell, repo: Path) -> str | None:
     if id_skip:
         return id_skip
 
-    for check in (_check_cipher_side(cell, server=True, wrapper=f"server ({server})", caps=srv_caps, mode=mode_srv),
-        _check_cipher_side(cell, server=False, wrapper=f"client ({client})", caps=cli_caps, mode=mode_cli)):
+    for check in (
+        _check_cipher_side(
+            cell,
+            server=True,
+            wrapper=f"server ({server})",
+            caps=srv_caps,
+            mode=mode_srv,
+        ),
+        _check_cipher_side(
+            cell,
+            server=False,
+            wrapper=f"client ({client})",
+            caps=cli_caps,
+            mode=mode_cli,
+        ),
+    ):
         if check:
             return check
 
     for dim in ("supported_groups", "signature_schemes", "alpn"):
-        for check in (_check_list_dim(cell, dim, server=True, wrapper=f"server ({server})", caps=srv_caps,
-                mode=mode_srv),
-            _check_list_dim(cell, dim, server=False, wrapper=f"client ({client})", caps=cli_caps, mode=mode_cli)):
+        for check in (
+            _check_list_dim(
+                cell,
+                dim,
+                server=True,
+                wrapper=f"server ({server})",
+                caps=srv_caps,
+                mode=mode_srv,
+            ),
+            _check_list_dim(
+                cell,
+                dim,
+                server=False,
+                wrapper=f"client ({client})",
+                caps=cli_caps,
+                mode=mode_cli,
+            ),
+        ):
             if check:
                 return check
 
     tv_single = (cell.tls_version or "").strip()
     if tv_single and ":" not in tv_single:
-        for wrapper, caps, mode in ((f"server ({server})", srv_caps, mode_srv),
-            (f"client ({client})", cli_caps, mode_cli)):
+        for wrapper, caps, mode in (
+            (f"server ({server})", srv_caps, mode_srv),
+            (f"client ({client})", cli_caps, mode_cli),
+        ):
             block = caps.get("tls_version")
             if isinstance(block, dict) and block:
                 key = "1.2" if mode == "1.2" else "1.3"

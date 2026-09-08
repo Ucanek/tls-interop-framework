@@ -10,13 +10,12 @@ import shlex
 import subprocess
 import tempfile
 import time
-from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, TYPE_CHECKING
+from typing import BinaryIO, Literal, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 
 from core.cleanup import remove_directory_tree
 from core.capabilities import metadata_from_capabilities
 from core.constants import TlsFeature
-from core.tls_config_view import RoleLike, TlsConfigInput, TlsConfigLike, TlsConfigView
-from core.utils import split_asymmetric_csv
+from core.tls_config_view import RoleLike, TlsConfigLike, TlsConfigView
 from core.validation import tls_mode_from_version
 from interop_proto import interop_pb2
 from wrappers.plugin import WrapperServicerFactory
@@ -29,13 +28,15 @@ if TYPE_CHECKING:
 TlsModeLiteral = Literal["1.2", "1.3"]
 
 _HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE) for p in (
+    re.compile(p, re.IGNORECASE)
+    for p in (
         r"hello\s*retry\s*request",
         r"helloretryrequest",
         r"hello_retry_request",
         r"received\s+hrr",
         r"retry\s+request",
-    ))
+    )
+)
 
 
 def hrr_detected_in_cli_output(text: str) -> bool:
@@ -51,7 +52,16 @@ def hrr_detected_in_cli_output(text: str) -> bool:
         return True
     if lower.count("read client hello") >= 2:
         return True
-    if len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2:
+    if (
+        len(
+            re.findall(
+                r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello",
+                blob,
+                re.IGNORECASE,
+            )
+        )
+        >= 2
+    ):
         return True
     return False
 
@@ -74,7 +84,9 @@ def alpn_cli_protocol_list(config: TlsConfigLike) -> str:
     return ",".join(protos) if protos else ""
 
 
-def test_feature_enabled_in_config(config: TlsConfigLike, feature: str | TlsFeature) -> bool:
+def test_feature_enabled_in_config(
+    config: TlsConfigLike, feature: str | TlsFeature
+) -> bool:
     """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
     name = feature.value if isinstance(feature, TlsFeature) else feature
     return name.strip().lower() in TlsConfigView(config).psk_modes
@@ -139,7 +151,9 @@ def is_server_role(role: RoleLike | None) -> bool:
         return True
 
 
-def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None) -> str:
+def format_executed_command(
+    cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None
+) -> str:
     """Formats argv as a shell-safe log line."""
     line = shlex.join(str(x) for x in cmd)
     if cwd is not None:
@@ -147,8 +161,9 @@ def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] |
     return line
 
 
-def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
-    stdout: str = "", stderr: str = "") -> str:
+def format_cli_debug_logs(
+    *, cmd: str, exit_code: int | None = None, stdout: str = "", stderr: str = ""
+) -> str:
     """
     Build ``OperationResponse.logs`` with CMD, exit code, stdout, and stderr.
 
@@ -169,10 +184,14 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
         err_body = stderr.rstrip()
     else:
         err_body = "(stderr merged into stdout; see stdout above)"
-    return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
+    return "\n".join(
+        [cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body]
+    )
 
 
-def _read_merged_fd(fd: int, *, timeout_s: float, idle_s: float, max_bytes: int) -> bytes:
+def _read_merged_fd(
+    fd: int, *, timeout_s: float, idle_s: float, max_bytes: int
+) -> bytes:
     """Read from a pipe fd until timeout or idle gap (sync ``selectors``, no asyncio)."""
     sel = selectors.DefaultSelector()
     sel.register(fd, selectors.EVENT_READ)
@@ -208,19 +227,30 @@ def _read_merged_fd(fd: int, *, timeout_s: float, idle_s: float, max_bytes: int)
     return b"".join(chunks)
 
 
-def read_merged_stdout(stream: BinaryIO | None, *, timeout_s: float = 2.0, idle_s: float = 0.05,
-    max_bytes: int = 1 << 20) -> bytes:
+def read_merged_stdout(
+    stream: BinaryIO | None,
+    *,
+    timeout_s: float = 2.0,
+    idle_s: float = 0.05,
+    max_bytes: int = 1 << 20,
+) -> bytes:
     """Read merged stdout/stderr until ``timeout_s`` or ``idle_s`` without new data."""
     if stream is None:
         return b""
-    return _read_merged_fd(stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes)
+    return _read_merged_fd(
+        stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes
+    )
 
 
-def peek_merged_stdout(stream: BinaryIO | None, *, limit: int = 65536, idle_s: float = 0.05) -> bytes:
+def peek_merged_stdout(
+    stream: BinaryIO | None, *, limit: int = 65536, idle_s: float = 0.05
+) -> bytes:
     """Best-effort read of early merged output without waiting for process exit."""
     if stream is None:
         return b""
-    data = read_merged_stdout(stream, timeout_s=idle_s + 0.15, idle_s=idle_s, max_bytes=limit)
+    data = read_merged_stdout(
+        stream, timeout_s=idle_s + 0.15, idle_s=idle_s, max_bytes=limit
+    )
     return data[:limit]
 
 
@@ -241,30 +271,51 @@ def drain_merged_stdout(stream: BinaryIO | None, *, limit: int = 1 << 20) -> byt
     return combined[:limit]
 
 
-def popen_stdio_merged(cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
+def popen_stdio_merged(
+    cmd: Sequence[object],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
     """Starts subprocess with stdin and merged stdout/stderr (``stderr=STDOUT``)."""
-    return subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        cwd=os.fspath(cwd) if cwd is not None else None, env=dict(env) if env is not None else None)
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=os.fspath(cwd) if cwd is not None else None,
+        env=dict(env) if env is not None else None,
+    )
 
 
-def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0,
-    idle_s: float = 0.05, poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
+def read_nonblocking_stdout(
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout_s: float = 2.0,
+    idle_s: float = 0.05,
+    poll_s: float = 0.02,
+    max_bytes: int = 1 << 20,
+) -> bytes:
     """
     Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
 
     ``poll_s`` is accepted for API compatibility; asyncio event-loop polling replaces manual sleep.
     """
     del poll_s
-    return read_merged_stdout(proc.stdout, timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes)
+    return read_merged_stdout(
+        proc.stdout, timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes
+    )
 
 
-def capability(name: str, *flags: interop_pb2.ModifyFlag.ValueType) -> interop_pb2.Capability:
+def capability(
+    name: str, *flags: interop_pb2.ModifyFlag.ValueType
+) -> interop_pb2.Capability:
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
-def standard_library_metadata(component_name: str, version: str, *,
-    capabilities: dict | None = None) -> interop_pb2.LibraryMetadata:
+def standard_library_metadata(
+    component_name: str, version: str, *, capabilities: dict | None = None
+) -> interop_pb2.LibraryMetadata:
     """Returns capability matrix from ``capabilities.json`` when provided."""
     cap = capability
     r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
@@ -274,14 +325,23 @@ def standard_library_metadata(component_name: str, version: str, *,
     group_caps: list[str] = []
     try:
         if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(capabilities,
-                component_name=component_name)
+            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
+                capabilities, component_name=component_name
+            )
     except Exception:
         pass
-    version_caps_msg = [cap(name, r, s, n) if can_set else cap(name, r, n) for name, can_set in version_caps]
-    return interop_pb2.LibraryMetadata(component_name=component_name, version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER], supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps], groups=[cap(name, r, n) for name in group_caps])
+    version_caps_msg = [
+        cap(name, r, s, n) if can_set else cap(name, r, n)
+        for name, can_set in version_caps
+    ]
+    return interop_pb2.LibraryMetadata(
+        component_name=component_name,
+        version=version,
+        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
+        supported_versions=version_caps_msg,
+        cipher_suites=[cap(name, r, n) for name in cipher_caps],
+        groups=[cap(name, r, n) for name in group_caps],
+    )
 
 
 def run_cli_version(argv: list[str], timeout: float = 5) -> str:
@@ -305,7 +365,9 @@ def serve_insecure(servicer_factory: WrapperServicerFactory, display_name: str) 
 
     servicer = servicer_factory()
     if not isinstance(servicer, BaseTemplateWrapper):
-        raise TypeError(f"{display_name} servicer factory must return BaseTemplateWrapper")
+        raise TypeError(
+            f"{display_name} servicer factory must return BaseTemplateWrapper"
+        )
     log = logging.getLogger(__name__)
     port = int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))

@@ -16,7 +16,10 @@ class WrapperPlugin(Protocol):
     def __call__(self) -> Any: ...
 
     def tls_argv_for_config(
-        self, config: TlsConfigLike, *, role: RoleLike | None = None,
+        self,
+        config: TlsConfigLike,
+        *,
+        role: RoleLike | None = None,
         capabilities: dict[str, Any] | None = None,
     ) -> TranslationResult: ...
 
@@ -24,10 +27,13 @@ class WrapperPlugin(Protocol):
 
     def resolve_cli_tool(self, exe: str) -> str | None: ...
 
-    def orchestration_env(self, active_backends: frozenset[str] | set[str]) -> dict[str, str]: ...
+    def orchestration_env(
+        self, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]: ...
 
-    def local_wrapper_env(self, repo: Any, backend_id: str,
-        active_backends: frozenset[str] | set[str]) -> dict[str, str]: ...
+    def local_wrapper_env(
+        self, repo: Any, backend_id: str, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]: ...
 
 
 class WrapperServicerFactory(Protocol):

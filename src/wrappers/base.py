@@ -20,10 +20,23 @@ from core.identity import catalog_identity_pem_paths_for_config
 from core.tls_config_view import TlsConfigView
 from interop_proto import interop_pb2
 from interop_proto import interop_pb2_grpc
-from wrappers.utils import(capability, drain_merged_stdout, format_cli_debug_logs, format_executed_command,
-    hrr_detected_in_cli_output, is_server_role, parse_version_line, peek_merged_stdout, popen_stdio_merged,
-    read_nonblocking_stdout, run_cli_version, serve_insecure, standard_library_metadata,
-    test_feature_enabled_in_config, tls_mode_12_or_13)
+from wrappers.utils import (
+    capability,
+    drain_merged_stdout,
+    format_cli_debug_logs,
+    format_executed_command,
+    hrr_detected_in_cli_output,
+    is_server_role,
+    parse_version_line,
+    peek_merged_stdout,
+    popen_stdio_merged,
+    read_nonblocking_stdout,
+    run_cli_version,
+    serve_insecure,
+    standard_library_metadata,
+    test_feature_enabled_in_config,
+    tls_mode_12_or_13,
+)
 
 FAIL_LOG_TAIL: int = 65536
 
@@ -89,8 +102,14 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     CAPABILITIES: dict[str, Any] = {}
 
     @staticmethod
-    def wait_tcp_connect(host: str, port: int, *, timeout_s: float = 30.0,
-        poll_s: float = 0.05, proc: subprocess.Popen[bytes] | None = None) -> tuple[bool, str]:
+    def wait_tcp_connect(
+        host: str,
+        port: int,
+        *,
+        timeout_s: float = 30.0,
+        poll_s: float = 0.05,
+        proc: subprocess.Popen[bytes] | None = None,
+    ) -> tuple[bool, str]:
         """Polls until ``host:port`` accepts TCP or timeout; aborts early if ``proc`` exits."""
         deadline = time.monotonic() + max(0.0, timeout_s)
         last_err = ""
@@ -111,9 +130,16 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         self._registry_lock = threading.Lock()
 
     @classmethod
-    def tls_argv_for_config(cls, config: Any, *, role: Any | None = None,
-        capabilities: dict[str, Any] | None = None) -> TranslationResult:
-        return TranslationResult((), (f"({cls.__name__} does not implement tls_argv_for_config)",))
+    def tls_argv_for_config(
+        cls,
+        config: Any,
+        *,
+        role: Any | None = None,
+        capabilities: dict[str, Any] | None = None,
+    ) -> TranslationResult:
+        return TranslationResult(
+            (), (f"({cls.__name__} does not implement tls_argv_for_config)",)
+        )
 
     @classmethod
     def local_cli_requirements(cls) -> tuple[str, ...]:
@@ -124,12 +150,15 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return None
 
     @classmethod
-    def orchestration_env(cls, active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+    def orchestration_env(
+        cls, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]:
         return {}
 
     @classmethod
-    def local_wrapper_env(cls, repo: Path, backend_id: str,
-        active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+    def local_wrapper_env(
+        cls, repo: Path, backend_id: str, active_backends: frozenset[str] | set[str]
+    ) -> dict[str, str]:
         return {}
 
     def _session_lock_for(self, session_id: str) -> threading.Lock:
@@ -165,13 +194,15 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         """Argv for version detection."""
 
     @abstractmethod
-    def _start_server(self, config: interop_pb2.TlsConfig,
-        state: WrapperSessionState) -> Tuple[subprocess.Popen[bytes], str, str]:
+    def _start_server(
+        self, config: interop_pb2.TlsConfig, state: WrapperSessionState
+    ) -> Tuple[subprocess.Popen[bytes], str, str]:
         """Starts the server; returns ``(popen, logs, human message)``."""
 
     @abstractmethod
-    def _start_client(self, config: interop_pb2.TlsConfig,
-        state: WrapperSessionState) -> Tuple[subprocess.Popen[bytes], str, str]:
+    def _start_client(
+        self, config: interop_pb2.TlsConfig, state: WrapperSessionState
+    ) -> Tuple[subprocess.Popen[bytes], str, str]:
         """Starts the client; returns ``(popen, logs, human message)``."""
 
     def _session_staging_dir(self, state: WrapperSessionState) -> str:
@@ -179,7 +210,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
         return ensure_interop_staging_dir(state)
 
-    def _session_ephemeral_pem_paths(self, state: WrapperSessionState) -> tuple[str, str]:
+    def _session_ephemeral_pem_paths(
+        self, state: WrapperSessionState
+    ) -> tuple[str, str]:
         """Per-session PEM paths under a private ``tempfile.mkdtemp`` directory."""
         if state.ephemeral_pem_cert and state.ephemeral_pem_key:
             return state.ephemeral_pem_cert, state.ephemeral_pem_key
@@ -190,8 +223,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         state.ephemeral_pem_key = key
         return cert, key
 
-    def _ensure_cert_paths(self, config: interop_pb2.TlsConfig,
-        state: WrapperSessionState) -> tuple[str, str]:
+    def _ensure_cert_paths(
+        self, config: interop_pb2.TlsConfig, state: WrapperSessionState
+    ) -> tuple[str, str]:
         """Resolves cert/key paths from config, cwd, or a short-lived ``openssl req`` run."""
         cert_b = TlsConfigView(config).certificate
         key_b = TlsConfigView(config).private_key
@@ -229,10 +263,14 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         if os.path.isfile(cwd_cert) and os.path.isfile(cwd_key):
             return "cert.pem", "key.pem"
 
-        raise WrapperSetupError("No identity PEM for this test (set certificate/private_key, use certs/ "
-            "from scripts/gen_interop_certs.sh, or cert.pem/key.pem in cwd)")
+        raise WrapperSetupError(
+            "No identity PEM for this test (set certificate/private_key, use certs/ "
+            "from scripts/gen_interop_certs.sh, or cert.pem/key.pem in cwd)"
+        )
 
-    def _terminate_process_hard(self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0) -> None:
+    def _terminate_process_hard(
+        self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0
+    ) -> None:
         """SIGTERM then SIGKILL (best-effort)."""
         if proc is None or proc.poll() is not None:
             return
@@ -254,16 +292,22 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         except subprocess.TimeoutExpired:
             pass
 
-    def _tail_merged_output(self, proc: subprocess.Popen[bytes] | None, limit: int = FAIL_LOG_TAIL) -> str:
+    def _tail_merged_output(
+        self, proc: subprocess.Popen[bytes] | None, limit: int = FAIL_LOG_TAIL
+    ) -> str:
         if proc is None or proc.stdout is None:
             return ""
         try:
-            raw = (drain_merged_stdout(proc.stdout, limit=limit) or b"").decode(errors="replace")[-limit:]
+            raw = (drain_merged_stdout(proc.stdout, limit=limit) or b"").decode(
+                errors="replace"
+            )[-limit:]
             return raw.strip()
         except OSError:
             return ""
 
-    def _peek_merged_output(self, proc: subprocess.Popen[bytes] | None, limit: int = 65536) -> str:
+    def _peek_merged_output(
+        self, proc: subprocess.Popen[bytes] | None, limit: int = 65536
+    ) -> str:
         """Best-effort read of early merged stdout (handshake lines) without draining forever."""
         if proc is None or proc.stdout is None:
             return ""
@@ -273,7 +317,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         except OSError:
             return ""
 
-    def _drain_process_output(self, proc: subprocess.Popen[bytes] | None, *, limit: int = FAIL_LOG_TAIL) -> str:
+    def _drain_process_output(
+        self, proc: subprocess.Popen[bytes] | None, *, limit: int = FAIL_LOG_TAIL
+    ) -> str:
         """Read remaining merged stdout/stderr; prefer full text over a single-line tail."""
         if proc is None or proc.stdout is None:
             return ""
@@ -283,8 +329,15 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         except OSError:
             return ""
 
-    def _build_cli_debug_logs(self, state: WrapperSessionState, *, role: int, cmd: str = "",
-        proc: subprocess.Popen[bytes] | None = None, output: str | None = None) -> str:
+    def _build_cli_debug_logs(
+        self,
+        state: WrapperSessionState,
+        *,
+        role: int,
+        cmd: str = "",
+        proc: subprocess.Popen[bytes] | None = None,
+        output: str | None = None,
+    ) -> str:
         """Assemble CMD / exit / stdout / stderr for ``OperationResponse.logs``."""
         if role == interop_pb2.SERVER:
             cmd_s = (cmd or state.last_server_cmd or "").strip()
@@ -299,10 +352,18 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             out_text = "\n".join(x for x in (cached, drained) if x.strip()).strip()
         else:
             out_text = output
-        exit_code = target.returncode if target is not None and target.poll() is not None else None
-        return format_cli_debug_logs(cmd=cmd_s, exit_code=exit_code, stdout=out_text, stderr="")
+        exit_code = (
+            target.returncode
+            if target is not None and target.poll() is not None
+            else None
+        )
+        return format_cli_debug_logs(
+            cmd=cmd_s, exit_code=exit_code, stdout=out_text, stderr=""
+        )
 
-    def _remember_role_cli(self, state: WrapperSessionState, role: int, cmd: str, output: str = "") -> None:
+    def _remember_role_cli(
+        self, state: WrapperSessionState, role: int, cmd: str, output: str = ""
+    ) -> None:
         if role == interop_pb2.SERVER:
             state.last_server_cmd = cmd
             if output:
@@ -321,8 +382,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         ``named_group``.
         """
 
-    def _infer_hrr_from_negotiation(self, config: interop_pb2.TlsConfig, text: str,
-        state: WrapperSessionState) -> bool:
+    def _infer_hrr_from_negotiation(
+        self, config: interop_pb2.TlsConfig, text: str, state: WrapperSessionState
+    ) -> bool:
         """Optional fallback when CLI logs lack explicit HRR markers."""
         del config, text, state
         return False
@@ -331,8 +393,13 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         """Hook: return a short reason when merged client ESTABLISH output shows handshake failure."""
         return None
 
-    def _format_client_connect_failure(self, proc: subprocess.Popen[bytes] | None,
-        base: str = "Client process exited (connection failed)", *, detail: str | None = None) -> str:
+    def _format_client_connect_failure(
+        self,
+        proc: subprocess.Popen[bytes] | None,
+        base: str = "Client process exited (connection failed)",
+        *,
+        detail: str | None = None,
+    ) -> str:
         text = detail if detail is not None else self._drain_process_output(proc)
         if not text:
             return base
@@ -360,8 +427,12 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     def _transmit_post_write_pause_seconds(self) -> float:
         return 0.5
 
-    def _read_transmit_stdout(self, proc: subprocess.Popen[bytes], role: int, *, server_poll: bool = False) -> bytes:
-        timeout_s = self._transmit_read_timeout_seconds(role=role, server_poll=server_poll)
+    def _read_transmit_stdout(
+        self, proc: subprocess.Popen[bytes], role: int, *, server_poll: bool = False
+    ) -> bytes:
+        timeout_s = self._transmit_read_timeout_seconds(
+            role=role, server_poll=server_poll
+        )
         return read_nonblocking_stdout(proc, timeout_s=timeout_s)
 
     def _post_establish_pause_seconds(self) -> float:
@@ -403,7 +474,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return "127.0.0.1"
 
     def _client_peer_host(self, config: interop_pb2.TlsConfig) -> str:
-        return (TlsConfigView(config).server_hostname or "localhost").strip() or "localhost"
+        return (
+            TlsConfigView(config).server_hostname or "localhost"
+        ).strip() or "localhost"
 
     def _server_tcp_ready_timeout_seconds(self) -> float:
         return 30.0
@@ -422,22 +495,33 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
     def _build_library_metadata(self, version: str) -> interop_pb2.LibraryMetadata:
         caps = getattr(self.__class__, "CAPABILITIES", None)
-        return standard_library_metadata(self._component_name, version, capabilities=caps)
+        return standard_library_metadata(
+            self._component_name, version, capabilities=caps
+        )
 
-    def _validate_config_supported(self, config: interop_pb2.TlsConfig, *, role: int) -> None:
+    def _validate_config_supported(
+        self, config: interop_pb2.TlsConfig, *, role: int
+    ) -> None:
         backend = (self._component_name or "").strip().lower()
         caps = getattr(self.__class__, "CAPABILITIES", None) or {}
-        unsupported = list(catalog_parameter_conflicts(config, backend, role=role, capabilities=caps))
+        unsupported = list(
+            catalog_parameter_conflicts(config, backend, role=role, capabilities=caps)
+        )
         if unsupported:
             details = ", ".join(unsupported)
-            raise WrapperSkipError(f"⏭ SKIPPED: {backend} cannot apply requested parameter(s): {details}")
+            raise WrapperSkipError(
+                f"⏭ SKIPPED: {backend} cannot apply requested parameter(s): {details}"
+            )
 
-    def GetMetadata(self, request: interop_pb2.Empty, context: ServicerContext) -> interop_pb2.LibraryMetadata:
+    def GetMetadata(
+        self, request: interop_pb2.Empty, context: ServicerContext
+    ) -> interop_pb2.LibraryMetadata:
         version = run_cli_version(self._version_command())
         return self._build_library_metadata(version)
 
-    def _build_negotiated(self, proc: subprocess.Popen[bytes] | None,
-        text: str | None = None) -> interop_pb2.NegotiatedTlsParameters | None:
+    def _build_negotiated(
+        self, proc: subprocess.Popen[bytes] | None, text: str | None = None
+    ) -> interop_pb2.NegotiatedTlsParameters | None:
         if text is None:
             if proc is None:
                 return None
@@ -449,11 +533,13 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         hrr = hrr_detected_in_cli_output(text or "")
         if not (pv or cs or ng or hrr):
             return None
-        return interop_pb2.NegotiatedTlsParameters(protocol_version=pv, cipher_suite=cs, named_group=ng,
-            hrr_occurred=hrr)
+        return interop_pb2.NegotiatedTlsParameters(
+            protocol_version=pv, cipher_suite=cs, named_group=ng, hrr_occurred=hrr
+        )
 
-    def _handle_establish(self, state: WrapperSessionState,
-        request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+    def _handle_establish(
+        self, state: WrapperSessionState, request: interop_pb2.OperationRequest
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         if request.role == interop_pb2.SERVER:
             self._release_server_before_establish(state)
         else:
@@ -479,19 +565,32 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 raise WrapperSetupError("server process exited immediately")
             port = int(getattr(request.config, "port", None) or 0)
             if port <= 0:
-                raise WrapperSetupError("TlsConfig.port is missing or invalid for server ESTABLISH")
-            ok_listen, tcp_err = type(self).wait_tcp_connect(self._server_listen_host(request.config), port,
-                timeout_s=self._server_tcp_ready_timeout_seconds(), proc=proc)
+                raise WrapperSetupError(
+                    "TlsConfig.port is missing or invalid for server ESTABLISH"
+                )
+            ok_listen, tcp_err = type(self).wait_tcp_connect(
+                self._server_listen_host(request.config),
+                port,
+                timeout_s=self._server_tcp_ready_timeout_seconds(),
+                proc=proc,
+            )
             if not ok_listen:
                 detail = self._drain_process_output(proc)
                 self._remember_role_cli(state, interop_pb2.SERVER, cmd_logs, detail)
-                raise WrapperRuntimeError(f"server did not listen on port {port} ({tcp_err})")
+                raise WrapperRuntimeError(
+                    f"server did not listen on port {port} ({tcp_err})"
+                )
             self._sleep_after_tcp_ready()
             early = self._peek_merged_output(state.server_proc)
             self._remember_role_cli(state, interop_pb2.SERVER, cmd_logs, early)
             negotiated = self._build_negotiated(state.server_proc, early)
-            logs = self._build_cli_debug_logs(state, role=interop_pb2.SERVER, cmd=cmd_logs, proc=state.server_proc,
-                output=early)
+            logs = self._build_cli_debug_logs(
+                state,
+                role=interop_pb2.SERVER,
+                cmd=cmd_logs,
+                proc=state.server_proc,
+                output=early,
+            )
         else:
             proc, cmd_logs, msg = self._start_client(request.config, state)
             state.client_proc = proc
@@ -500,30 +599,48 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 raise WrapperSetupError("client subprocess was not started")
             port = int(getattr(request.config, "port", None) or 0)
             if port <= 0:
-                raise WrapperSetupError("TlsConfig.port is missing or invalid for client ESTABLISH")
+                raise WrapperSetupError(
+                    "TlsConfig.port is missing or invalid for client ESTABLISH"
+                )
             if proc.poll() is not None:
                 status = interop_pb2.OperationResponse.FAILURE
                 out = self._drain_process_output(state.client_proc)
                 self._remember_role_cli(state, interop_pb2.CLIENT, cmd_logs, out)
                 msg = "Client process exited (connection failed)"
-                logs = self._build_cli_debug_logs(state, role=interop_pb2.CLIENT, cmd=cmd_logs,
-                    proc=state.client_proc, output=out)
+                logs = self._build_cli_debug_logs(
+                    state,
+                    role=interop_pb2.CLIENT,
+                    cmd=cmd_logs,
+                    proc=state.client_proc,
+                    output=out,
+                )
             else:
                 host = self._client_peer_host(request.config)
-                ok_peer, tcp_err = type(self).wait_tcp_connect(host, port,
-                    timeout_s=self._client_tcp_ready_timeout_seconds(), proc=proc)
+                ok_peer, tcp_err = type(self).wait_tcp_connect(
+                    host,
+                    port,
+                    timeout_s=self._client_tcp_ready_timeout_seconds(),
+                    proc=proc,
+                )
                 if not ok_peer:
                     detail = self._drain_process_output(proc)
                     self._remember_role_cli(state, interop_pb2.CLIENT, cmd_logs, detail)
-                    raise WrapperRuntimeError(f"no TCP route to peer {host}:{port} ({tcp_err})")
+                    raise WrapperRuntimeError(
+                        f"no TCP route to peer {host}:{port} ({tcp_err})"
+                    )
                 self._sleep_after_tcp_ready()
                 if state.client_proc and state.client_proc.poll() is not None:
                     status = interop_pb2.OperationResponse.FAILURE
                     out = self._drain_process_output(state.client_proc)
                     self._remember_role_cli(state, interop_pb2.CLIENT, cmd_logs, out)
                     msg = "Client process exited (connection failed)"
-                    logs = self._build_cli_debug_logs(state, role=interop_pb2.CLIENT, cmd=cmd_logs,
-                        proc=state.client_proc, output=out)
+                    logs = self._build_cli_debug_logs(
+                        state,
+                        role=interop_pb2.CLIENT,
+                        cmd=cmd_logs,
+                        proc=state.client_proc,
+                        output=out,
+                    )
                 else:
                     early = self._peek_merged_output(state.client_proc)
                     pause = self._post_establish_pause_seconds()
@@ -531,39 +648,58 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                         time.sleep(pause)
                     server_chunks = state.last_server_output
                     if state.server_proc is not None:
-                        server_extra = read_nonblocking_stdout(state.server_proc, timeout_s=2.0).decode(
-                            errors="replace")
-                        server_out = "\n".join(x for x in (server_chunks, server_extra) if x.strip()).strip()
+                        server_extra = read_nonblocking_stdout(
+                            state.server_proc, timeout_s=2.0
+                        ).decode(errors="replace")
+                        server_out = "\n".join(
+                            x for x in (server_chunks, server_extra) if x.strip()
+                        ).strip()
                     else:
                         server_out = server_chunks
-                    client_extra = read_nonblocking_stdout(state.client_proc, timeout_s=1.0).decode(errors="replace")
-                    client_out = "\n".join(x for x in (early, client_extra) if x.strip()).strip()
+                    client_extra = read_nonblocking_stdout(
+                        state.client_proc, timeout_s=1.0
+                    ).decode(errors="replace")
+                    client_out = "\n".join(
+                        x for x in (early, client_extra) if x.strip()
+                    ).strip()
                     merged = client_out
                     if server_out.strip():
                         merged = f"{server_out}\n{client_out}"
                     self._remember_role_cli(state, interop_pb2.CLIENT, cmd_logs, merged)
                     if server_out.strip():
-                        self._remember_role_cli(state, interop_pb2.SERVER, state.last_server_cmd, server_out)
+                        self._remember_role_cli(
+                            state, interop_pb2.SERVER, state.last_server_cmd, server_out
+                        )
                     negotiated = self._build_negotiated(state.client_proc, merged)
                     if negotiated is not None and not negotiated.hrr_occurred:
-                        inferred = self._infer_hrr_from_negotiation(request.config, merged, state)
+                        inferred = self._infer_hrr_from_negotiation(
+                            request.config, merged, state
+                        )
                         if inferred:
                             negotiated.hrr_occurred = True
-                    logs = self._build_cli_debug_logs(state, role=interop_pb2.CLIENT, cmd=cmd_logs,
-                        proc=state.client_proc, output=merged)
+                    logs = self._build_cli_debug_logs(
+                        state,
+                        role=interop_pb2.CLIENT,
+                        cmd=cmd_logs,
+                        proc=state.client_proc,
+                        output=merged,
+                    )
                     if state.client_proc and state.client_proc.poll() is not None:
                         status = interop_pb2.OperationResponse.FAILURE
                         msg = "Client process exited after handshake"
                     else:
-                        establish_err = self._client_establish_output_indicates_failure(merged)
+                        establish_err = self._client_establish_output_indicates_failure(
+                            merged
+                        )
                         if establish_err:
                             status = interop_pb2.OperationResponse.FAILURE
                             msg = f"Client handshake failed ({establish_err})"
 
         return status, msg, logs, b"", negotiated
 
-    def _handle_transmit(self, state: WrapperSessionState,
-        request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+    def _handle_transmit(
+        self, state: WrapperSessionState, request: interop_pb2.OperationRequest
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         status = interop_pb2.OperationResponse.SUCCESS
         msg = ""
         logs = ""
@@ -593,26 +729,46 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                     status = interop_pb2.OperationResponse.ERROR
                     msg = "[TRANSMIT] Broken pipe (process may have exited)"
                     out = self._drain_process_output(target)
-                    logs = self._build_cli_debug_logs(state, role=role, proc=target, output=out)
+                    logs = self._build_cli_debug_logs(
+                        state, role=role, proc=target, output=out
+                    )
             if status == interop_pb2.OperationResponse.SUCCESS:
-                server_poll = request.role == interop_pb2.SERVER and self._server_transmit_poll()
-                out_data = self._read_transmit_stdout(target, request.role, server_poll=server_poll)
-                logs = self._build_cli_debug_logs(state, role=role, proc=target,
-                    output=out_data.decode(errors="replace") if out_data else "")
+                server_poll = (
+                    request.role == interop_pb2.SERVER and self._server_transmit_poll()
+                )
+                out_data = self._read_transmit_stdout(
+                    target, request.role, server_poll=server_poll
+                )
+                logs = self._build_cli_debug_logs(
+                    state,
+                    role=role,
+                    proc=target,
+                    output=out_data.decode(errors="replace") if out_data else "",
+                )
         return status, msg, logs, out_data, None
 
-    def _handle_close(self, state: WrapperSessionState,
-        request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+    def _handle_close(
+        self, state: WrapperSessionState, request: interop_pb2.OperationRequest
+    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         del request
         self._cleanup_session(state)
-        return interop_pb2.OperationResponse.SUCCESS, "Cleanup successful", "", b"", None
+        return (
+            interop_pb2.OperationResponse.SUCCESS,
+            "Cleanup successful",
+            "",
+            b"",
+            None,
+        )
 
-    def ExecuteOperation(self, request: interop_pb2.OperationRequest,
-        context: ServicerContext) -> interop_pb2.OperationResponse:
+    def ExecuteOperation(
+        self, request: interop_pb2.OperationRequest, context: ServicerContext
+    ) -> interop_pb2.OperationResponse:
         session_id = (request.session_id or "").strip()
         if not session_id:
-            return interop_pb2.OperationResponse(status=interop_pb2.OperationResponse.ERROR,
-                message="session_id is required on OperationRequest")
+            return interop_pb2.OperationResponse(
+                status=interop_pb2.OperationResponse.ERROR,
+                message="session_id is required on OperationRequest",
+            )
 
         lock = self._session_lock_for(session_id)
         with lock:
@@ -625,11 +781,17 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
             try:
                 if request.type == interop_pb2.OperationRequest.ESTABLISH:
-                    status, msg, logs, out_data, negotiated = self._handle_establish(state, request)
+                    status, msg, logs, out_data, negotiated = self._handle_establish(
+                        state, request
+                    )
                 elif request.type == interop_pb2.OperationRequest.TRANSMIT:
-                    status, msg, logs, out_data, negotiated = self._handle_transmit(state, request)
+                    status, msg, logs, out_data, negotiated = self._handle_transmit(
+                        state, request
+                    )
                 elif request.type == interop_pb2.OperationRequest.CLOSE:
-                    status, msg, logs, out_data, negotiated = self._handle_close(state, request)
+                    status, msg, logs, out_data, negotiated = self._handle_close(
+                        state, request
+                    )
                     self._drop_session(session_id)
                     self._after_session_removed(session_id)
                 else:
@@ -655,7 +817,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 if not logs:
                     logs = self._build_cli_debug_logs(state, role=request.role)
 
-            resp = interop_pb2.OperationResponse(status=status, message=msg, logs=logs, output_data=out_data)
+            resp = interop_pb2.OperationResponse(
+                status=status, message=msg, logs=logs, output_data=out_data
+            )
             if negotiated is not None:
                 resp.negotiated.CopyFrom(negotiated)
             return resp
@@ -668,7 +832,15 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         self._extra_cleanup(state)
 
 
-def wait_tcp_connect(host: str, port: int, *, timeout_s: float = 30.0,
-    poll_s: float = 0.05, proc: subprocess.Popen[bytes] | None = None) -> tuple[bool, str]:
+def wait_tcp_connect(
+    host: str,
+    port: int,
+    *,
+    timeout_s: float = 30.0,
+    poll_s: float = 0.05,
+    proc: subprocess.Popen[bytes] | None = None,
+) -> tuple[bool, str]:
     """Module alias for :meth:`BaseTemplateWrapper.wait_tcp_connect` (driver and tools)."""
-    return BaseTemplateWrapper.wait_tcp_connect(host, port, timeout_s=timeout_s, poll_s=poll_s, proc=proc)
+    return BaseTemplateWrapper.wait_tcp_connect(
+        host, port, timeout_s=timeout_s, poll_s=poll_s, proc=proc
+    )
