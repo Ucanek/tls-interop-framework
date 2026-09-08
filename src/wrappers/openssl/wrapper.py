@@ -121,11 +121,6 @@ def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(config: TlsConfigLike, *, role: RoleLike | None = None,
-    capabilities: dict[str, Any] | None = None) -> TranslationResult:
-    return _build_tls_argv(config, role=role, capabilities=capabilities)
-
-
 def _host_ok_for_sni(hostname: str) -> bool:
     hn = (hostname or "").strip().rstrip(".")
     if not hn or len(hn) > 253:
@@ -142,6 +137,11 @@ def _host_ok_for_sni(hostname: str) -> bool:
 
 class OpenSSLWrapper(BaseTemplateWrapper):
     CAPABILITIES = CAPABILITIES
+
+    @classmethod
+    def tls_argv_for_config(cls, config: Any, *, role: Any | None = None,
+        capabilities: dict[str, Any] | None = None) -> TranslationResult:
+        return _build_tls_argv(config, role=role, capabilities=capabilities)
 
     @property
     def _component_name(self) -> str:
@@ -199,10 +199,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return out
 
     def _build_common_args(self, config: interop_pb2.TlsConfig, *, for_server: bool) -> list[str]:
-        from interop_proto import interop_pb2
-
         role = interop_pb2.SERVER if for_server else interop_pb2.CLIENT
-        args = list(_build_tls_argv(config, role=role).argv)
+        args = list(self.tls_argv_for_config(config, role=role).argv)
         cfg = TlsConfigView(config)
         if for_server and cfg.session_tickets_enabled:
             args.extend(["-num_tickets", "2"])
@@ -211,6 +209,46 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             args.extend(["-alpn", alpn])
         return args
 
+    def _openssl_state_args(self, config: interop_pb2.TlsConfig) -> list[str]:
+        cfg = TlsConfigView(config)
+        if tls_mode_12_or_13(config) == "1.3" or cfg.expect_hrr:
+            return ["-state"]
+        return []
+
+    def _openssl_mtls_server_args(self, config: interop_pb2.TlsConfig, cert_path: str) -> list[str]:
+        if test_feature_enabled_in_config(config, "mtls"):
+            ca_path = resolve_server_mtls_cafile(config, cert_path)
+            return ["-Verify", "1", "-CAfile", ca_path]
+        return []
+
+    def _openssl_mtls_client_args(self, config: interop_pb2.TlsConfig,
+        state: WrapperSessionState) -> list[str]:
+        if test_feature_enabled_in_config(config, "mtls"):
+            client_cert, client_key = self._ensure_cert_paths(config, state)
+            return ["-cert", client_cert, "-key", client_key]
+        return []
+
+    def _openssl_client_session_args(self, config: interop_pb2.TlsConfig) -> list[str]:
+        has_resumption = test_feature_enabled_in_config(config, "resumption")
+        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+        if not has_resumption and not has_0rtt:
+            return []
+        session_file, early_data_file = _openssl_session_state_paths(config)
+        step = TlsConfigView(config).resumption_step
+        args: list[str] = []
+        if step == "save":
+            args.extend(["-sess_out", session_file])
+        if step == "resume":
+            args.extend(["-sess_in", session_file])
+            if has_0rtt:
+                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
+                args.extend(["-early_data", early_data_file])
+        return args
+
+    def _popen_merged_cmd(self, cmd: list[str]) -> tuple[subprocess.Popen[bytes], str]:
+        cwd = os.getcwd()
+        return popen_stdio_merged(cmd, cwd=cwd), format_executed_command(cmd, cwd)
+
     def _client_sni_args(self, config: interop_pb2.TlsConfig) -> list[str]:
         host = TlsConfigView(config).server_hostname
         if not _host_ok_for_sni(host):
@@ -218,52 +256,33 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return ["-servername", host]
 
     def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
-        has_resumption = test_feature_enabled_in_config(config, "resumption")
-        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
-
         cert_path, key_path = self._ensure_cert_paths(config, state)
         cmd = (["openssl", "s_server"] + _openssl_legacy_provider_argv(config)
             + ["-accept", f"0.0.0.0:{config.port}", "-cert", cert_path, "-key", key_path]
             + self._build_common_args(config, for_server=True))
-        if has_0rtt:
+        if test_feature_enabled_in_config(config, "0rtt"):
             cmd = list(cmd) + ["-early_data"]
-        if test_feature_enabled_in_config(config, "mtls"):
-            ca_path = resolve_server_mtls_cafile(config, cert_path)
-            cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]
-        cfg = TlsConfigView(config)
-        if tls_mode_12_or_13(config) == "1.3" or cfg.expect_hrr:
-            cmd = list(cmd) + ["-state"]
-        cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd)
-        return proc, format_executed_command(cmd, cwd), "Server started"
+        cmd = list(cmd) + self._openssl_mtls_server_args(config, cert_path) + self._openssl_state_args(config)
+        proc, logs = self._popen_merged_cmd(cmd)
+        return proc, logs, "Server started"
 
     def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
-        has_resumption = test_feature_enabled_in_config(config, "resumption")
-        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
-        session_file, early_data_file = _openssl_session_state_paths(config)
-
         cfg = TlsConfigView(config)
         host = cfg.server_hostname or "localhost"
-        tls_flag_pack = self._build_common_args(config, for_server=False)
         cmd = (["openssl", "s_client"] + _openssl_legacy_provider_argv(config)
-            + ["-connect", f"{host}:{config.port}"] + self._client_sni_args(config) + tls_flag_pack)
-        step = cfg.resumption_step
-        if (has_resumption or has_0rtt) and step == "save":
-            cmd = list(cmd) + ["-sess_out", session_file]
-        if (has_resumption or has_0rtt) and step == "resume":
-            cmd = list(cmd) + ["-sess_in", session_file]
-            if has_0rtt:
-                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
-                cmd = list(cmd) + ["-early_data", early_data_file]
-        if test_feature_enabled_in_config(config, "mtls"):
-            client_cert, client_key = self._ensure_cert_paths(config, state)
-            cmd = list(cmd) + ["-cert", client_cert, "-key", client_key]
-        if tls_mode_12_or_13(config) == "1.3" or cfg.expect_hrr:
-            cmd = list(cmd) + ["-state"]
-        cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd)
-        return proc, format_executed_command(cmd, cwd), "Client connected"
+            + ["-connect", f"{host}:{config.port}"] + self._client_sni_args(config)
+            + self._build_common_args(config, for_server=False))
+        cmd = (list(cmd) + self._openssl_client_session_args(config)
+            + self._openssl_mtls_client_args(config, state) + self._openssl_state_args(config))
+        proc, logs = self._popen_merged_cmd(cmd)
+        return proc, logs, "Client connected"
+
+
+def create_servicer() -> OpenSSLWrapper:
+    return OpenSSLWrapper()
 
 
 if __name__ == "__main__":
-    serve_insecure(OpenSSLWrapper, "OpenSSL")
+    serve_insecure(create_servicer, "OpenSSL")
+
+WRAPPER_CLASS = OpenSSLWrapper

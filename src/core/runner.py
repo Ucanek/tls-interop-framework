@@ -9,7 +9,6 @@ import threading
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-import shutil
 import signal
 import subprocess
 import sys
@@ -20,8 +19,10 @@ from typing import Any, Mapping
 
 import grpc
 
-from core.capabilities import(backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools,
-    discover_wrapper_ids, load_capabilities, merged_orchestration_env, session_wrapper_env)
+from core.cleanup import ensure_interop_certs
+from core.orchestration_context import orchestration_context_for_backends, set_orchestration_context
+from core.registry import(backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools,
+    discover_wrapper_ids, load_capabilities, session_wrapper_env)
 from core.matrix_cell import MatrixCell
 from core.matrix import normalize_cell_tls_micro_params
 from core.utils import norm_token, parse_asymmetric
@@ -67,34 +68,6 @@ def _grpc_host_port(addr: str) -> tuple[str, int]:
     if not port_s.isdigit():
         raise ValueError(f"invalid gRPC address {addr!r}")
     return host or "127.0.0.1", int(port_s)
-
-
-def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
-    """Create ``certs/{prefix}.crt`` bundles when any are missing."""
-    from core.identity import IDENTITY_PREFIXES
-
-    cert_dir = repo / "certs"
-    missing = [prefix for prefix in IDENTITY_PREFIXES if not (cert_dir / f"{prefix}.crt").is_file()
-        or not (cert_dir / f"{prefix}.key").is_file()]
-    if not missing:
-        return
-    script = repo / "scripts" / "gen_interop_certs.sh"
-    if not script.is_file():
-        raise FileNotFoundError(f"Missing certs/ bundles ({', '.join(missing)}); "
-            f"run scripts/gen_interop_certs.sh or create certs/ manually")
-    if verbose:
-        logger.debug("Generating identity PEMs (%s) via %s", ", ".join(missing), script)
-    subprocess.run(["bash", str(script)], cwd=repo, check=True)
-
-
-def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
-    """Remove ``certs/`` after a matrix run (including ``dh2048.pem``)."""
-    cert_dir = repo / "certs"
-    if not cert_dir.is_dir():
-        return
-    if verbose:
-        logger.debug("Removing generated %s", cert_dir)
-    shutil.rmtree(cert_dir, ignore_errors=True)
 
 
 def apply_matrix_tls_endpoints(server: str, client: str, server_conf: interop_pb2.TlsConfig,
@@ -294,12 +267,22 @@ class WrapperSession(BaseExecutionSession):
                     pass
 
     def start(self) -> None:
+        set_orchestration_context(orchestration_context_for_backends(self.backends))
         self.up()
         self.wait_grpc_ready()
         self.load_metadata()
 
-    def stop(self) -> None:
+    def stop(self, *, clear_context: bool = True) -> None:
         self.down()
+        if clear_context:
+            set_orchestration_context(None)
+
+    def __enter__(self) -> WrapperSession:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.stop()
 
 
 class WorkerSlotSession(WrapperSession):
@@ -344,6 +327,7 @@ class WorkerSlotPool:
         return self._sessions[int(slot_id)]
 
     def start(self) -> None:
+        set_orchestration_context(orchestration_context_for_backends(self.backends))
         for session in self._sessions:
             session.start()
         if self.verbose:
@@ -351,7 +335,15 @@ class WorkerSlotPool:
 
     def stop(self) -> None:
         for session in self._sessions:
-            session.stop()
+            session.stop(clear_context=False)
+        set_orchestration_context(None)
+
+    def __enter__(self) -> WorkerSlotPool:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        self.stop()
 
 
 def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:

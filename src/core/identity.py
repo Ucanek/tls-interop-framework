@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Sequence
 from pathlib import Path
+
+from core.orchestration_context import active_orchestration_context
 
 from core.tls_config_view import RoleLike, TlsConfigInput, TlsConfigLike, TlsConfigView
 from core.utils import norm_scheme_token, split_asymmetric_csv
@@ -91,7 +92,7 @@ def get_cert_prefix_for_config(config: TlsConfigLike) -> str:
 def interop_certs_dir(repo: Path | None = None) -> Path:
     if repo is not None:
         return repo / "certs"
-    from core.capabilities import repository_root
+    from core.registry import repository_root
 
     return repository_root() / "certs"
 
@@ -234,10 +235,10 @@ def server_trust_signature_schemes_tokens(config: TlsConfigLike) -> list[str]:
     server half of ``INTEROP_SIGNATURE_SCHEMES`` when it uses ``SERVER:CLIENT``,
     else ``TlsConfig.signature_schemes`` from the active request config.
     """
-    env_raw = (os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES") or "").strip()
-    if env_raw:
-        return [p.strip() for p in env_raw.split(",") if p.strip()]
-    gsig = (os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip()
+    ctx = active_orchestration_context()
+    if ctx.server_signature_schemes:
+        return [p.strip() for p in ctx.server_signature_schemes.split(",") if p.strip()]
+    gsig = ctx.asymmetric_signature_schemes
     if gsig and ":" in gsig:
         left, _ = split_asymmetric_csv(gsig)
         return left

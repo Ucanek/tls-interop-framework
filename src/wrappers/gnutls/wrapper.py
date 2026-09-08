@@ -163,11 +163,6 @@ def _build_tls_argv(config: TlsConfigLike, *, role: RoleLike | None = None,
     return TranslationResult(tuple(argv), tuple(unsupported))
 
 
-def tls_argv_for_config(config: TlsConfigLike, *, role: RoleLike | None = None,
-    capabilities: dict[str, Any] | None = None, staging_dir: str | None = None) -> TranslationResult:
-    return _build_tls_argv(config, role=role, capabilities=capabilities, staging_dir=staging_dir)
-
-
 def _split_priority_argv(argv: list[str]) -> tuple[str, list[str]]:
     if len(argv) < 2 or argv[-2] != "--priority":
         return "", argv
@@ -176,6 +171,11 @@ def _split_priority_argv(argv: list[str]) -> tuple[str, list[str]]:
 
 class GnuTLSWrapper(BaseTemplateWrapper):
     CAPABILITIES = CAPABILITIES
+
+    @classmethod
+    def tls_argv_for_config(cls, config: Any, *, role: Any | None = None,
+        capabilities: dict[str, Any] | None = None) -> TranslationResult:
+        return _build_tls_argv(config, role=role, capabilities=capabilities)
 
     @property
     def _component_name(self) -> str:
@@ -237,67 +237,99 @@ class GnuTLSWrapper(BaseTemplateWrapper):
     def _client_x509_cafile(self, config: interop_pb2.TlsConfig) -> str:
         return resolve_client_trust_pem_path(config)
 
-    def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
-        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
-
-        cert_path, key_path = self._ensure_cert_paths(config, state)
+    def _gnutls_priority_parts(self, config: interop_pb2.TlsConfig, state: WrapperSessionState,
+        role: int) -> tuple[str, list[str]]:
         staging = self._session_staging_dir(state)
         prio, mid = _split_priority_argv(
-            list(_build_tls_argv(config, role=interop_pb2.SERVER, staging_dir=staging).argv))
+            list(_build_tls_argv(config, role=role, staging_dir=staging).argv))
         if not prio:
             raise RuntimeError("empty GnuTLS priority string")
-        client_cert_flag = ("--require-client-cert" if test_feature_enabled_in_config(config, "mtls")
-            else "--disable-client-cert")
-        cmd = ["gnutls-serv", "-p", str(config.port), "--x509certfile", cert_path, "--x509keyfile", key_path,
-            client_cert_flag, *mid, "--priority", prio, "-q", "--echo"]
-        if has_0rtt:
-            cmd.append("--earlydata")
+        return prio, mid
+
+    def _gnutls_alpn_args(self, config: interop_pb2.TlsConfig) -> list[str]:
         alpn = alpn_cli_protocol_list(config)
         if alpn:
-            cmd.extend(["--alpn", alpn])
-        cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd)
-        return proc, format_executed_command(cmd, cwd), "GnuTLS Server started"
+            return ["--alpn", alpn]
+        return []
 
-    def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
+    def _build_common_args(self, config: interop_pb2.TlsConfig, state: WrapperSessionState,
+        *, for_server: bool) -> list[str]:
+        role = interop_pb2.SERVER if for_server else interop_pb2.CLIENT
+        prio, mid = self._gnutls_priority_parts(config, state, role)
+        args = list(mid) + ["--priority", prio]
+        if for_server:
+            args.extend(["-q", "--echo"])
+        return args
+
+    def _gnutls_client_session_args(self, config: interop_pb2.TlsConfig,
+        state: WrapperSessionState) -> tuple[list[str], dict[str, str]]:
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
+        if not has_resumption and not has_0rtt:
+            return [], {}
         session_file, early_data_file = _gnutls_session_state_paths(config)
         step = TlsConfigView(config).resumption_step
-
-        host = config.server_hostname or "localhost"
-        staging = self._session_staging_dir(state)
-        prio, mid = _split_priority_argv(
-            list(_build_tls_argv(config, role=interop_pb2.CLIENT, staging_dir=staging).argv))
-        if not prio:
-            raise RuntimeError("empty GnuTLS priority string")
-        cmd = ["gnutls-cli", "-p", str(config.port), "--disable-sni", "--insecure", "--x509cafile",
-            self._client_x509_cafile(config), *mid, "--priority", prio]
+        args: list[str] = []
         session_env: dict[str, str] = {}
-        if (has_resumption or has_0rtt) and step == "save":
-            cmd.extend(["--resume", "--waitresumption"])
+        if step == "save":
+            args.extend(["--resume", "--waitresumption"])
             session_env["GNUTLS_INTEROP_SESSION_OUT"] = session_file
-        if (has_resumption or has_0rtt) and step == "resume":
+        if step == "resume":
             session_env["GNUTLS_INTEROP_SESSION_IN"] = session_file
             if has_0rtt:
                 Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
-                cmd.extend(["--earlydata", early_data_file])
+                args.extend(["--earlydata", early_data_file])
+        return args, session_env
+
+    def _gnutls_mtls_client_args(self, config: interop_pb2.TlsConfig,
+        state: WrapperSessionState) -> list[str]:
         if test_feature_enabled_in_config(config, "mtls"):
             client_cert, client_key = self._ensure_cert_paths(config, state)
-            cmd.extend(["--x509certfile", client_cert, "--x509keyfile", client_key])
-        alpn = alpn_cli_protocol_list(config)
-        if alpn:
-            cmd.extend(["--alpn", alpn])
+            return ["--x509certfile", client_cert, "--x509keyfile", client_key]
+        return []
+
+    def _popen_merged_cmd(self, cmd: list[str], *, env: dict[str, str] | None = None):
+        cwd = os.getcwd()
+        kw: dict[str, Any] = {"cwd": cwd}
+        if env is not None:
+            kw["env"] = env
+        return popen_stdio_merged(cmd, **kw), format_executed_command(cmd, cwd)
+
+    def _start_server(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
+        cert_path, key_path = self._ensure_cert_paths(config, state)
+        client_cert_flag = ("--require-client-cert" if test_feature_enabled_in_config(config, "mtls")
+            else "--disable-client-cert")
+        cmd = ["gnutls-serv", "-p", str(config.port), "--x509certfile", cert_path, "--x509keyfile", key_path,
+            client_cert_flag, *self._build_common_args(config, state, for_server=True)]
+        if test_feature_enabled_in_config(config, "0rtt"):
+            cmd.append("--earlydata")
+        cmd.extend(self._gnutls_alpn_args(config))
+        proc, logs = self._popen_merged_cmd(cmd)
+        return proc, logs, "GnuTLS Server started"
+
+    def _start_client(self, config: interop_pb2.TlsConfig, state: WrapperSessionState):
+        host = config.server_hostname or "localhost"
+        cmd = ["gnutls-cli", "-p", str(config.port), "--disable-sni", "--insecure", "--x509cafile",
+            self._client_x509_cafile(config), *self._build_common_args(config, state, for_server=False)]
+        session_args, session_env = self._gnutls_client_session_args(config, state)
+        cmd.extend(session_args)
+        cmd.extend(self._gnutls_mtls_client_args(config, state))
+        cmd.extend(self._gnutls_alpn_args(config))
         if TlsConfigView(config).expect_hrr:
             cmd.extend(["--single-key-share"])
         cmd.append(host)
-        cwd = os.getcwd()
-        proc = popen_stdio_merged(cmd, cwd=cwd, env=_gnutls_popen_env(session_env=session_env))
-        return proc, format_executed_command(cmd, cwd), "GnuTLS Client connected"
+        proc, logs = self._popen_merged_cmd(cmd, env=_gnutls_popen_env(session_env=session_env))
+        return proc, logs, "GnuTLS Client connected"
 
     def _server_transmit_poll(self) -> bool:
         return True
 
 
+def create_servicer() -> GnuTLSWrapper:
+    return GnuTLSWrapper()
+
+
 if __name__ == "__main__":
-    serve_insecure(GnuTLSWrapper, "GnuTLS")
+    serve_insecure(create_servicer, "GnuTLS")
+
+WRAPPER_CLASS = GnuTLSWrapper

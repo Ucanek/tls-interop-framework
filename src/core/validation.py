@@ -5,11 +5,11 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Iterable, Sequence
-from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Literal
 
+from core.crypto_semantics import Tls12CipherMetadata, tls12_cipher_metadata_from_name
 from core.capabilities import(ASYMMETRIC_SCALAR_OPTION_IDS, MULTI_VALUE_OPTION_IDS,
     NON_TLS_OPTION_IDS, TlsMode, backend_cipher_modes, backend_supports_cipher, backend_supports_token,
     capability_dimension_name, cipher_catalog_id_requires_identity_pem, cipher_required_test_feature,
@@ -356,44 +356,6 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
     coerce_tls_version_for_cipher_capabilities(args, repo)
     _validate_cipher_suite_for_tls_version(args, known_wrappers=known_wrappers, repo=repo)
     _validate_wrapper_config_conflicts(args, known_wrappers=known_wrappers)
-
-
-@dataclass(frozen=True)
-class Tls12CipherMetadata:
-    """Metadata extracted from a TLS 1.2 cipher token/name."""
-
-    kx: Literal["ecdhe", "dhe", "static-rsa", "unknown"]
-    au: Literal["rsa", "ecdsa", "dsa", "unknown"]
-
-
-def tls12_cipher_metadata_from_name(cipher_name: str) -> Tls12CipherMetadata:
-    """
-    Extract TLS 1.2 semantics from cipher token/name (catalog id or backend literal).
-
-    This parser is intentionally TLS1.2-oriented and must not be used for TLS 1.3 ciphers.
-    """
-    raw = (cipher_name or "").strip().lower()
-    tok = raw.replace("_", "-").replace(" ", "")
-    if not tok or tok.startswith("tls-"):
-        return Tls12CipherMetadata(kx="unknown", au="unknown")
-    if "ecdhe" in tok:
-        kx: Literal["ecdhe", "dhe", "static-rsa", "unknown"] = "ecdhe"
-    elif re.search(r"(^|-)dhe(-|$)", tok):
-        kx = "dhe"
-    elif "rsa" in tok or tok.startswith("aes"):
-        kx = "static-rsa"
-    else:
-        kx = "unknown"
-
-    if re.search(r"(^|-)dss(-|$)", tok):
-        au: Literal["rsa", "ecdsa", "dsa", "unknown"] = "dsa"
-    elif "ecdsa" in tok:
-        au = "ecdsa"
-    elif "rsa" in tok or tok.startswith("aes"):
-        au = "rsa"
-    else:
-        au = "unknown"
-    return Tls12CipherMetadata(kx=kx, au=au)
 
 
 def _split_cell_list_tokens(cell: MatrixCell, field: str, *, server: bool) -> list[str]:

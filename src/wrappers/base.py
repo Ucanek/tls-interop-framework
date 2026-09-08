@@ -9,11 +9,12 @@ import socket
 import subprocess
 import threading
 import time
-from typing import Tuple
+from pathlib import Path
+from typing import Any, Tuple
 
 from grpc import ServicerContext
 
-from core.utils import split_asymmetric_csv
+from core.capabilities import TranslationResult
 from core.validation import catalog_parameter_conflicts
 from core.identity import catalog_identity_pem_paths_for_config
 from core.tls_config_view import TlsConfigView
@@ -85,6 +86,8 @@ def _exc_message(phase: str, exc: BaseException) -> str:
 class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     """Dispatches gRPC ops; subclasses implement backend-specific argv and ``Popen`` setup."""
 
+    CAPABILITIES: dict[str, Any] = {}
+
     @staticmethod
     def wait_tcp_connect(host: str, port: int, *, timeout_s: float = 30.0,
         poll_s: float = 0.05, proc: subprocess.Popen[bytes] | None = None) -> tuple[bool, str]:
@@ -106,6 +109,28 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         self._sessions: dict[str, WrapperSessionState] = {}
         self._session_locks: dict[str, threading.Lock] = {}
         self._registry_lock = threading.Lock()
+
+    @classmethod
+    def tls_argv_for_config(cls, config: Any, *, role: Any | None = None,
+        capabilities: dict[str, Any] | None = None) -> TranslationResult:
+        return TranslationResult((), (f"({cls.__name__} does not implement tls_argv_for_config)",))
+
+    @classmethod
+    def local_cli_requirements(cls) -> tuple[str, ...]:
+        return ()
+
+    @classmethod
+    def resolve_cli_tool(cls, exe: str) -> str | None:
+        return None
+
+    @classmethod
+    def orchestration_env(cls, active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+        return {}
+
+    @classmethod
+    def local_wrapper_env(cls, repo: Path, backend_id: str,
+        active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+        return {}
 
     def _session_lock_for(self, session_id: str) -> threading.Lock:
         with self._registry_lock:

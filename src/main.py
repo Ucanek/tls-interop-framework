@@ -14,13 +14,13 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
+from core.cleanup import matrix_identity_certs
 from core.capabilities import discover_wrapper_ids, grpc_port_overrides_from_args, print_catalog_options, repository_root
 from core.matrix import matrix_axis_plan, normalize_cell_tls_micro_params
 from core.matrix_cell import MatrixCell
 from core.validation import cell_capability_skip_reason, validate_run_args
 from core.runner import(EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, WrapperSession,
-    WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_interop_certs, remove_interop_certs,
-    required_backends_from_matrix, run_matrix_cell_grpc)
+    WorkerSlotPool, _MAX_PARALLEL_JOBS, required_backends_from_matrix, run_matrix_cell_grpc)
 
 logger = logging.getLogger(__name__)
 
@@ -278,106 +278,131 @@ def _run_matrix_parallel(combos: list[tuple[Any, ...]], *, axis_keys: list[str],
         slot_pool.stop()
 
 
+def _handle_list_commands(args: argparse.Namespace, repo: Path) -> int | None:
+    if args.list_wrappers:
+        for name in discover_wrapper_ids(repo):
+            logger.info(name)
+        return 0
+    if args.list_options:
+        print_catalog_options(repo)
+        return 0
+    return None
+
+
+def _validate_parallel_constraints(args: argparse.Namespace, parser: argparse.ArgumentParser) -> dict[str, int]:
+    if float(args.cell_timeout) <= 0:
+        parser.error("--cell-timeout must be positive")
+    if int(args.jobs) < 1:
+        parser.error("--jobs must be >= 1")
+    if int(args.jobs) > _MAX_PARALLEL_JOBS:
+        parser.error(f"--jobs must be <= {_MAX_PARALLEL_JOBS}")
+    if int(args.jobs) > 1 and bool(args.attach):
+        parser.error("--jobs > 1 cannot be used with --attach")
+    if int(args.jobs) > 1 and int(args.tls_port) != 0:
+        parser.error("--jobs > 1 cannot be used with --tls-port")
+    grpc_overrides = grpc_port_overrides_from_args(args)
+    if int(args.jobs) > 1 and grpc_overrides:
+        parser.error("--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
+    return grpc_overrides
+
+
+def _plan_matrix_combos(args: argparse.Namespace, repo: Path, known: frozenset[str]) -> tuple[list[str],
+    list[tuple[Any, ...]], int]:
+    axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
+    if getattr(args, "suite_cases", None):
+        for case in args.suite_cases:
+            for k in case:
+                if k not in axis_keys:
+                    axis_keys.append(k)
+        combos = suite_cases_to_combos(args, axis_keys)
+        return axis_keys, combos, len(combos)
+    n_tests = 1
+    for av in axis_vals:
+        n_tests *= len(av)
+    return axis_keys, list(product(*axis_vals)), n_tests
+
+
+def _run_matrix_sequential(combos: list[tuple[Any, ...]], *, axis_keys: list[str], args: argparse.Namespace,
+    repo: Path, known: frozenset[str], backends: frozenset[str], debug_logs: DebugRunLogs | None,
+    grpc_overrides: dict[str, int]) -> list[tuple[str, int]]:
+    results: list[tuple[str, int]] = []
+    if backends:
+        with WrapperSession(repo, backends, verbose=bool(args.verbose), attach=bool(args.attach),
+            grpc_port_overrides=grpc_overrides) as session:
+            for tup in combos:
+                results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
+                    known=known, session=session, debug_logs=debug_logs))
+    else:
+        for tup in combos:
+            results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
+                known=known, session=None, debug_logs=debug_logs))
+    return results
+
+
+def _execute_matrix(combos: list[tuple[Any, ...]], *, axis_keys: list[str], args: argparse.Namespace,
+    repo: Path, known: frozenset[str], backends: frozenset[str], debug_logs: DebugRunLogs | None,
+    grpc_overrides: dict[str, int]) -> list[tuple[str, int]]:
+    parallel_jobs = int(args.jobs)
+    if parallel_jobs > 1 and backends:
+        return _run_matrix_parallel(combos, axis_keys=axis_keys, args=args, repo=repo, known=known,
+            backends=backends, debug_logs=debug_logs, jobs=parallel_jobs)
+    return _run_matrix_sequential(combos, axis_keys=axis_keys, args=args, repo=repo, known=known,
+        backends=backends, debug_logs=debug_logs, grpc_overrides=grpc_overrides)
+
+
+def _report_matrix_results(results: list[tuple[str, int]], debug_logs: DebugRunLogs | None, repo: Path) -> int:
+    logger.info("")
+    logger.info("--- Results ---")
+    for label, rc in results:
+        logger.info("%s | %s", label, _status_for_rc(rc))
+    if any(rc not in (0, EXIT_SKIP) for _, rc in results):
+        if debug_logs is not None and debug_logs.ready:
+            run_dir = debug_logs.path
+            rel = run_dir.relative_to(repo) if run_dir and run_dir.is_relative_to(repo) else run_dir
+            logger.error("Debug logs for this run: %s/", rel)
+        return 1
+    return 0
+
+
 def main() -> int:
     repo = repository_root()
     parser = build_parser(repo)
     args = parser.parse_args()
     configure_logging(bool(args.verbose))
-    cleanup_certs = False
     try:
         enforce_suite_cli_exclusivity(args, parser)
         if getattr(args, "suite", None):
             apply_suite_file(args, Path(args.suite))
 
-        if args.list_wrappers:
-            for name in discover_wrapper_ids(repo):
-                logger.info(name)
-            return 0
-        if args.list_options:
-            print_catalog_options(repo)
-            return 0
+        list_rc = _handle_list_commands(args, repo)
+        if list_rc is not None:
+            return list_rc
 
-        if float(args.cell_timeout) <= 0:
-            parser.error("--cell-timeout must be positive")
-        if int(args.jobs) < 1:
-            parser.error("--jobs must be >= 1")
-        if int(args.jobs) > _MAX_PARALLEL_JOBS:
-            parser.error(f"--jobs must be <= {_MAX_PARALLEL_JOBS}")
-        if int(args.jobs) > 1 and bool(args.attach):
-            parser.error("--jobs > 1 cannot be used with --attach")
-        if int(args.jobs) > 1 and int(args.tls_port) != 0:
-            parser.error("--jobs > 1 cannot be used with --tls-port")
-        grpc_overrides = grpc_port_overrides_from_args(args)
-        if int(args.jobs) > 1 and grpc_overrides:
-            parser.error("--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
-
+        grpc_overrides = _validate_parallel_constraints(args, parser)
         known = frozenset(discover_wrapper_ids(repo))
-        axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
-        if getattr(args, "suite_cases", None):
-            for case in args.suite_cases:
-                for k in case:
-                    if k not in axis_keys:
-                        axis_keys.append(k)
-            combos = suite_cases_to_combos(args, axis_keys)
-            n_tests = len(combos)
-        else:
-            n_tests = 1
-            for av in axis_vals:
-                n_tests *= len(av)
-            combos = list(product(*axis_vals))
+        axis_keys, combos, n_tests = _plan_matrix_combos(args, repo, known)
         logger.info("Running matrix of %d tests...", n_tests)
         debug_logs: DebugRunLogs | None = DebugRunLogs(repo) if combos else None
-        if combos:
-            ensure_interop_certs(repo, verbose=bool(args.verbose))
-            cleanup_certs = True
-        backends, _ = required_backends_from_matrix(axis_keys, combos, args_template=args,
-            repo=repo, known=known)
+        backends, _ = required_backends_from_matrix(axis_keys, combos, args_template=args, repo=repo, known=known)
 
-        session: BaseExecutionSession | None = None
-        results: list[tuple[str, int]] = []
-        parallel_jobs = int(args.jobs)
-        try:
-            if parallel_jobs > 1 and backends:
-                results = _run_matrix_parallel(combos, axis_keys=axis_keys, args=args, repo=repo, known=known,
-                    backends=backends, debug_logs=debug_logs, jobs=parallel_jobs)
-            else:
-                if backends:
-                    session = WrapperSession(repo, backends, verbose=bool(args.verbose), attach=bool(args.attach),
-                        grpc_port_overrides=grpc_overrides)
-                    session.start()
-                for tup in combos:
-                    results.append(_run_matrix_cell(tup, axis_keys=axis_keys, args_template=args, repo=repo,
-                        known=known, session=session, debug_logs=debug_logs))
-        except TimeoutError as e:
-            logger.error("%s", e)
-            return 2
-        except subprocess.CalledProcessError as e:
-            logger.error("Backend startup failed: %s", e)
-            return 2
-        except RuntimeError as e:
-            logger.error("Wrapper startup failed: %s", e)
-            return 2
-        finally:
-            if session is not None:
-                session.stop()
+        with matrix_identity_certs(repo, enabled=bool(combos), verbose=bool(args.verbose)):
+            try:
+                results = _execute_matrix(combos, axis_keys=axis_keys, args=args, repo=repo, known=known,
+                    backends=backends, debug_logs=debug_logs, grpc_overrides=grpc_overrides)
+            except TimeoutError as e:
+                logger.error("%s", e)
+                return 2
+            except subprocess.CalledProcessError as e:
+                logger.error("Backend startup failed: %s", e)
+                return 2
+            except RuntimeError as e:
+                logger.error("Wrapper startup failed: %s", e)
+                return 2
 
-        logger.info("")
-        logger.info("--- Results ---")
-        for label, rc in results:
-            logger.info("%s | %s", label, _status_for_rc(rc))
-        if any(rc not in (0, EXIT_SKIP) for _, rc in results):
-            if debug_logs is not None and debug_logs.ready:
-                run_dir = debug_logs.path
-                rel = run_dir.relative_to(repo) if run_dir and run_dir.is_relative_to(repo) else run_dir
-                logger.error("Debug logs for this run: %s/", rel)
-            return 1
-        return 0
+        return _report_matrix_results(results, debug_logs, repo)
     except ValueError as e:
         logger.error("%s", e)
         return 2
-    finally:
-        if cleanup_certs:
-            remove_interop_certs(repo, verbose=bool(args.verbose))
 
 
 if __name__ == "__main__":

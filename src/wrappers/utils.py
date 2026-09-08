@@ -2,21 +2,26 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import re
+import selectors
 import shlex
-import shutil
 import subprocess
 import tempfile
-from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, Type, TYPE_CHECKING
+import time
+from typing import Any, BinaryIO, Literal, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 
+from core.cleanup import remove_directory_tree
 from core.capabilities import metadata_from_capabilities
+from core.constants import TlsFeature
 from core.tls_config_view import RoleLike, TlsConfigInput, TlsConfigLike, TlsConfigView
 from core.utils import split_asymmetric_csv
 from core.validation import tls_mode_from_version
 from interop_proto import interop_pb2
+from wrappers.plugin import WrapperServicerFactory
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from wrappers.base import WrapperSessionState
@@ -69,9 +74,10 @@ def alpn_cli_protocol_list(config: TlsConfigLike) -> str:
     return ",".join(protos) if protos else ""
 
 
-def test_feature_enabled_in_config(config: TlsConfigLike, feature: str) -> bool:
+def test_feature_enabled_in_config(config: TlsConfigLike, feature: str | TlsFeature) -> bool:
     """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
-    return feature.strip().lower() in TlsConfigView(config).psk_modes
+    name = feature.value if isinstance(feature, TlsFeature) else feature
+    return name.strip().lower() in TlsConfigView(config).psk_modes
 
 
 def remove_tls_session_artifact_files(repo_root: str) -> None:
@@ -114,10 +120,7 @@ def interop_staging_sidecar_path(staging_dir: str, name: str) -> str:
 
 def cleanup_interop_staging_dir(staging_dir: str) -> None:
     """Remove a session staging directory tree."""
-    root = (staging_dir or "").strip()
-    if not root:
-        return
-    shutil.rmtree(root, ignore_errors=True)
+    remove_directory_tree(staging_dir)
 
 
 def tls_mode_12_or_13(config: TlsConfigLike | None) -> TlsModeLiteral:
@@ -169,64 +172,38 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
     return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
 
 
-def _run_async(coro: Any) -> Any:
-    """Run a coroutine from sync gRPC handler threads (no event loop on the worker thread)."""
-    return asyncio.run(coro)
-
-
-async def _read_fd_async(loop: asyncio.AbstractEventLoop, fd: int, nbytes: int) -> bytes:
-    fut = loop.create_future()
-
-    def _on_read() -> None:
-        if fut.done():
-            return
-        try:
-            chunk = os.read(fd, nbytes)
-        except OSError as exc:
-            loop.remove_reader(fd)
-            fut.set_exception(exc)
-            return
-        loop.remove_reader(fd)
-        fut.set_result(chunk)
-
-    loop.add_reader(fd, _on_read)
-    try:
-        return await fut
-    finally:
-        if not fut.done():
-            loop.remove_reader(fd)
-
-
-async def _read_merged_async(fd: int, *, timeout_s: float, idle_s: float, max_bytes: int) -> bytes:
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + max(0.0, timeout_s)
+def _read_merged_fd(fd: int, *, timeout_s: float, idle_s: float, max_bytes: int) -> bytes:
+    """Read from a pipe fd until timeout or idle gap (sync ``selectors``, no asyncio)."""
+    sel = selectors.DefaultSelector()
+    sel.register(fd, selectors.EVENT_READ)
+    deadline = time.monotonic() + max(0.0, timeout_s)
     chunks: list[bytes] = []
     total = 0
     last_data_at: float | None = None
     poll_s = 0.02
 
-    while loop.time() < deadline and total < max_bytes:
-        remaining = deadline - loop.time()
-        if remaining <= 0:
-            break
-        wait_s = min(poll_s, remaining)
-        piece: bytes | None = None
-        try:
-            piece = await asyncio.wait_for(
-                _read_fd_async(loop, fd, min(4096, max_bytes - total)),
-                timeout=max(0.001, wait_s),
-            )
-        except asyncio.TimeoutError:
-            piece = b""
-        except OSError:
-            break
-        if piece:
-            chunks.append(piece)
-            total += len(piece)
-            last_data_at = loop.time()
-            continue
-        if last_data_at is not None and (loop.time() - last_data_at) >= idle_s:
-            break
+    try:
+        while time.monotonic() < deadline and total < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            wait_s = min(poll_s, remaining)
+            events = sel.select(timeout=wait_s)
+            if events:
+                try:
+                    piece = os.read(fd, min(4096, max_bytes - total))
+                except OSError:
+                    break
+                if piece:
+                    chunks.append(piece)
+                    total += len(piece)
+                    last_data_at = time.monotonic()
+                    continue
+            if last_data_at is not None and (time.monotonic() - last_data_at) >= idle_s:
+                break
+    finally:
+        sel.unregister(fd)
+        sel.close()
 
     return b"".join(chunks)
 
@@ -236,7 +213,7 @@ def read_merged_stdout(stream: BinaryIO | None, *, timeout_s: float = 2.0, idle_
     """Read merged stdout/stderr until ``timeout_s`` or ``idle_s`` without new data."""
     if stream is None:
         return b""
-    return _run_async(_read_merged_async(stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes))
+    return _read_merged_fd(stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes)
 
 
 def peek_merged_stdout(stream: BinaryIO | None, *, limit: int = 65536, idle_s: float = 0.05) -> bytes:
@@ -318,17 +295,21 @@ def run_cli_version(argv: list[str], timeout: float = 5) -> str:
     return "unknown"
 
 
-def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
+def serve_insecure(servicer_factory: WrapperServicerFactory, display_name: str) -> None:
     """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
     from concurrent import futures
 
     import grpc
     from interop_proto import interop_pb2_grpc
+    from wrappers.base import BaseTemplateWrapper
 
+    servicer = servicer_factory()
+    if not isinstance(servicer, BaseTemplateWrapper):
+        raise TypeError(f"{display_name} servicer factory must return BaseTemplateWrapper")
     log = logging.getLogger(__name__)
     port = int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
+    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(servicer, server)
     server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
     log.info("%s wrapper listening on %d...", display_name, port)
