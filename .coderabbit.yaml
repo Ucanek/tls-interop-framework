@@ -1,0 +1,12 @@
+language: "cs-CZ"
+reviews:
+  profile: "assertive" # Možnosti: "chill" (konstruktivní) nebo "assertive" (přísná kontrola)
+  auto_review:
+    enabled: true
+    drafts: false # Ignorovat rozpracované Draft PRs
+  path_filters:
+    - "!interop_proto/**" # Ignorovat vygenerované Protobuf stuby
+    - "!debug_logs/**"    # Ignorovat složku s logy
+    - "!certs/**"         # Ignorovat certifikáty
+chat:
+  auto_reply: true
