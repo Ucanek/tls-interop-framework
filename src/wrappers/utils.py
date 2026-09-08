@@ -2,28 +2,41 @@
 
 from __future__ import annotations
 
-import fcntl
+import logging
 import os
 import re
+import selectors
 import shlex
 import subprocess
+import tempfile
 import time
-from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
+from typing import BinaryIO, Literal, Mapping, MutableMapping, Sequence, TYPE_CHECKING
 
-from core.catalog import metadata_from_capabilities, tls_mode_from_version
-from core.identity import repeated_config_tokens
-from proto import interop_pb2
+from core.cleanup import remove_directory_tree
+from core.capabilities import metadata_from_capabilities
+from core.constants import TlsFeature
+from core.tls_config_view import RoleLike, TlsConfigLike, TlsConfigView
+from core.validation import tls_mode_from_version
+from interop_proto import interop_pb2
+from wrappers.plugin import WrapperServicerFactory
+
+logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from wrappers.base import WrapperSessionState
 
 TlsModeLiteral = Literal["1.2", "1.3"]
 
 _HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE) for p in (
+    re.compile(p, re.IGNORECASE)
+    for p in (
         r"hello\s*retry\s*request",
         r"helloretryrequest",
         r"hello_retry_request",
         r"received\s+hrr",
         r"retry\s+request",
-    ))
+    )
+)
 
 
 def hrr_detected_in_cli_output(text: str) -> bool:
@@ -39,26 +52,18 @@ def hrr_detected_in_cli_output(text: str) -> bool:
         return True
     if lower.count("read client hello") >= 2:
         return True
-    if len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2:
+    if (
+        len(
+            re.findall(
+                r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello",
+                blob,
+                re.IGNORECASE,
+            )
+        )
+        >= 2
+    ):
         return True
     return False
-
-
-def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    """
-    Split comma-separated tokens per role on the first ``:`` in the raw string.
-
-    With no colon, both sides receive the same parsed list.
-    """
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
 
 
 def parse_version_line(out: str | None) -> str:
@@ -69,20 +74,22 @@ def parse_version_line(out: str | None) -> str:
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
-def alpn_protocols_from_config(config: Any) -> list[str]:
-    raw = getattr(config, "alpn_protocols", None) or []
-    return [str(p).strip() for p in raw if str(p).strip()]
+def alpn_protocols_from_config(config: TlsConfigLike) -> list[str]:
+    return TlsConfigView(config).alpn_protocols
 
 
-def alpn_cli_protocol_list(config: Any) -> str:
+def alpn_cli_protocol_list(config: TlsConfigLike) -> str:
     """Comma-separated ALPN ids for backend CLI flags (empty when unset)."""
     protos = alpn_protocols_from_config(config)
     return ",".join(protos) if protos else ""
 
 
-def test_feature_enabled_in_config(config: Any, feature: str) -> bool:
+def test_feature_enabled_in_config(
+    config: TlsConfigLike, feature: str | TlsFeature
+) -> bool:
     """True when ``test_features`` enabled this feature (mirrored in ``psk_modes``)."""
-    return feature.strip().lower() in repeated_config_tokens(config, "psk_modes")
+    name = feature.value if isinstance(feature, TlsFeature) else feature
+    return name.strip().lower() in TlsConfigView(config).psk_modes
 
 
 def remove_tls_session_artifact_files(repo_root: str) -> None:
@@ -100,28 +107,42 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
             pass
 
 
-def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
-    """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
+def ensure_interop_staging_dir(state: WrapperSessionState) -> str:
+    """Per-session staging directory for PEM and sidecar files (``state.staging_dir``)."""
+    staging = (getattr(state, "staging_dir", None) or "").strip()
+    if staging:
+        return staging
+    staging = tempfile.mkdtemp(prefix="interop_staging_")
+    state.staging_dir = staging
+    return staging
 
 
-def interop_staging_sidecar_path(prefix: str, name: str) -> str:
-    """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot suffix."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_{name}{suffix}"
+def interop_staging_pem_paths(staging_dir: str) -> tuple[str, str]:
+    """Cert/key PEM paths inside a session staging directory."""
+    root = os.path.abspath(staging_dir)
+    return os.path.join(root, "cert.pem"), os.path.join(root, "key.pem")
 
 
-def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
+def interop_staging_sidecar_path(staging_dir: str, name: str) -> str:
+    """Auxiliary file path inside a session staging directory (e.g. GnuTLS PSK passwd)."""
+    root = os.path.abspath(staging_dir)
+    safe = name.replace("/", "_").replace("\\", "_").strip() or "sidecar"
+    return os.path.join(root, safe)
+
+
+def cleanup_interop_staging_dir(staging_dir: str) -> None:
+    """Remove a session staging directory tree."""
+    remove_directory_tree(staging_dir)
+
+
+def tls_mode_12_or_13(config: TlsConfigLike | None) -> TlsModeLiteral:
     """Maps ``TlsConfig.version`` to TLS 1.2 or TLS 1.3 mode."""
     if config is None:
         return "1.3"
-    return tls_mode_from_version(config.version)
+    return tls_mode_from_version(TlsConfigView(config).version)
 
 
-def is_server_role(role: Any | None) -> bool:
+def is_server_role(role: RoleLike | None) -> bool:
     if role is None:
         return True
     try:
@@ -130,7 +151,9 @@ def is_server_role(role: Any | None) -> bool:
         return True
 
 
-def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None) -> str:
+def format_executed_command(
+    cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None
+) -> str:
     """Formats argv as a shell-safe log line."""
     line = shlex.join(str(x) for x in cmd)
     if cwd is not None:
@@ -138,8 +161,9 @@ def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] |
     return line
 
 
-def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
-    stdout: str = "", stderr: str = "") -> str:
+def format_cli_debug_logs(
+    *, cmd: str, exit_code: int | None = None, stdout: str = "", stderr: str = ""
+) -> str:
     """
     Build ``OperationResponse.logs`` with CMD, exit code, stdout, and stderr.
 
@@ -160,60 +184,138 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
         err_body = stderr.rstrip()
     else:
         err_body = "(stderr merged into stdout; see stdout above)"
-    return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
+    return "\n".join(
+        [cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body]
+    )
 
 
-def _make_non_blocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
-
-
-def popen_stdio_merged(cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
-    """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        cwd=os.fspath(cwd) if cwd is not None else None, env=dict(env) if env is not None else None)
-    if p.stdout:
-        _make_non_blocking(p.stdout.fileno())
-    return p
-
-
-def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0,
-    idle_s: float = 0.05, poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
-    """
-    Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
-    """
-    if proc.stdout is None:
-        return b""
+def _read_merged_fd(
+    fd: int, *, timeout_s: float, idle_s: float, max_bytes: int
+) -> bytes:
+    """Read from a pipe fd until timeout or idle gap (sync ``selectors``, no asyncio)."""
+    sel = selectors.DefaultSelector()
+    sel.register(fd, selectors.EVENT_READ)
     deadline = time.monotonic() + max(0.0, timeout_s)
     chunks: list[bytes] = []
     total = 0
     last_data_at: float | None = None
-    while time.monotonic() < deadline and total < max_bytes:
-        try:
-            piece = proc.stdout.read(min(4096, max_bytes - total))
-        except BlockingIOError:
-            piece = None
-        except OSError:
-            break
-        if piece:
-            chunks.append(piece)
-            total += len(piece)
-            last_data_at = time.monotonic()
-            if len(piece) < 4096:
-                continue
-        elif last_data_at is not None and (time.monotonic() - last_data_at) >= idle_s:
-            break
-        time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+    poll_s = 0.02
+
+    try:
+        while time.monotonic() < deadline and total < max_bytes:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            wait_s = min(poll_s, remaining)
+            events = sel.select(timeout=wait_s)
+            if events:
+                try:
+                    piece = os.read(fd, min(4096, max_bytes - total))
+                except OSError:
+                    break
+                if piece:
+                    chunks.append(piece)
+                    total += len(piece)
+                    last_data_at = time.monotonic()
+                    continue
+            if last_data_at is not None and (time.monotonic() - last_data_at) >= idle_s:
+                break
+    finally:
+        sel.unregister(fd)
+        sel.close()
+
     return b"".join(chunks)
 
 
-def capability(name: str, *flags: interop_pb2.ModifyFlag.ValueType) -> interop_pb2.Capability:
+def read_merged_stdout(
+    stream: BinaryIO | None,
+    *,
+    timeout_s: float = 2.0,
+    idle_s: float = 0.05,
+    max_bytes: int = 1 << 20,
+) -> bytes:
+    """Read merged stdout/stderr until ``timeout_s`` or ``idle_s`` without new data."""
+    if stream is None:
+        return b""
+    return _read_merged_fd(
+        stream.fileno(), timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes
+    )
+
+
+def peek_merged_stdout(
+    stream: BinaryIO | None, *, limit: int = 65536, idle_s: float = 0.05
+) -> bytes:
+    """Best-effort read of early merged output without waiting for process exit."""
+    if stream is None:
+        return b""
+    data = read_merged_stdout(
+        stream, timeout_s=idle_s + 0.15, idle_s=idle_s, max_bytes=limit
+    )
+    return data[:limit]
+
+
+def drain_merged_stdout(stream: BinaryIO | None, *, limit: int = 1 << 20) -> bytes:
+    """Read available merged output; blocking tail read when the pipe still has buffered data."""
+    if stream is None:
+        return b""
+    peeked = peek_merged_stdout(stream, limit=limit)
+    if peeked:
+        return peeked
+    try:
+        tail = stream.read(limit) or b""
+    except OSError:
+        return peeked
+    if not tail:
+        return peeked
+    combined = peeked + tail
+    return combined[:limit]
+
+
+def popen_stdio_merged(
+    cmd: Sequence[object],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
+    """Starts subprocess with stdin and merged stdout/stderr (``stderr=STDOUT``)."""
+    return subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=os.fspath(cwd) if cwd is not None else None,
+        env=dict(env) if env is not None else None,
+    )
+
+
+def read_nonblocking_stdout(
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout_s: float = 2.0,
+    idle_s: float = 0.05,
+    poll_s: float = 0.02,
+    max_bytes: int = 1 << 20,
+) -> bytes:
+    """
+    Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
+
+    ``poll_s`` is accepted for API compatibility; asyncio event-loop polling replaces manual sleep.
+    """
+    del poll_s
+    return read_merged_stdout(
+        proc.stdout, timeout_s=timeout_s, idle_s=idle_s, max_bytes=max_bytes
+    )
+
+
+def capability(
+    name: str, *flags: interop_pb2.ModifyFlag.ValueType
+) -> interop_pb2.Capability:
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
-def standard_library_metadata(component_name: str, version: str, *,
-    capabilities: dict | None = None) -> interop_pb2.LibraryMetadata:
+def standard_library_metadata(
+    component_name: str, version: str, *, capabilities: dict | None = None
+) -> interop_pb2.LibraryMetadata:
     """Returns capability matrix from ``capabilities.json`` when provided."""
     cap = capability
     r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
@@ -223,14 +325,23 @@ def standard_library_metadata(component_name: str, version: str, *,
     group_caps: list[str] = []
     try:
         if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(capabilities,
-                component_name=component_name)
+            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
+                capabilities, component_name=component_name
+            )
     except Exception:
         pass
-    version_caps_msg = [cap(name, r, s, n) if can_set else cap(name, r, n) for name, can_set in version_caps]
-    return interop_pb2.LibraryMetadata(component_name=component_name, version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER], supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps], groups=[cap(name, r, n) for name in group_caps])
+    version_caps_msg = [
+        cap(name, r, s, n) if can_set else cap(name, r, n)
+        for name, can_set in version_caps
+    ]
+    return interop_pb2.LibraryMetadata(
+        component_name=component_name,
+        version=version,
+        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
+        supported_versions=version_caps_msg,
+        cipher_suites=[cap(name, r, n) for name in cipher_caps],
+        groups=[cap(name, r, n) for name in group_caps],
+    )
 
 
 def run_cli_version(argv: list[str], timeout: float = 5) -> str:
@@ -244,17 +355,24 @@ def run_cli_version(argv: list[str], timeout: float = 5) -> str:
     return "unknown"
 
 
-def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
+def serve_insecure(servicer_factory: WrapperServicerFactory, display_name: str) -> None:
     """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
     from concurrent import futures
 
     import grpc
-    from proto import interop_pb2_grpc
+    from interop_proto import interop_pb2_grpc
+    from wrappers.base import BaseTemplateWrapper
 
+    servicer = servicer_factory()
+    if not isinstance(servicer, BaseTemplateWrapper):
+        raise TypeError(
+            f"{display_name} servicer factory must return BaseTemplateWrapper"
+        )
+    log = logging.getLogger(__name__)
     port = int(os.environ.get("GRPC_PORT", "50051"))
     server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
-    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
+    interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(servicer, server)
     server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()
-    print(f"{display_name} wrapper listening on {port}...")
+    log.info("%s wrapper listening on %d...", display_name, port)
     server.wait_for_termination()

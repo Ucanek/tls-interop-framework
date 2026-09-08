@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tls-interop-tool"
+version = "0.1.0"
+description = "Cross-test TLS 1.2/1.3 interoperability between OpenSSL, GnuTLS, and Mozilla NSS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.60",
+    "protobuf>=4.21",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+tls-interop = "main:main"
+
+[tool.setuptools]
+package-dir = {"" = "src", "interop_proto" = "interop_proto"}
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+where = ["src", "."]
+include = ["core*", "wrappers*", "interop_proto*"]
+
+[tool.mypy]
+python_version = "3.10"
+packages = ["core", "wrappers"]
+exclude = ["interop_proto/"]
+plugins = ["mypy_protobuf.plugin"]
+
+[[tool.mypy.overrides]]
+module = "grpc.*"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "interop_proto.*"
+ignore_errors = true

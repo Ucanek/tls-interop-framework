@@ -6,11 +6,23 @@ import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+
+from core.orchestration_context import active_orchestration_context
+from core.registry import repository_root
+from core.tls_config_view import TlsConfigLike, TlsConfigView
+from core.utils import norm_scheme_token, split_asymmetric_csv
 
 # Catalog prefixes under ``certs/`` (``{prefix}.crt`` + ``{prefix}.key``).
-IDENTITY_PREFIXES: tuple[str, ...] = ("rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256",
-    "ecdsa_p384", "ecdsa_p521", "ed25519", "ed448")
+IDENTITY_PREFIXES: tuple[str, ...] = (
+    "rsa_default",
+    "rsa_pss_pure",
+    "dsa_default",
+    "ecdsa_p256",
+    "ecdsa_p384",
+    "ecdsa_p521",
+    "ed25519",
+    "ed448",
+)
 
 _DEFAULT_PREFIX = "rsa_default"
 
@@ -19,22 +31,6 @@ def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
     """True for ``dhe-dss-*``, ``dh-dss-*``, … (not ECDSA)."""
     c = (cipher_catalog_id or "").strip().lower().replace("_", "-")
     return bool(re.search(r"(^|-)dss(-|$)", c))
-
-
-def _split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
-
-
-def _norm_scheme_token(raw: str) -> str:
-    return (raw or "").strip().lower().replace(" ", "").replace("_", "-")
 
 
 def get_cert_prefix_for_scheme(scheme: str) -> str:
@@ -46,7 +42,7 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
       ``rsa-pss-pss-sha256`` → ``rsa_pss_pure``
       ``ecdsa-secp384r1-sha384`` → ``ecdsa_p384``
     """
-    tok = _norm_scheme_token(scheme)
+    tok = norm_scheme_token(scheme)
     if not tok:
         return _DEFAULT_PREFIX
     if tok.startswith("ed25519") or tok == "ed25519":
@@ -94,19 +90,17 @@ def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:
     return _DEFAULT_PREFIX
 
 
-def get_cert_prefix_for_config(config: Any) -> str:
+def get_cert_prefix_for_config(config: TlsConfigLike) -> str:
     """Resolve prefix from ``signature_schemes``, else ``cipher_suite`` on ``config``."""
     schemes = repeated_config_tokens(config, "signature_schemes")
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
-    return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
+    return get_cert_prefix_for_cipher_suite(TlsConfigView(config).cipher_suite)
 
 
 def interop_certs_dir(repo: Path | None = None) -> Path:
     if repo is not None:
         return repo / "certs"
-    from core.catalog import repository_root
-
     return repository_root() / "certs"
 
 
@@ -116,12 +110,16 @@ def identity_pem_present(prefix: str, *, repo: Path | None = None) -> bool:
     return bool(cert_path and key_path)
 
 
-def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = None) -> tuple[str, str]:
+def catalog_identity_pem_paths_for_prefix(
+    prefix: str, *, repo: Path | None = None
+) -> tuple[str, str]:
     """Return absolute paths to ``{prefix}.crt`` and ``{prefix}.key`` when present."""
     p = (prefix or "").strip() or _DEFAULT_PREFIX
     cert_name = f"{p}.crt"
     key_name = f"{p}.key"
-    candidates_dirs = ([interop_certs_dir(repo)] if repo is not None else []) + [interop_certs_dir(None)]
+    candidates_dirs = ([interop_certs_dir(repo)] if repo is not None else []) + [
+        interop_certs_dir(None)
+    ]
 
     cert = ""
     key = ""
@@ -139,23 +137,17 @@ def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = No
     return "", ""
 
 
-def read_identity_pem_bytes(prefix: str, *, repo: Path | None = None) -> tuple[bytes, bytes]:
+def read_identity_pem_bytes(
+    prefix: str, *, repo: Path | None = None
+) -> tuple[bytes, bytes]:
     cert_path, key_path = catalog_identity_pem_paths_for_prefix(prefix, repo=repo)
     if not cert_path or not key_path:
         return b"", b""
     return Path(cert_path).read_bytes(), Path(key_path).read_bytes()
 
 
-def repeated_config_tokens(config: Any, field: str) -> list[str]:
-    raw = getattr(config, field, None)
-    if not raw:
-        return []
-    out: list[str] = []
-    for x in raw:
-        s = str(x).strip()
-        if s:
-            out.append(s)
-    return out
+def repeated_config_tokens(config: TlsConfigLike, field: str) -> list[str]:
+    return TlsConfigView(config).list_field(field)
 
 
 def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
@@ -187,21 +179,88 @@ def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
     return None
 
 
-def resolve_identity_kind(config: Any) -> str:
-    return (identity_kind_from_signature_schemes(repeated_config_tokens(config, "signature_schemes"))
-        or identity_kind_from_cipher_suite(str(getattr(config, "cipher_suite", "") or "")) or "rsa")
+def resolve_identity_kind(config: TlsConfigLike) -> str:
+    return (
+        identity_kind_from_signature_schemes(
+            repeated_config_tokens(config, "signature_schemes")
+        )
+        or identity_kind_from_cipher_suite(TlsConfigView(config).cipher_suite)
+        or "rsa"
+    )
 
 
-def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
+def catalog_identity_pem_paths_for_config(config: TlsConfigLike) -> tuple[str, str]:
     return catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
 
 
 def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
-    cert, _ = catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_schemes(schemes))
+    cert, _ = catalog_identity_pem_paths_for_prefix(
+        get_cert_prefix_for_schemes(schemes)
+    )
     return cert
 
 
-def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
+def has_inline_identity_pem(config: TlsConfigLike) -> bool:
+    return TlsConfigView(config).has_inline_identity_pem()
+
+
+def dsa_cipher_setup_error() -> str:
+    return "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key (run scripts/gen_interop_certs.sh)"
+
+
+def resolve_dsa_cipher_cert_paths(
+    config: TlsConfigLike, *, repo: Path | None = None
+) -> tuple[str, str] | None:
+    """Catalog ``dsa_default`` PEM paths when ``cipher_suite`` needs DSA auth."""
+    raw_cipher = TlsConfigView(config).cipher_suite
+    if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
+        return None
+    cert, key = catalog_identity_pem_paths_for_prefix("dsa_default", repo=repo)
+    if cert and key:
+        return cert, key
+    return None
+
+
+def resolve_client_trust_pem_path(
+    config: TlsConfigLike, schemes: Sequence[str] | None = None
+) -> str:
+    """Client trust anchor: DSA leaf, scheme-based leaf, cwd ``cert.pem``, or fallback name."""
+    dsa = resolve_dsa_cipher_cert_paths(config)
+    if dsa and os.path.isfile(dsa[0]):
+        return dsa[0]
+    trust_schemes = (
+        schemes
+        if schemes is not None
+        else server_trust_signature_schemes_tokens(config)
+    )
+    trust = catalog_identity_trust_pem_path(trust_schemes)
+    if trust and os.path.isfile(trust):
+        return trust
+    for candidate in (os.path.join(os.getcwd(), "cert.pem"), "cert.pem"):
+        if candidate and os.path.isfile(candidate):
+            return candidate
+    return "cert.pem"
+
+
+def resolve_server_mtls_cafile(
+    config: TlsConfigLike, server_cert_path: str, schemes: Sequence[str] | None = None
+) -> str:
+    """mTLS CA file: explicit ``ca_file``, scheme trust leaf, or server certificate."""
+    ca_path = TlsConfigView(config).ca_file
+    if ca_path and os.path.isfile(ca_path):
+        return ca_path
+    trust_schemes = (
+        schemes
+        if schemes is not None
+        else server_trust_signature_schemes_tokens(config)
+    )
+    ca_path = catalog_identity_trust_pem_path(trust_schemes)
+    if ca_path and os.path.isfile(ca_path):
+        return ca_path
+    return server_cert_path
+
+
+def server_trust_signature_schemes_tokens(config: TlsConfigLike) -> list[str]:
     """
     Schemes that determine **server** leaf identity for client trust stores.
 
@@ -209,11 +268,11 @@ def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
     server half of ``INTEROP_SIGNATURE_SCHEMES`` when it uses ``SERVER:CLIENT``,
     else ``TlsConfig.signature_schemes`` from the active request config.
     """
-    env_raw = (os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES") or "").strip()
-    if env_raw:
-        return [p.strip() for p in env_raw.split(",") if p.strip()]
-    gsig = (os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip()
+    ctx = active_orchestration_context()
+    if ctx.server_signature_schemes:
+        return [p.strip() for p in ctx.server_signature_schemes.split(",") if p.strip()]
+    gsig = ctx.asymmetric_signature_schemes
     if gsig and ":" in gsig:
-        left, _ = _split_asymmetric_csv(gsig)
+        left, _ = split_asymmetric_csv(gsig)
         return left
     return repeated_config_tokens(config, "signature_schemes")
