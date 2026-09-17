@@ -79,10 +79,10 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
         or not (cert_dir / f"{prefix}.key").is_file()]
     if not missing:
         return
-    script = repo / "scripts" / "gen_interop_certs.sh"
+    script = repo / "src" / "gen_interop_certs.sh"
     if not script.is_file():
         raise FileNotFoundError(f"Missing certs/ bundles ({', '.join(missing)}); "
-            f"run scripts/gen_interop_certs.sh or create certs/ manually")
+            f"run src/gen_interop_certs.sh or create certs/ manually")
     if verbose:
         print(f"{YELLOW}Generating identity PEMs ({', '.join(missing)}) via {script}{RESET}")
     subprocess.run(["bash", str(script)], cwd=repo, check=True)

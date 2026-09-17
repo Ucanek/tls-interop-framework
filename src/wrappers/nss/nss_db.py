@@ -135,7 +135,7 @@ def nss_server_nickname_for_config(config: Any, *, repo: Path | None = None) -> 
     if cipher_catalog_id_uses_dsa_auth(raw_cipher):
         if not identity_pem_present("dsa_default", repo=repo):
             raise RuntimeError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-                "(run scripts/gen_interop_certs.sh)")
+                "(run src/gen_interop_certs.sh)")
         return nss_nickname_for_prefix("dsa_default")
     return nss_nickname_for_prefix(get_cert_prefix_for_config(config))
 

@@ -18,7 +18,7 @@ python3 src/main.py --list-wrappers
 python3 src/main.py --list-options     # catalog ids: aes-128-gcm, x25519, …
 ```
 
-`certs/` is created on first run (`scripts/gen_interop_certs.sh`).
+`certs/` is created on first run (`src/gen_interop_certs.sh`).
 
 
 | Backend | gRPC  | TLS   | Server CLI         | Client CLI         |

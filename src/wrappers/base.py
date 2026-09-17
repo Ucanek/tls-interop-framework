@@ -148,7 +148,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             return "cert.pem", "key.pem"
 
         raise WrapperSetupError("No identity PEM for this test (set certificate/private_key, use certs/ "
-            "from scripts/gen_interop_certs.sh, or cert.pem/key.pem in cwd)")
+            "from src/gen_interop_certs.sh, or cert.pem/key.pem in cwd)")
 
     def _terminate_process_hard(self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0) -> None:
         """SIGTERM then SIGKILL (best-effort)."""

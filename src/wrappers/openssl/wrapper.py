@@ -171,7 +171,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
             if cert_b.strip() and key_b.strip():
                 return super()._ensure_cert_paths(config)
             raise WrapperSetupError("DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key ",
-                "(run scripts/gen_interop_certs.sh)")
+                "(run src/gen_interop_certs.sh)")
         try:
             return super()._ensure_cert_paths(config)
         except WrapperSetupError:
