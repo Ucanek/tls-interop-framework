@@ -73,27 +73,14 @@ On **FAIL** or **TIMEOUT**, logs appear under `debug_logs/run_<timestamp>/` (`fa
 
 ## Manual debug (`--attach`)
 
-Use `--attach` when you want to **run wrappers yourself** and let the driver only send gRPC commands. 
+Use `--attach` when wrappers are **already** listening on localhost and the driver should only send gRPC (it will not start or stop them).
 
-**Without `--attach`:** driver starts wrapper subprocesses, waits for gRPC, runs cells, then stops wrappers.
-
-**With `--attach`:** driver connects to wrappers already listening on localhost; it does **not** start, stop, or kill them.
+Without `--attach`, the driver starts wrapper subprocesses, runs cells, then stops them.
 
 ```bash
-# Terminal 1 — server backend (openssl example)
-python3 main.py --serve openssl
-
-# Terminal 2 — client backend (gnutls example)
-python3 main.py --serve gnutls
-
-# Terminal 3 — driver
+# Wrappers must already listen on capabilities.json gRPC ports (or overrides below).
 python3 main.py --server openssl --client gnutls --attach -v
-```
 
-Start both wrappers **before** the driver. `--serve` listens on the default gRPC port from `capabilities.json` (openssl `15051`, gnutls `15052`, nss `15053`), or set `GRPC_PORT` to override. If you use other ports:
-
-
-```bash
 python3 main.py --server openssl --client gnutls --attach \
   --server-grpc-port 15051 --client-grpc-port 15052 -v
 ```
@@ -101,7 +88,7 @@ python3 main.py --server openssl --client gnutls --attach \
 Notes:
 
 - **Same backend on both sides** (`openssl` × `openssl`): one wrapper process is enough — driver uses a single gRPC connection for server and client roles.
-- `--attach` applies to direct CLI runs (`--server` / `--client`), not only single pairs — matrix flags and `--suite` still work; you must have every backend in the matrix running on the expected gRPC ports.
+- `--attach` works with matrix flags and `--suite`; every backend in the matrix must already be running on the expected gRPC ports.
 
 ## NSS
 

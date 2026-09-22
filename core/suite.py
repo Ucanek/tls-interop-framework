@@ -60,41 +60,33 @@ def apply_suite_file(args: argparse.Namespace, suite_path: Path) -> None:
 
     path = suite_path.expanduser()
     if not path.is_file():
-        raise ValueError(f"Suite file not found: {path}")
+        raise ValueError(f"suite {path}: file not found")
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as e:
-        raise ValueError(f"Invalid suite YAML {path}: {e}") from e
+        raise ValueError(f"suite {path}: invalid YAML ({e})") from e
     if not isinstance(raw, dict):
-        raise ValueError(f"Suite file must be a YAML mapping: {path}")
+        raise ValueError(f"suite {path}: invalid YAML (root must be a mapping)")
+
     matrix = raw.get("matrix")
-    if matrix is None:
-        raise ValueError(f"Suite file must contain a top-level 'matrix' key: {path}")
     if not isinstance(matrix, dict):
-        raise ValueError(f"Suite 'matrix' must be a mapping: {path}")
+        raise ValueError(f"suite {path}: missing or invalid 'matrix' mapping")
 
     for key, value in matrix.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ValueError(f"Invalid matrix key in suite file: {key!r}")
-        dest = key.strip()
-        if not hasattr(args, dest):
-            raise ValueError(
-                f"Unknown matrix key {dest!r} in suite file (not a recognized CLI option)")
+        dest = key.strip() if isinstance(key, str) else ""
+        if not dest or not hasattr(args, dest):
+            raise ValueError(f"suite {path}: invalid matrix key {key!r}")
         setattr(args, dest, coerce_suite_matrix_value(value, key=dest))
 
     cases = raw.get("cases") or raw.get("configurations")
-    if cases is not None:
-        if not isinstance(cases, list):
-            raise ValueError(f"Suite 'cases' must be a list: {path}")
-        for idx, case in enumerate(cases):
-            if not isinstance(case, dict):
-                raise ValueError(f"Suite case {idx + 1} must be a mapping: {path}")
-        args.suite_cases = cases
+    if cases is None:
+        return
+    if not isinstance(cases, list) or any(not isinstance(c, dict) for c in cases):
+        raise ValueError(f"suite {path}: 'cases' must be a list of mappings")
+    args.suite_cases = cases
 
 
-def matrix_flags_differing_from_defaults(
-    args: argparse.Namespace, parser: argparse.ArgumentParser
-) -> list[str]:
+def matrix_flags_differing_from_defaults(args: argparse.Namespace, parser: argparse.ArgumentParser) -> list[str]:
     """Matrix option dest names whose parsed value differs from the parser default."""
     found: list[str] = []
     for dest in SUITE_MATRIX_CLI:

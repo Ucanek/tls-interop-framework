@@ -52,9 +52,11 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
 
 
 def get_cert_prefix_for_schemes(schemes: Sequence[str]) -> str:
-    """First non-empty scheme wins (TLS signature_algorithms preference order)."""
-    first = next((s for s in schemes if (s or "").strip()), "")
-    return get_cert_prefix_for_scheme(first)
+    """First listed scheme wins (TLS signature_algorithms preference order)."""
+    for raw in schemes:
+        if (raw or "").strip():
+            return get_cert_prefix_for_scheme(raw)
+    return DEFAULT_PREFIX
 
 
 def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:

@@ -56,8 +56,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         help="Print available wrapper implementations and exit")
     list_group.add_argument("--list-options", action="store_true",
         help="Print configurable TLS options (union of capabilities) and exit")
-    list_group.add_argument("--serve", metavar="WRAPPER", default=None,
-        help="Run one wrapper gRPC service (for --attach); port from GRPC_PORT or capabilities.json")
     groups["basic"].add_argument("--suite", metavar="FILE", default=None,
         help="Cesta k souboru s testovací sadou (.yaml)")
     groups["basic"].add_argument("--server", default="openssl",
@@ -158,8 +156,7 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
 def run_matrix_parallel(
     combos: list[tuple[Any, ...]], *, axis_keys: list[str], args: argparse.Namespace,
     repo: Path, known: frozenset[str], backends: frozenset[str],
-    debug_logs: DebugRunLogs | None, jobs: int
-) -> list[tuple[str, int]]:
+    debug_logs: DebugRunLogs | None, jobs: int) -> list[tuple[str, int]]:
     effective_jobs = min(max(1, jobs), len(combos), MAX_PARALLEL_JOBS)
     if effective_jobs < jobs:
         print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
@@ -182,28 +179,6 @@ def run_matrix_parallel(
         slot_pool.stop()
 
 
-def serve_wrapper(repo: Path, backend: str) -> int:
-    """Block as one wrapper gRPC service (manual --attach workflows)."""
-    import os
-    import runpy
-
-    from core.catalog import backend_grpc_addr, load_capabilities
-
-    name = (backend or "").strip().lower()
-    known = discover_wrapper_ids(repo)
-    if name not in known:
-        print(f"Unknown wrapper {name!r}. Known: {', '.join(known)}", file=sys.stderr)
-        return 2
-    if not os.environ.get("GRPC_PORT"):
-        addr = backend_grpc_addr(name, repo)
-        _, _, port_s = addr.rpartition(":")
-        if port_s.isdigit():
-            os.environ["GRPC_PORT"] = port_s
-    load_capabilities(name, repo)
-    runpy.run_module(f"wrappers.{name}.wrapper", run_name="__main__")
-    return 0
-
-
 def main() -> int:
     repo = repository_root()
     parser = build_parser(repo)
@@ -220,8 +195,6 @@ def main() -> int:
         if args.list_options:
             print_catalog_options(repo)
             return 0
-        if args.serve:
-            return serve_wrapper(repo, args.serve)
 
         if int(args.jobs) < 1:
             parser.error("--jobs must be >= 1")
