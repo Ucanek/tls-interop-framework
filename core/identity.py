@@ -9,8 +9,16 @@ from pathlib import Path
 from typing import Any
 
 # Catalog prefixes under ``certs/`` (``{prefix}.crt`` + ``{prefix}.key``).
-IDENTITY_PREFIXES: tuple[str, ...] = ("rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256",
-    "ecdsa_p384", "ecdsa_p521", "ed25519", "ed448")
+IDENTITY_PREFIXES: tuple[str, ...] = (
+    "rsa_default",
+    "rsa_pss_pure",
+    "dsa_default",
+    "ecdsa_p256",
+    "ecdsa_p384",
+    "ecdsa_p521",
+    "ed25519",
+    "ed448",
+)
 
 _DEFAULT_PREFIX = "rsa_default"
 
@@ -27,8 +35,10 @@ def _split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
+        return (
+            [p.strip() for p in left.split(",") if p.strip()],
+            [p.strip() for p in right.split(",") if p.strip()],
+        )
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
 
@@ -99,7 +109,9 @@ def get_cert_prefix_for_config(config: Any) -> str:
     schemes = repeated_config_tokens(config, "signature_schemes")
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
-    return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
+    return get_cert_prefix_for_cipher_suite(
+        str(getattr(config, "cipher_suite", "") or "")
+    )
 
 
 def interop_certs_dir(repo: Path | None = None) -> Path:
@@ -116,12 +128,16 @@ def identity_pem_present(prefix: str, *, repo: Path | None = None) -> bool:
     return bool(cert_path and key_path)
 
 
-def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = None) -> tuple[str, str]:
+def catalog_identity_pem_paths_for_prefix(
+    prefix: str, *, repo: Path | None = None
+) -> tuple[str, str]:
     """Return absolute paths to ``{prefix}.crt`` and ``{prefix}.key`` when present."""
     p = (prefix or "").strip() or _DEFAULT_PREFIX
     cert_name = f"{p}.crt"
     key_name = f"{p}.key"
-    candidates_dirs = ([interop_certs_dir(repo)] if repo is not None else []) + [interop_certs_dir(None)]
+    candidates_dirs = ([interop_certs_dir(repo)] if repo is not None else []) + [
+        interop_certs_dir(None)
+    ]
 
     cert = ""
     key = ""
@@ -139,7 +155,9 @@ def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = No
     return "", ""
 
 
-def read_identity_pem_bytes(prefix: str, *, repo: Path | None = None) -> tuple[bytes, bytes]:
+def read_identity_pem_bytes(
+    prefix: str, *, repo: Path | None = None
+) -> tuple[bytes, bytes]:
     cert_path, key_path = catalog_identity_pem_paths_for_prefix(prefix, repo=repo)
     if not cert_path or not key_path:
         return b"", b""
@@ -188,8 +206,15 @@ def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
 
 
 def resolve_identity_kind(config: Any) -> str:
-    return (identity_kind_from_signature_schemes(repeated_config_tokens(config, "signature_schemes"))
-        or identity_kind_from_cipher_suite(str(getattr(config, "cipher_suite", "") or "")) or "rsa")
+    return (
+        identity_kind_from_signature_schemes(
+            repeated_config_tokens(config, "signature_schemes")
+        )
+        or identity_kind_from_cipher_suite(
+            str(getattr(config, "cipher_suite", "") or "")
+        )
+        or "rsa"
+    )
 
 
 def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
@@ -197,7 +222,9 @@ def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
 
 
 def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
-    cert, _ = catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_schemes(schemes))
+    cert, _ = catalog_identity_pem_paths_for_prefix(
+        get_cert_prefix_for_schemes(schemes)
+    )
     return cert
 
 

@@ -38,9 +38,10 @@ debug_logs/
 # Scenarios
 scenarios/
 
-src/wrappers/gnutls/gnutls_session_hook.so
+wrappers/gnutls/gnutls_session_hook.so
 
 .cursorrules
 /.vscode
 milestones.md
 repomix-output.xml
+.reference/

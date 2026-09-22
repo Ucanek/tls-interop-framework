@@ -17,13 +17,15 @@ from proto import interop_pb2
 TlsModeLiteral = Literal["1.2", "1.3"]
 
 _HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(p, re.IGNORECASE) for p in (
+    re.compile(p, re.IGNORECASE)
+    for p in (
         r"hello\s*retry\s*request",
         r"helloretryrequest",
         r"hello_retry_request",
         r"received\s+hrr",
         r"retry\s+request",
-    ))
+    )
+)
 
 
 def hrr_detected_in_cli_output(text: str) -> bool:
@@ -39,7 +41,16 @@ def hrr_detected_in_cli_output(text: str) -> bool:
         return True
     if lower.count("read client hello") >= 2:
         return True
-    if len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2:
+    if (
+        len(
+            re.findall(
+                r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello",
+                blob,
+                re.IGNORECASE,
+            )
+        )
+        >= 2
+    ):
         return True
     return False
 
@@ -55,8 +66,10 @@ def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()])
+        return (
+            [p.strip() for p in left.split(",") if p.strip()],
+            [p.strip() for p in right.split(",") if p.strip()],
+        )
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
 
@@ -104,7 +117,10 @@ def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
     """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
     slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
     suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
+    return (
+        f"/tmp/interop_{prefix}_cert{suffix}.pem",
+        f"/tmp/interop_{prefix}_key{suffix}.pem",
+    )
 
 
 def interop_staging_sidecar_path(prefix: str, name: str) -> str:
@@ -130,7 +146,9 @@ def is_server_role(role: Any | None) -> bool:
         return True
 
 
-def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None) -> str:
+def format_executed_command(
+    cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None
+) -> str:
     """Formats argv as a shell-safe log line."""
     line = shlex.join(str(x) for x in cmd)
     if cwd is not None:
@@ -138,8 +156,9 @@ def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] |
     return line
 
 
-def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
-    stdout: str = "", stderr: str = "") -> str:
+def format_cli_debug_logs(
+    *, cmd: str, exit_code: int | None = None, stdout: str = "", stderr: str = ""
+) -> str:
     """
     Build ``OperationResponse.logs`` with CMD, exit code, stdout, and stderr.
 
@@ -160,7 +179,9 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None,
         err_body = stderr.rstrip()
     else:
         err_body = "(stderr merged into stdout; see stdout above)"
-    return "\n".join([cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body])
+    return "\n".join(
+        [cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body]
+    )
 
 
 def _make_non_blocking(fd: int) -> None:
@@ -168,18 +189,34 @@ def _make_non_blocking(fd: int) -> None:
     fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
 
 
-def popen_stdio_merged(cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
+def popen_stdio_merged(
+    cmd: Sequence[object],
+    *,
+    cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
+) -> subprocess.Popen[bytes]:
     """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
-    p = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        cwd=os.fspath(cwd) if cwd is not None else None, env=dict(env) if env is not None else None)
+    p = subprocess.Popen(
+        cmd,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=os.fspath(cwd) if cwd is not None else None,
+        env=dict(env) if env is not None else None,
+    )
     if p.stdout:
         _make_non_blocking(p.stdout.fileno())
     return p
 
 
-def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0,
-    idle_s: float = 0.05, poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
+def read_nonblocking_stdout(
+    proc: subprocess.Popen[bytes],
+    *,
+    timeout_s: float = 2.0,
+    idle_s: float = 0.05,
+    poll_s: float = 0.02,
+    max_bytes: int = 1 << 20,
+) -> bytes:
     """
     Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
     """
@@ -208,12 +245,15 @@ def read_nonblocking_stdout(proc: subprocess.Popen[bytes], *, timeout_s: float =
     return b"".join(chunks)
 
 
-def capability(name: str, *flags: interop_pb2.ModifyFlag.ValueType) -> interop_pb2.Capability:
+def capability(
+    name: str, *flags: interop_pb2.ModifyFlag.ValueType
+) -> interop_pb2.Capability:
     return interop_pb2.Capability(name=name, flags=list(flags))
 
 
-def standard_library_metadata(component_name: str, version: str, *,
-    capabilities: dict | None = None) -> interop_pb2.LibraryMetadata:
+def standard_library_metadata(
+    component_name: str, version: str, *, capabilities: dict | None = None
+) -> interop_pb2.LibraryMetadata:
     """Returns capability matrix from ``capabilities.json`` when provided."""
     cap = capability
     r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
@@ -223,14 +263,23 @@ def standard_library_metadata(component_name: str, version: str, *,
     group_caps: list[str] = []
     try:
         if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(capabilities,
-                component_name=component_name)
+            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
+                capabilities, component_name=component_name
+            )
     except Exception:
         pass
-    version_caps_msg = [cap(name, r, s, n) if can_set else cap(name, r, n) for name, can_set in version_caps]
-    return interop_pb2.LibraryMetadata(component_name=component_name, version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER], supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps], groups=[cap(name, r, n) for name in group_caps])
+    version_caps_msg = [
+        cap(name, r, s, n) if can_set else cap(name, r, n)
+        for name, can_set in version_caps
+    ]
+    return interop_pb2.LibraryMetadata(
+        component_name=component_name,
+        version=version,
+        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
+        supported_versions=version_caps_msg,
+        cipher_suites=[cap(name, r, n) for name in cipher_caps],
+        groups=[cap(name, r, n) for name in group_caps],
+    )
 
 
 def run_cli_version(argv: list[str], timeout: float = 5) -> str:

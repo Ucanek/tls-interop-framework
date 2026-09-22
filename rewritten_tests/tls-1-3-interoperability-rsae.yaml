@@ -4,7 +4,7 @@
 # Sources:
 #   - openssl/Interoperability/tls-1-3-interoperability-gnutls-openssl-rsae
 #   - openssl/Interoperability/tls-1-3-interoperability-nss-openssl-rsae
-#   python3 src/main.py --suite scenarios/rewritten/openssl-interop/tls-1-3-interoperability-rsae.yaml
+#   python3 main.py --suite scenarios/rewritten/openssl-interop/tls-1-3-interoperability-rsae.yaml
 
 matrix:
   tls_version: 1.3

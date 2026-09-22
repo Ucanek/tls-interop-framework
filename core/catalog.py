@@ -16,33 +16,73 @@ TlsMode = Literal["1.2", "1.3"]
 
 # Static CLI options (choices for crypto dims come from capabilities union).
 STATIC_CLI_OPTIONS: tuple[dict[str, Any], ...] = (
-    {"id": "cipher_suite", "description": "Cipher suite catalog id (per-backend mapping in capabilities.json)."},
-    {"id": "tls_version", "description": "TLS protocol version for the endpoint (TlsConfig.version)."},
-    {"id": "tls_port", "description": "TLS data-plane port override (default scenario value is 5555)."},
-    {"id": "supported_groups", "description": "Advertised/allowed key exchange groups (supported_groups extension)."},
+    {
+        "id": "cipher_suite",
+        "description": "Cipher suite catalog id (per-backend mapping in capabilities.json).",
+    },
+    {
+        "id": "tls_version",
+        "description": "TLS protocol version for the endpoint (TlsConfig.version).",
+    },
+    {
+        "id": "tls_port",
+        "description": "TLS data-plane port override (default scenario value is 5555).",
+    },
+    {
+        "id": "supported_groups",
+        "description": "Advertised/allowed key exchange groups (supported_groups extension).",
+    },
     {"id": "signature_schemes", "description": "Advertised TLS signature algorithms."},
-    {"id": "alpn", "description": "ALPN protocol identifiers offered by the endpoint (e.g. h2, http/1.1)."},
-    {"id": "test_features", "description": ("Credentials for special ciphers (psk, anonymous). "
-        "cipher_suite ALL includes PSK/anon suites; without enabling a feature here, "
-        "those cells are pre-SKIP (Feature disabled). "
-        "Set test_features: psk,anonymous (or YAML map with true values) to run them.")})
+    {
+        "id": "alpn",
+        "description": "ALPN protocol identifiers offered by the endpoint (e.g. h2, http/1.1).",
+    },
+    {
+        "id": "test_features",
+        "description": (
+            "Credentials for special ciphers (psk, anonymous). "
+            "cipher_suite ALL includes PSK/anon suites; without enabling a feature here, "
+            "those cells are pre-SKIP (Feature disabled). "
+            "Set test_features: psk,anonymous (or YAML map with true values) to run them."
+        ),
+    },
+)
 
 OPTION_GROUPS: dict[str, str] = {
-    "tls_port": "basic", "cipher_suite": "crypto", "tls_version": "protocol", "supported_groups": "crypto",
-    "signature_schemes": "crypto", "alpn": "protocol", "test_features": "crypto"}
+    "tls_port": "basic",
+    "cipher_suite": "crypto",
+    "tls_version": "protocol",
+    "supported_groups": "crypto",
+    "signature_schemes": "crypto",
+    "alpn": "protocol",
+    "test_features": "crypto",
+}
 
 NON_TLS_OPTION_IDS: frozenset[str] = frozenset({"server_wrapper", "client_wrapper"})
 # Applied once per run (suite/CLI), not Cartesian-expanded with cipher_suite.
 NON_MATRIX_OPTION_IDS: frozenset[str] = frozenset({"test_features"})
-MULTI_VALUE_OPTION_IDS: frozenset[str] = frozenset({"supported_groups", "signature_schemes", "alpn", "test_features"})
-ASYMMETRIC_SCALAR_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "tls_version"})
-ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset({"cipher_suite", "signature_schemes", "supported_groups", "tls_version", "alpn"})
+MULTI_VALUE_OPTION_IDS: frozenset[str] = frozenset(
+    {"supported_groups", "signature_schemes", "alpn", "test_features"}
+)
+ASYMMETRIC_SCALAR_OPTION_IDS: frozenset[str] = frozenset(
+    {"cipher_suite", "tls_version"}
+)
+ASYMMETRIC_HELP_OPTION_IDS: frozenset[str] = frozenset(
+    {"cipher_suite", "signature_schemes", "supported_groups", "tls_version", "alpn"}
+)
 
-CAPABILITY_DIMENSIONS: frozenset[str] = frozenset({"cipher_suite", "supported_groups", "signature_schemes", "tls_version", "alpn"})
-TLS13_ORTHOGONAL_DIMS: frozenset[str] = frozenset({"supported_groups", "signature_schemes"})
+CAPABILITY_DIMENSIONS: frozenset[str] = frozenset(
+    {"cipher_suite", "supported_groups", "signature_schemes", "tls_version", "alpn"}
+)
+TLS13_ORTHOGONAL_DIMS: frozenset[str] = frozenset(
+    {"supported_groups", "signature_schemes"}
+)
 
 # Matrix default when ``cipher_suite`` is omitted but ``tls_version`` pins TLS 1.2 or 1.3.
-DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {"1.3": "aes-128-gcm", "1.2": "ecdhe-rsa-aes-128-gcm-sha256"}
+DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {
+    "1.3": "aes-128-gcm",
+    "1.2": "ecdhe-rsa-aes-128-gcm-sha256",
+}
 
 
 def repository_root() -> Path:
@@ -56,10 +96,14 @@ def repository_root() -> Path:
             break
         cur = parent
     p = Path(__file__).resolve()
-    for candidate in (p.parents[2], p.parents[1]):
+    for candidate in (p.parents[1], p.parents[2] if len(p.parents) > 2 else None):
+        if candidate is None:
+            continue
         if (candidate / "proto" / "interop_pb2.py").is_file():
             return candidate
-    return p.parents[2]
+    raise FileNotFoundError(
+        "Could not locate repository root containing proto directory"
+    )
 
 
 _purged_foreign_proto = False
@@ -71,16 +115,25 @@ def _purge_foreign_proto_module() -> None:
     if _purged_foreign_proto:
         return
     mod = sys.modules.get("proto")
-    if mod is not None and not hasattr(mod, "interop_pb2"):
-        for key in list(sys.modules):
-            if key == "proto" or key.startswith("proto."):
-                del sys.modules[key]
+    if mod is None:
+        _purged_foreign_proto = True
+        return
+    if hasattr(mod, "interop_pb2"):
+        _purged_foreign_proto = True
+        return
+    # Our package mid-import (``proto/__init__.py`` calls this before ``interop_pb2`` loads).
+    mod_file = (getattr(mod, "__file__", None) or "").replace("\\", "/")
+    if mod_file.endswith("/proto/__init__.py") or "/interoperability_tool/proto/" in mod_file:
+        return
+    for key in list(sys.modules):
+        if key == "proto" or key.startswith("proto."):
+            del sys.modules[key]
     _purged_foreign_proto = True
 
 
 def ensure_import_paths() -> Path:
     """
-    Put repo root on ``sys.path[0]`` and ``src/`` on ``[1]`` before ``import proto``.
+    Put repo root on ``sys.path[0]`` before ``import proto``.
 
     Call once at process entry (``main``, ``driver``) or rely on ``proto/__init__.py``.
     """
@@ -91,12 +144,6 @@ def ensure_import_paths() -> Path:
     while rs in sys.path:
         sys.path.remove(rs)
     sys.path.insert(0, rs)
-    src = root / "src"
-    if src.is_dir():
-        ss = str(src)
-        if ss in sys.path:
-            sys.path.remove(ss)
-        sys.path.insert(1, ss)
     _purge_foreign_proto_module()
     return root
 
@@ -120,8 +167,9 @@ def load_local_capabilities(wrapper_file: str) -> dict[str, Any]:
     return data
 
 
-def metadata_from_capabilities(capabilities: dict[str, Any], *,
-    component_name: str | None = None) -> tuple[list[tuple[str, bool]], list[str], list[str]]:
+def metadata_from_capabilities(
+    capabilities: dict[str, Any], *, component_name: str | None = None
+) -> tuple[list[tuple[str, bool]], list[str], list[str]]:
     """
     Build GetMetadata lists using **catalog token ids** (JSON keys).
 
@@ -136,14 +184,17 @@ def metadata_from_capabilities(capabilities: dict[str, Any], *,
     return versions, cipher_ids, groups
 
 
-def tls_argv_for_config(config: Any, backend: str, capabilities: dict[str, Any],
-    *, role: Any | None = None) -> TranslationResult:
+def tls_argv_for_config(
+    config: Any, backend: str, capabilities: dict[str, Any], *, role: Any | None = None
+) -> TranslationResult:
     """Delegate argv translation to ``wrappers.<backend>.wrapper.tls_argv_for_config``."""
     name = (backend or "").strip().lower()
     mod = importlib.import_module(f"wrappers.{name}.wrapper")
     fn = getattr(mod, "tls_argv_for_config", None)
     if fn is None:
-        return TranslationResult((), (f"(backend {name!r} has no tls_argv_for_config)",))
+        return TranslationResult(
+            (), (f"(backend {name!r} has no tls_argv_for_config)",)
+        )
     return fn(config, role=role, capabilities=capabilities)
 
 
@@ -172,14 +223,12 @@ def union_cipher_suite_ids(repo: Path | None = None) -> frozenset[str]:
 
 
 def wrappers_plugin_dir(repo: Path) -> Path:
-    """``src/wrappers`` in dev checkout; ``wrappers/`` in the container image."""
-    if (repo / "wrappers").is_dir():
-        return repo / "wrappers"
-    return repo / "src" / "wrappers"
+    """``wrappers/`` under the repository root."""
+    return repo / "wrappers"
 
 
 def discover_wrapper_ids(repo: Path) -> tuple[str, ...]:
-    """Ids from ``src/wrappers/<id>/wrapper.py`` + ``capabilities.json``."""
+    """Ids from ``wrappers/<id>/wrapper.py`` + ``capabilities.json``."""
     plugin_dir = wrappers_plugin_dir(repo)
     if not plugin_dir.is_dir():
         return ()
@@ -192,27 +241,34 @@ def discover_wrapper_ids(repo: Path) -> tuple[str, ...]:
     return tuple(found)
 
 
-def _ensure_src_importable(repo: Path | None = None) -> Path:
-    src = (repo or repository_root()) / "src"
-    src_s = str(src)
-    if src_s not in sys.path:
-        sys.path.insert(0, src_s)
-    return src
+def _ensure_repo_importable(repo: Path | None = None) -> Path:
+    root = (repo or repository_root()).resolve()
+    root_s = str(root)
+    if root_s not in sys.path:
+        sys.path.insert(0, root_s)
+    return root
 
 
 def load_capabilities(backend_name: str, repo: Path | None = None) -> dict[str, Any]:
     name = (backend_name or "").strip().lower()
     path = wrappers_plugin_dir(repo or repository_root()) / name / "capabilities.json"
     if not path.is_file():
-        raise FileNotFoundError(f"capabilities.json not found for backend {name!r}: {path}")
+        raise FileNotFoundError(
+            f"capabilities.json not found for backend {name!r}: {path}"
+        )
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"capabilities.json must be a JSON object: {path}")
     return data
 
 
-_RUNTIME_DEFAULTS: dict[str, Any] = {"grpc_addr": None, "tls_host": "127.0.0.1", "tls_port": 15551,
-    "unsupported_tls_fields": (), "local_cli": ()}
+_RUNTIME_DEFAULTS: dict[str, Any] = {
+    "grpc_addr": None,
+    "tls_host": "127.0.0.1",
+    "tls_port": 15551,
+    "unsupported_tls_fields": (),
+    "local_cli": (),
+}
 
 
 def wrapper_runtime(capabilities: dict[str, Any]) -> dict[str, Any]:
@@ -227,7 +283,9 @@ def wrapper_runtime(capabilities: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def wrapper_runtime_config(backend_name: str, repo: Path | None = None) -> dict[str, Any]:
+def wrapper_runtime_config(
+    backend_name: str, repo: Path | None = None
+) -> dict[str, Any]:
     """Per-wrapper ``runtime`` section from ``capabilities.json``."""
     return wrapper_runtime(load_capabilities(backend_name, repo))
 
@@ -238,7 +296,9 @@ def load_wrapper_module(backend_name: str) -> Any:
     return importlib.import_module(f"wrappers.{name}.wrapper")
 
 
-def call_wrapper_hook(backend_name: str, hook: str, /, *args: Any, **kwargs: Any) -> Any:
+def call_wrapper_hook(
+    backend_name: str, hook: str, /, *args: Any, **kwargs: Any
+) -> Any:
     mod = load_wrapper_module(backend_name)
     fn = getattr(mod, hook, None)
     if fn is None:
@@ -246,7 +306,9 @@ def call_wrapper_hook(backend_name: str, hook: str, /, *args: Any, **kwargs: Any
     return fn(*args, **kwargs)
 
 
-def local_cli_requirements(backend_name: str, capabilities: dict[str, Any]) -> tuple[str, ...]:
+def local_cli_requirements(
+    backend_name: str, capabilities: dict[str, Any]
+) -> tuple[str, ...]:
     req = call_wrapper_hook(backend_name, "local_cli_requirements")
     if req is not None:
         return tuple(str(x) for x in req)
@@ -263,38 +325,54 @@ def resolve_wrapper_cli_tool(backend_name: str, exe: str) -> str | None:
     return shutil.which(exe)
 
 
-def wrapper_orchestration_env(backend_name: str, active_backends: frozenset[str] | set[str]) -> dict[str, str]:
+def wrapper_orchestration_env(
+    backend_name: str, active_backends: frozenset[str] | set[str]
+) -> dict[str, str]:
     out = call_wrapper_hook(backend_name, "orchestration_env", active_backends)
     return dict(out) if isinstance(out, dict) else {}
 
 
-def wrapper_local_env(backend_name: str, repo: Path, active_backends: frozenset[str] | set[str]) -> dict[str, str]:
-    out = call_wrapper_hook(backend_name, "local_wrapper_env", repo, backend_name, active_backends)
+def wrapper_local_env(
+    backend_name: str, repo: Path, active_backends: frozenset[str] | set[str]
+) -> dict[str, str]:
+    out = call_wrapper_hook(
+        backend_name, "local_wrapper_env", repo, backend_name, active_backends
+    )
     return dict(out) if isinstance(out, dict) else {}
 
 
 def merged_orchestration_env(active_backends: Iterable[str]) -> dict[str, str]:
     """Union env fragments from every active wrapper's ``orchestration_env`` hook."""
-    active = frozenset((b or "").strip().lower() for b in active_backends if (b or "").strip())
+    active = frozenset(
+        (b or "").strip().lower() for b in active_backends if (b or "").strip()
+    )
     merged: dict[str, str] = {}
     for backend in sorted(active):
         merged.update(wrapper_orchestration_env(backend, active))
     return merged
 
 
-def session_wrapper_env(backend_name: str, repo: Path, active_backends: Iterable[str]) -> dict[str, str]:
+def session_wrapper_env(
+    backend_name: str, repo: Path, active_backends: Iterable[str]
+) -> dict[str, str]:
     """Orchestration + per-wrapper env for one wrapper subprocess."""
-    active = frozenset((b or "").strip().lower() for b in active_backends if (b or "").strip())
+    active = frozenset(
+        (b or "").strip().lower() for b in active_backends if (b or "").strip()
+    )
     merged = dict(merged_orchestration_env(active))
     merged.update(wrapper_local_env(backend_name, repo, active))
     return merged
 
 
-def backend_grpc_addr(backend_name: str, repo: Path | None = None, *, port_override: int | None = None) -> str:
+def backend_grpc_addr(
+    backend_name: str, repo: Path | None = None, *, port_override: int | None = None
+) -> str:
     rt = wrapper_runtime_config(backend_name, repo)
     addr = rt.get("grpc_addr")
     if not isinstance(addr, str) or not addr.strip():
-        raise ValueError(f"capabilities.runtime.grpc_addr missing for backend {backend_name!r}")
+        raise ValueError(
+            f"capabilities.runtime.grpc_addr missing for backend {backend_name!r}"
+        )
     addr = addr.strip()
     if port_override:
         host, _, _ = addr.rpartition(":")
@@ -319,14 +397,18 @@ def grpc_port_overrides_from_args(args: Any) -> dict[str, int]:
     return out
 
 
-def backend_tls_endpoint(backend_name: str, repo: Path | None = None) -> tuple[str, int]:
+def backend_tls_endpoint(
+    backend_name: str, repo: Path | None = None
+) -> tuple[str, int]:
     rt = wrapper_runtime_config(backend_name, repo)
     host = str(rt.get("tls_host") or "127.0.0.1")
     port = int(rt.get("tls_port") or 15551)
     return host, port
 
 
-def check_local_cli_tools(backends: Iterable[str], repo: Path | None = None) -> list[str]:
+def check_local_cli_tools(
+    backends: Iterable[str], repo: Path | None = None
+) -> list[str]:
     """Return human-readable missing-tool messages (delegates to each wrapper)."""
     missing: list[str] = []
     root = repo or repository_root()
@@ -339,37 +421,58 @@ def check_local_cli_tools(backends: Iterable[str], repo: Path | None = None) -> 
     return missing
 
 
-def load_backend_component(backend_name: str, repo: Path | None = None) -> tuple[Any, dict[str, Any]]:
+def load_backend_component(
+    backend_name: str, repo: Path | None = None
+) -> tuple[Any, dict[str, Any]]:
     """
     Import ``wrappers.<backend>.wrapper`` and load ``capabilities.json``.
 
     Returns ``(wrapper_module, capabilities)``.
     """
     name = (backend_name or "").strip().lower()
-    _ensure_src_importable(repo)
+    _ensure_repo_importable(repo)
     capabilities = load_capabilities(name, repo)
     module = importlib.import_module(f"wrappers.{name}.wrapper")
     return module, capabilities
 
 
-def load_backend(backend_name: str, repo: Path | None = None) -> tuple[Any, dict[str, Any]]:
+def load_backend(
+    backend_name: str, repo: Path | None = None
+) -> tuple[Any, dict[str, Any]]:
     """Alias for :func:`load_backend_component`."""
     return load_backend_component(backend_name, repo)
 
 
-def load_capabilities_cache(wrapper_ids: frozenset[str] | set[str],
-    repo: Path | None = None) -> dict[str, dict[str, Any]]:
+def load_capabilities_cache(
+    wrapper_ids: frozenset[str] | set[str], repo: Path | None = None
+) -> dict[str, dict[str, Any]]:
     return {wid: load_capabilities(wid, repo) for wid in wrapper_ids}
 
 
-def cipher_maps_from_capabilities(capabilities: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
+def cipher_maps_from_capabilities(
+    capabilities: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
     """Return (tls13_map, tls12_map) catalog_id → raw CLI string."""
-    t13 = capabilities.get("tls13") if isinstance(capabilities.get("tls13"), dict) else {}
-    t12 = capabilities.get("tls12") if isinstance(capabilities.get("tls12"), dict) else {}
-    m13 = dict(t13.get("cipher_suite") or {}) if isinstance(t13.get("cipher_suite"), dict) else {}
-    m12 = dict(t12.get("cipher_suite") or {}) if isinstance(t12.get("cipher_suite"), dict) else {}
-    return ({str(k): str(v) for k, v in m13.items() if v},
-        {str(k): str(v) for k, v in m12.items() if v})
+    t13 = (
+        capabilities.get("tls13") if isinstance(capabilities.get("tls13"), dict) else {}
+    )
+    t12 = (
+        capabilities.get("tls12") if isinstance(capabilities.get("tls12"), dict) else {}
+    )
+    m13 = (
+        dict(t13.get("cipher_suite") or {})
+        if isinstance(t13.get("cipher_suite"), dict)
+        else {}
+    )
+    m12 = (
+        dict(t12.get("cipher_suite") or {})
+        if isinstance(t12.get("cipher_suite"), dict)
+        else {}
+    )
+    return (
+        {str(k): str(v) for k, v in m13.items() if v},
+        {str(k): str(v) for k, v in m12.items() if v},
+    )
 
 
 def all_cipher_suite_ids(capabilities: dict[str, Any]) -> list[str]:
@@ -384,8 +487,12 @@ def cipher_suite_ids_for_mode(capabilities: dict[str, Any], mode: TlsMode) -> li
     return sorted(str(k) for k in mp.keys() if k)
 
 
-def union_cipher_suite_ids_for_wrappers(caps_by_wrapper: dict[str, dict[str, Any]],
-    wrapper_ids: Sequence[str], *, mode: TlsMode | None = None) -> list[str]:
+def union_cipher_suite_ids_for_wrappers(
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    wrapper_ids: Sequence[str],
+    *,
+    mode: TlsMode | None = None,
+) -> list[str]:
     """Union of cipher catalog ids across wrappers, optionally restricted to one TLS mode."""
     keys: set[str] = set()
     for wid in wrapper_ids:
@@ -397,7 +504,9 @@ def union_cipher_suite_ids_for_wrappers(caps_by_wrapper: dict[str, dict[str, Any
     return sorted(keys)
 
 
-def default_cipher_for_tls_mode(mode: TlsMode, *, allowed: set[str] | frozenset[str]) -> str:
+def default_cipher_for_tls_mode(
+    mode: TlsMode, *, allowed: set[str] | frozenset[str]
+) -> str:
     """One catalog cipher when ``cipher_suite`` is omitted; prefer scenario defaults."""
     preferred = DEFAULT_CIPHER_BY_TLS_MODE.get(mode, "")
     if preferred and preferred in allowed:
@@ -417,7 +526,11 @@ def tls_mode_filter_from_args(args: Any) -> TlsMode | None:
         return None
     if ":" in raw:
         left, right = parse_asymmetric(raw)
-        if left and right and tls_mode_from_version(left) == tls_mode_from_version(right):
+        if (
+            left
+            and right
+            and tls_mode_from_version(left) == tls_mode_from_version(right)
+        ):
             return tls_mode_from_version(left)
         return None
     return tls_mode_from_version(raw)
@@ -434,7 +547,9 @@ def backend_cipher_modes(capabilities: dict[str, Any], catalog_id: str) -> set[T
     return modes
 
 
-def backend_supports_cipher(capabilities: dict[str, Any], catalog_id: str, mode: TlsMode) -> bool:
+def backend_supports_cipher(
+    capabilities: dict[str, Any], catalog_id: str, mode: TlsMode
+) -> bool:
     m13, m12 = cipher_maps_from_capabilities(capabilities)
     key = norm_catalog_token(catalog_id)
     mp = m13 if mode == "1.3" else m12
@@ -462,7 +577,9 @@ def _capability_token_supported(block: dict[str, Any], token: str) -> bool:
     return key in block or token in block
 
 
-def dimension_keys(capabilities: dict[str, Any], dimension: str, *, tls_mode: TlsMode | None = None) -> list[str]:
+def dimension_keys(
+    capabilities: dict[str, Any], dimension: str, *, tls_mode: TlsMode | None = None
+) -> list[str]:
     if dimension == "cipher_suite":
         if tls_mode is not None:
             return cipher_suite_ids_for_mode(capabilities, tls_mode)
@@ -483,8 +600,13 @@ def dimension_keys(capabilities: dict[str, Any], dimension: str, *, tls_mode: Tl
     return sorted(out)
 
 
-def backend_supports_token(capabilities: dict[str, Any], dimension: str,
-    token: str, *, mode: TlsMode | None = None) -> bool:
+def backend_supports_token(
+    capabilities: dict[str, Any],
+    dimension: str,
+    token: str,
+    *,
+    mode: TlsMode | None = None,
+) -> bool:
     if dimension == "cipher_suite":
         if mode is None:
             return bool(backend_cipher_modes(capabilities, token))
@@ -495,7 +617,9 @@ def backend_supports_token(capabilities: dict[str, Any], dimension: str,
     return _capability_token_supported(block, token)
 
 
-def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -> dict[str, list[str]]:
+def aggregate_union(
+    repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]
+) -> dict[str, list[str]]:
     """Union of catalog token ids across backends (for CLI choices)."""
     cipher: set[str] = set()
     groups: set[str] = set()
@@ -510,8 +634,14 @@ def aggregate_union(repo: Path, wrapper_ids: tuple[str, ...] | frozenset[str]) -
     test_feats: set[str] = set()
     for wid in wrapper_ids:
         test_feats.update(test_feature_ids(load_capabilities(wid, repo)))
-    return {"cipher_suite": sorted(cipher), "supported_groups": sorted(groups), "signature_schemes": sorted(sigs),
-        "alpn": sorted(alpn), "test_features": sorted(test_feats), "tls_version": ["1.2", "1.3"]}
+    return {
+        "cipher_suite": sorted(cipher),
+        "supported_groups": sorted(groups),
+        "signature_schemes": sorted(sigs),
+        "alpn": sorted(alpn),
+        "test_features": sorted(test_feats),
+        "tls_version": ["1.2", "1.3"],
+    }
 
 
 def is_cipher_tls13_only(capabilities: dict[str, Any], catalog_id: str) -> bool:
@@ -578,7 +708,9 @@ def option_choice_tokens(item: dict[str, Any]) -> list[str]:
     return [str(c).strip() for c in ch if str(c).strip()]
 
 
-def _coerce_cipher_tls13_only(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
+def _coerce_cipher_tls13_only(
+    cipher_side: str, ver_side: str, caps: dict[str, Any]
+) -> str | None:
     if not tls_version_forces_12(ver_side):
         return None
     cid = (cipher_side or "").strip()
@@ -589,7 +721,9 @@ def _coerce_cipher_tls13_only(cipher_side: str, ver_side: str, caps: dict[str, A
     return None
 
 
-def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = None) -> None:
+def coerce_tls_version_for_cipher_capabilities(
+    args: Any, repo: Path | None = None
+) -> None:
     """
     If ``--tls-version`` pins TLS 1.2 but the cipher exists only under ``tls13`` in
     the active server/client capabilities, bump version to 1.3 for that side.
@@ -615,8 +749,10 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
     def _pair(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
         return _coerce_cipher_tls13_only(cipher_side, ver_side, caps)
 
-    warn = ("[catalog] TLS 1.3-only cipher with --tls-version 1.2: ",
-        "adjusting protocol version to 1.3 to avoid handshake mismatch.")
+    warn = (
+        "[catalog] TLS 1.3-only cipher with --tls-version 1.2: ",
+        "adjusting protocol version to 1.3 to avoid handshake mismatch.",
+    )
 
     if ":" in cs_s and ":" in tv_s:
         lc, rc = cs_s.split(":", 1)
@@ -645,7 +781,9 @@ def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = No
         return
     caps = srv_caps if server and not client else cli_caps
     if server and client:
-        modes = backend_cipher_modes(srv_caps, cs_s) | backend_cipher_modes(cli_caps, cs_s)
+        modes = backend_cipher_modes(srv_caps, cs_s) | backend_cipher_modes(
+            cli_caps, cs_s
+        )
         if "1.3" in modes and "1.2" not in modes:
             caps = srv_caps
         else:
@@ -694,12 +832,19 @@ def expand_dimension(value: str, choices: Sequence[str]) -> list[str]:
         raise ValueError(f"Empty dimension value: {value!r}")
     bad = [p for p in parts if p not in base]
     if bad:
-        raise ValueError(f"Unknown value(s) {bad!r}; known: {', '.join(sorted(set(base)))}")
+        raise ValueError(
+            f"Unknown value(s) {bad!r}; known: {', '.join(sorted(set(base)))}"
+        )
     return parts
 
 
-def expand_alpn_matrix_axis(value: str, *, wrapper_ids: Sequence[str],
-    caps_by_wrapper: dict[str, dict[str, Any]], catalog_choices: Sequence[str]) -> list[str]:
+def expand_alpn_matrix_axis(
+    value: str,
+    *,
+    wrapper_ids: Sequence[str],
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    catalog_choices: Sequence[str],
+) -> list[str]:
     """
     Expand ALPN matrix values into ``server:client`` pairs.
 
@@ -710,18 +855,34 @@ def expand_alpn_matrix_axis(value: str, *, wrapper_ids: Sequence[str],
     if not v:
         return [""]
     if ":" in v:
-        return expand_capability_dimension(v, "alpn_protocols", wrapper_ids=wrapper_ids,
-            caps_by_wrapper=caps_by_wrapper, catalog_choices=catalog_choices)
-    tokens = expand_capability_dimension(v, "alpn_protocols", wrapper_ids=wrapper_ids,
-        caps_by_wrapper=caps_by_wrapper, catalog_choices=catalog_choices)
+        return expand_capability_dimension(
+            v,
+            "alpn_protocols",
+            wrapper_ids=wrapper_ids,
+            caps_by_wrapper=caps_by_wrapper,
+            catalog_choices=catalog_choices,
+        )
+    tokens = expand_capability_dimension(
+        v,
+        "alpn_protocols",
+        wrapper_ids=wrapper_ids,
+        caps_by_wrapper=caps_by_wrapper,
+        catalog_choices=catalog_choices,
+    )
     if not tokens or tokens == [""]:
         return [""]
     return [f"{srv}:{cli}" for srv in tokens for cli in tokens]
 
 
-def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequence[str],
-    caps_by_wrapper: dict[str, dict[str, Any]], catalog_choices: Sequence[str],
-    tls_mode: TlsMode | None = None) -> list[str]:
+def expand_capability_dimension(
+    value: str,
+    dimension: str,
+    *,
+    wrapper_ids: Sequence[str],
+    caps_by_wrapper: dict[str, dict[str, Any]],
+    catalog_choices: Sequence[str],
+    tls_mode: TlsMode | None = None,
+) -> list[str]:
     """Expand ALL / lists using per-backend ``capabilities.json`` keys."""
     v = (value or "").strip()
     catalog_tokens = [str(c).strip() for c in catalog_choices if c and str(c).strip()]
@@ -730,10 +891,18 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
     if re.match(r"(?is)^ALL\s*$", v):
         keys: set[str] = set()
         if dimension == "cipher_suite" and cipher_mode is not None:
-            keys.update(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
         else:
             for wid in wrapper_ids:
-                keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode))
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode
+                    )
+                )
         if keys:
             return sorted(keys)
         return list(catalog_tokens)
@@ -743,10 +912,18 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
         excl = {x.strip() for x in sub.group(1).split(",") if x.strip()}
         keys: set[str] = set()
         if dimension == "cipher_suite" and cipher_mode is not None:
-            keys.update(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+            keys.update(
+                union_cipher_suite_ids_for_wrappers(
+                    caps_by_wrapper, wrapper_ids, mode=cipher_mode
+                )
+            )
         else:
             for wid in wrapper_ids:
-                keys.update(dimension_keys(caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode))
+                keys.update(
+                    dimension_keys(
+                        caps_by_wrapper.get(wid, {}), dimension, tls_mode=cipher_mode
+                    )
+                )
         if not keys:
             keys = set(catalog_tokens)
         out = sorted(k for k in keys if k not in excl)
@@ -760,7 +937,11 @@ def expand_capability_dimension(value: str, dimension: str, *, wrapper_ids: Sequ
     expanded = expand_dimension(v, catalog_tokens)
     if dimension != "cipher_suite" or cipher_mode is None:
         return expanded
-    allowed = set(union_cipher_suite_ids_for_wrappers(caps_by_wrapper, wrapper_ids, mode=cipher_mode))
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(
+            caps_by_wrapper, wrapper_ids, mode=cipher_mode
+        )
+    )
     filtered = [x for x in expanded if x in allowed]
     # Unset cipher_suite with explicit tls_version → one default cipher for that protocol version.
     if not filtered and not v.strip():
@@ -782,7 +963,9 @@ def _cell_cipher_id(cell: dict[str, str], *, server: bool) -> str:
     return cs
 
 
-def effective_cell_tls_mode(cell: dict[str, str], srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> TlsMode:
+def effective_cell_tls_mode(
+    cell: dict[str, str], srv_caps: dict[str, Any], cli_caps: dict[str, Any]
+) -> TlsMode:
     """Infer TLS 1.2 vs 1.3 from explicit version or cipher capabilities sections."""
     tv = (cell.get("tls_version") or "").strip()
     if tv and ":" not in tv:
@@ -805,7 +988,9 @@ def effective_cell_tls_mode(cell: dict[str, str], srv_caps: dict[str, Any], cli_
     return "1.3"
 
 
-def _implicit_tls_version_for_side(cell: dict[str, str], *, server: bool, caps: dict[str, Any]) -> str:
+def _implicit_tls_version_for_side(
+    cell: dict[str, str], *, server: bool, caps: dict[str, Any]
+) -> str:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
         return ""
@@ -817,7 +1002,9 @@ def _implicit_tls_version_for_side(cell: dict[str, str], *, server: bool, caps: 
     return ""
 
 
-def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, repo: Path) -> dict[str, str]:
+def normalize_cell_tls_micro_params(
+    cell: dict[str, str], args_template: Any, repo: Path
+) -> dict[str, str]:
     """
     Infer ``tls_version`` from cipher ``tls13``/``tls12`` sections; for TLS 1.2 ciphers
     drop orthogonal dims unless the user set them on the CLI.
@@ -844,18 +1031,28 @@ def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, re
                 out["tls_version"] = sv or cv
 
     if effective_cell_tls_mode(out, srv_caps, cli_caps) != "1.2":
-        out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
+        out["test_features"] = str(
+            getattr(args_template, "test_features", "") or ""
+        ).strip()
         return out
     for dim in TLS13_ORTHOGONAL_DIMS:
         user_raw = str(getattr(args_template, dim, "") or "").strip()
         if not user_raw:
             out[dim] = ""
-    out["test_features"] = str(getattr(args_template, "test_features", "") or "").strip()
+    out["test_features"] = str(
+        getattr(args_template, "test_features", "") or ""
+    ).strip()
     return out
 
 
-def _check_cipher_side(cell: dict[str, str], *, server: bool,
-    wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
+def _check_cipher_side(
+    cell: dict[str, str],
+    *,
+    server: bool,
+    wrapper: str,
+    caps: dict[str, Any],
+    mode: TlsMode,
+) -> str | None:
     cid = _cell_cipher_id(cell, server=server)
     if not cid:
         return None
@@ -864,12 +1061,21 @@ def _check_cipher_side(cell: dict[str, str], *, server: bool,
     modes = backend_cipher_modes(caps, cid)
     if not modes:
         return f"{wrapper} lacks cipher_suite={cid!r}"
-    return (f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} "
-        f"(supported modes: {', '.join(sorted(modes))})")
+    return (
+        f"{wrapper} lacks cipher_suite={cid!r} for TLS {mode} "
+        f"(supported modes: {', '.join(sorted(modes))})"
+    )
 
 
-def _check_list_dim(cell: dict[str, str], dim: str, *, server: bool,
-    wrapper: str, caps: dict[str, Any], mode: TlsMode) -> str | None:
+def _check_list_dim(
+    cell: dict[str, str],
+    dim: str,
+    *,
+    server: bool,
+    wrapper: str,
+    caps: dict[str, Any],
+    mode: TlsMode,
+) -> str | None:
     if mode == "1.2" and dim in TLS13_ORTHOGONAL_DIMS:
         raw = (cell.get(dim) or "").strip()
         if not raw:
@@ -892,7 +1098,9 @@ class Tls12CipherMetadata:
     au: Literal["rsa", "ecdsa", "dsa", "unknown"]
 
 
-def _split_cell_list_tokens(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
+def _split_cell_list_tokens(
+    cell: dict[str, str], field: str, *, server: bool
+) -> list[str]:
     return split_csv_tokens(asymmetric_role_part(cell.get(field), server=server))
 
 
@@ -973,7 +1181,10 @@ def cipher_catalog_id_requires_identity_pem(cipher_id: str) -> bool:
 
 def _required_server_identity_prefix(cell: dict[str, str]) -> str | None:
     """``certs/`` filename prefix the server needs for this matrix cell."""
-    from core.identity import get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes
+    from core.identity import (
+        get_cert_prefix_for_cipher_suite,
+        get_cert_prefix_for_schemes,
+    )
 
     schemes = _split_cell_list_tokens(cell, "signature_schemes", server=True)
     if schemes:
@@ -1040,12 +1251,17 @@ def psk_key_bits_for_cipher(cipher_id: str) -> int:
     c = norm_catalog_token(cipher_id)
     if "chacha20" in c:
         return 256
-    if re.search(r"(?:aes|aria|camellia)(?:-)?256|[-/]256[-/](?:gcm|ccm|cbc)|[-]256[-](?:gcm|ccm|cbc)", c):
+    if re.search(
+        r"(?:aes|aria|camellia)(?:-)?256|[-/]256[-/](?:gcm|ccm|cbc)|[-]256[-](?:gcm|ccm|cbc)",
+        c,
+    ):
         return 256
     return 128
 
 
-def psk_secret_hex_for_cipher(capabilities: dict[str, Any], cipher_id: str) -> str | None:
+def psk_secret_hex_for_cipher(
+    capabilities: dict[str, Any], cipher_id: str
+) -> str | None:
     entry = test_feature_entry(capabilities, "psk")
     bits = psk_key_bits_for_cipher(cipher_id)
     field = "secret_hex_256" if bits >= 256 else "secret_hex_128"
@@ -1058,7 +1274,9 @@ def psk_secret_hex_for_cipher(capabilities: dict[str, Any], cipher_id: str) -> s
     return secret_hex
 
 
-def psk_material_from_capabilities(capabilities: dict[str, Any], cipher_id: str) -> tuple[str, str] | None:
+def psk_material_from_capabilities(
+    capabilities: dict[str, Any], cipher_id: str
+) -> tuple[str, str] | None:
     entry = test_feature_entry(capabilities, "psk")
     identity = str(entry.get("identity") or "interop").strip()
     secret_hex = psk_secret_hex_for_cipher(capabilities, cipher_id)
@@ -1067,11 +1285,20 @@ def psk_material_from_capabilities(capabilities: dict[str, Any], cipher_id: str)
     return identity, secret_hex
 
 
-def _cell_enabled_test_features_skip_reason(cell: dict[str, str], *, server: str,
-    client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
+def _cell_enabled_test_features_skip_reason(
+    cell: dict[str, str],
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
     """Pre-run SKIP when an enabled ``test_features`` token is unsupported on server or client."""
     for feat in sorted(enabled_test_features_from_cell(cell)):
-        for role_label, caps in ((f"server ({server})", srv_caps), (f"client ({client})", cli_caps)):
+        for role_label, caps in (
+            (f"server ({server})", srv_caps),
+            (f"client ({client})", cli_caps),
+        ):
             if not test_feature_wired(caps, feat):
                 return f"Feature {feat} is not wired in {role_label} wrapper"
             if not test_feature_supported(caps, feat):
@@ -1079,8 +1306,14 @@ def _cell_enabled_test_features_skip_reason(cell: dict[str, str], *, server: str
     return None
 
 
-def _cell_test_feature_skip_reason(cell: dict[str, str], *, server: str,
-    client: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
+def _cell_test_feature_skip_reason(
+    cell: dict[str, str],
+    *,
+    server: str,
+    client: str,
+    srv_caps: dict[str, Any],
+    cli_caps: dict[str, Any],
+) -> str | None:
     """
     Pre-run SKIP for PSK/anon cipher suites.
 
@@ -1095,7 +1328,10 @@ def _cell_test_feature_skip_reason(cell: dict[str, str], *, server: str,
         return None
     if feat not in enabled_test_features_from_cell(cell):
         return "Feature disabled"
-    for role_label, caps in ((f"server ({server})", srv_caps), (f"client ({client})", cli_caps)):
+    for role_label, caps in (
+        (f"server ({server})", srv_caps),
+        (f"client ({client})", cli_caps),
+    ):
         if not test_feature_wired(caps, feat):
             return "Not wired"
         if not test_feature_supported(caps, feat):
@@ -1103,7 +1339,9 @@ def _cell_test_feature_skip_reason(cell: dict[str, str], *, server: str,
     return None
 
 
-def _signature_scheme_auth_kind(token: str) -> Literal["rsa", "ecdsa", "dsa", "eddsa", "unknown"]:
+def _signature_scheme_auth_kind(
+    token: str,
+) -> Literal["rsa", "ecdsa", "dsa", "eddsa", "unknown"]:
     t = (token or "").strip().lower().replace("_", "").replace("-", "")
     if not t:
         return "unknown"
@@ -1124,13 +1362,22 @@ def _group_family(token: str) -> Literal["ec", "ffdhe", "other"]:
         return "other"
     if t.startswith("ffdhe"):
         return "ffdhe"
-    if (t.startswith("secp") or t.startswith("x25519") or t.startswith("x448") or t.startswith("brainpool")
-        or t.startswith("xyber") or t.startswith("mlkem") or "mlkem" in t):
+    if (
+        t.startswith("secp")
+        or t.startswith("x25519")
+        or t.startswith("x448")
+        or t.startswith("brainpool")
+        or t.startswith("xyber")
+        or t.startswith("mlkem")
+        or "mlkem" in t
+    ):
         return "ec"
     return "other"
 
 
-def _tls12_semantic_skip_reason_side(cell: dict[str, str], *, server: bool, mode: TlsMode) -> str | None:
+def _tls12_semantic_skip_reason_side(
+    cell: dict[str, str], *, server: bool, mode: TlsMode
+) -> str | None:
     if mode != "1.2":
         return None
     cipher_id = _cell_cipher_id(cell, server=server)
@@ -1196,13 +1443,15 @@ def cell_capability_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
     if sem_cli:
         return sem_cli
 
-    feat_skip = _cell_enabled_test_features_skip_reason(cell, server=server, client=client,
-        srv_caps=srv_caps, cli_caps=cli_caps)
+    feat_skip = _cell_enabled_test_features_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
     if feat_skip:
         return feat_skip
 
-    feat_skip = _cell_test_feature_skip_reason(cell, server=server, client=client,
-        srv_caps=srv_caps, cli_caps=cli_caps)
+    feat_skip = _cell_test_feature_skip_reason(
+        cell, server=server, client=client, srv_caps=srv_caps, cli_caps=cli_caps
+    )
     if feat_skip:
         return feat_skip
 
@@ -1210,22 +1459,53 @@ def cell_capability_skip_reason(cell: dict[str, str], repo: Path) -> str | None:
     if id_skip:
         return id_skip
 
-    for check in (_check_cipher_side(cell, server=True, wrapper=f"server ({server})", caps=srv_caps, mode=mode_srv),
-        _check_cipher_side(cell, server=False, wrapper=f"client ({client})", caps=cli_caps, mode=mode_cli)):
+    for check in (
+        _check_cipher_side(
+            cell,
+            server=True,
+            wrapper=f"server ({server})",
+            caps=srv_caps,
+            mode=mode_srv,
+        ),
+        _check_cipher_side(
+            cell,
+            server=False,
+            wrapper=f"client ({client})",
+            caps=cli_caps,
+            mode=mode_cli,
+        ),
+    ):
         if check:
             return check
 
     for dim in ("supported_groups", "signature_schemes", "alpn"):
-        for check in (_check_list_dim(cell, dim, server=True, wrapper=f"server ({server})", caps=srv_caps,
-                mode=mode_srv),
-            _check_list_dim(cell, dim, server=False, wrapper=f"client ({client})", caps=cli_caps, mode=mode_cli)):
+        for check in (
+            _check_list_dim(
+                cell,
+                dim,
+                server=True,
+                wrapper=f"server ({server})",
+                caps=srv_caps,
+                mode=mode_srv,
+            ),
+            _check_list_dim(
+                cell,
+                dim,
+                server=False,
+                wrapper=f"client ({client})",
+                caps=cli_caps,
+                mode=mode_cli,
+            ),
+        ):
             if check:
                 return check
 
     tv_single = (cell.get("tls_version") or "").strip()
     if tv_single and ":" not in tv_single:
-        for wrapper, caps, mode in ((f"server ({server})", srv_caps, mode_srv),
-            (f"client ({client})", cli_caps, mode_cli)):
+        for wrapper, caps, mode in (
+            (f"server ({server})", srv_caps, mode_srv),
+            (f"client ({client})", cli_caps, mode_cli),
+        ):
             block = caps.get("tls_version")
             if isinstance(block, dict) and block:
                 key = "1.2" if mode == "1.2" else "1.3"
@@ -1247,7 +1527,9 @@ def parse_csv_values(raw: str, arg_name: str) -> list[str]:
         return []
     values = [part.strip() for part in raw.split(",")]
     if any(not v for v in values):
-        raise ValueError(f"{arg_name} must be a comma-separated list of non-empty values")
+        raise ValueError(
+            f"{arg_name} must be a comma-separated list of non-empty values"
+        )
     return values
 
 
@@ -1268,7 +1550,9 @@ def _config_has_value(config: Any, field: str) -> bool:
     return bool(str(raw).strip())
 
 
-def unsupported_cli_params(config: Any, backend: str, repo: Path | None = None) -> list[str]:
+def unsupported_cli_params(
+    config: Any, backend: str, repo: Path | None = None
+) -> list[str]:
     """
     Return unsupported non-empty ``TlsConfig`` fields for a backend CLI.
 
@@ -1287,8 +1571,14 @@ def unsupported_cli_params(config: Any, backend: str, repo: Path | None = None) 
     return bad
 
 
-def catalog_parameter_conflicts(config: Any, backend: str, *, role: Any | None = None,
-    capabilities: dict[str, Any] | None = None, repo: Path | None = None) -> list[str]:
+def catalog_parameter_conflicts(
+    config: Any,
+    backend: str,
+    *,
+    role: Any | None = None,
+    capabilities: dict[str, Any] | None = None,
+    repo: Path | None = None,
+) -> list[str]:
     """
     Union of ``unsupported_cli_params`` and capability-translator unsupported
     entries (deduplicated, stable order).
@@ -1300,7 +1590,9 @@ def catalog_parameter_conflicts(config: Any, backend: str, *, role: Any | None =
             seen.add(item)
             out.append(item)
     if capabilities:
-        for item in tls_argv_for_config(config, backend, capabilities, role=role).unsupported:
+        for item in tls_argv_for_config(
+            config, backend, capabilities, role=role
+        ).unsupported:
             if item not in seen:
                 seen.add(item)
                 out.append(item)
@@ -1327,14 +1619,21 @@ def run_args_tls_config_view(args: Any, *, server: bool) -> SimpleNamespace:
         return split_csv_tokens(asymmetric_role_part(str(raw), server=server))
 
     version = pick_scalar("tls_version") or "1.3"
-    return SimpleNamespace(version=version, cipher_suite=pick_scalar("cipher_suite"),
+    return SimpleNamespace(
+        version=version,
+        cipher_suite=pick_scalar("cipher_suite"),
         supported_groups=pick_list("supported_groups"),
         signature_schemes=pick_list("signature_schemes"),
         alpn_protocols=pick_list("alpn"),
-        psk_modes=sorted(parse_test_features_enabled(",".join(pick_list("test_features")))))
+        psk_modes=sorted(
+            parse_test_features_enabled(",".join(pick_list("test_features")))
+        ),
+    )
 
 
-def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[str]) -> None:
+def _validate_wrapper_config_conflicts(
+    args: Any, *, known_wrappers: frozenset[str]
+) -> None:
     from proto import interop_pb2
 
     for attr, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
@@ -1345,15 +1644,23 @@ def _validate_wrapper_config_conflicts(args: Any, *, known_wrappers: frozenset[s
         view = run_args_tls_config_view(args, server=(role == interop_pb2.SERVER))
         conflicts = catalog_parameter_conflicts(view, wid, role=role, capabilities=caps)
         if conflicts:
-            raise ValueError(f"{attr} wrapper {wid!r} cannot apply requested parameter(s): "
-                f"{', '.join(conflicts)}")
+            raise ValueError(
+                f"{attr} wrapper {wid!r} cannot apply requested parameter(s): "
+                f"{', '.join(conflicts)}"
+            )
 
 
-def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None) -> None:
+def validate_run_args(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> None:
     if args.server not in known_wrappers:
-        raise ValueError(f"Unknown --server '{args.server}'. Known: {sorted(known_wrappers)}")
+        raise ValueError(
+            f"Unknown --server '{args.server}'. Known: {sorted(known_wrappers)}"
+        )
     if args.client not in known_wrappers:
-        raise ValueError(f"Unknown --client '{args.client}'. Known: {sorted(known_wrappers)}")
+        raise ValueError(
+            f"Unknown --client '{args.client}'. Known: {sorted(known_wrappers)}"
+        )
     if not (0 <= int(args.tls_port) <= 65535):
         raise ValueError("--tls-port must be in range 0..65535")
     for attr in ("server_grpc_port", "client_grpc_port"):
@@ -1377,15 +1684,19 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
             raw = str(value).strip()
             if ":" in raw:
                 left_s, right_s = parse_asymmetric(raw)
-                values = parse_csv_values(left_s, arg_name) + parse_csv_values(right_s, arg_name)
+                values = parse_csv_values(left_s, arg_name) + parse_csv_values(
+                    right_s, arg_name
+                )
             else:
                 values = parse_csv_values(raw, arg_name)
             if choices:
                 tokens = option_choice_tokens(item)
                 unknown = sorted(x for x in values if x not in tokens)
                 if unknown:
-                    raise ValueError(f"{arg_name} unknown value(s): {', '.join(unknown)}. "
-                        f"Known: {', '.join(tokens)}")
+                    raise ValueError(
+                        f"{arg_name} unknown value(s): {', '.join(unknown)}. "
+                        f"Known: {', '.join(tokens)}"
+                    )
             continue
         if not choices:
             continue
@@ -1394,18 +1705,25 @@ def validate_run_args(args: Any, *, known_wrappers: frozenset[str], repo: Path |
             tokens = option_choice_tokens(item)
             for part in parse_asymmetric(str(value)):
                 if part and part not in tokens:
-                    raise ValueError(f"{arg_name} must use catalog values; unknown: {part!r}. ",
-                        f"Known: {', '.join(tokens)}")
+                    raise ValueError(
+                        f"{arg_name} must use catalog values; unknown: {part!r}. ",
+                        f"Known: {', '.join(tokens)}",
+                    )
         elif str(value).strip() not in option_choice_tokens(item):
-            raise ValueError(f"{arg_name} must be one of: {', '.join(option_choice_tokens(item))}")
+            raise ValueError(
+                f"{arg_name} must be one of: {', '.join(option_choice_tokens(item))}"
+            )
 
     coerce_tls_version_for_cipher_capabilities(args, repo)
-    _validate_cipher_suite_for_tls_version(args, known_wrappers=known_wrappers, repo=repo)
+    _validate_cipher_suite_for_tls_version(
+        args, known_wrappers=known_wrappers, repo=repo
+    )
     _validate_wrapper_config_conflicts(args, known_wrappers=known_wrappers)
 
 
-def _validate_cipher_suite_for_tls_version(args: Any, *,
-    known_wrappers: frozenset[str], repo: Path | None = None) -> None:
+def _validate_cipher_suite_for_tls_version(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> None:
     """Reject explicit ``--cipher-suite`` tokens that exist only for another TLS version."""
     mode = tls_mode_filter_from_args(args)
     if mode is None:
@@ -1431,14 +1749,18 @@ def _validate_cipher_suite_for_tls_version(args: Any, *,
         active = set(wr)
 
     caps_cache = load_capabilities_cache(active, root)
-    allowed = set(union_cipher_suite_ids_for_wrappers(caps_cache, sorted(active), mode=mode))
+    allowed = set(
+        union_cipher_suite_ids_for_wrappers(caps_cache, sorted(active), mode=mode)
+    )
 
     def _check_part(part: str) -> None:
         p = (part or "").strip()
         if not p or p in allowed:
             return
-        raise ValueError(f"--cipher-suite {p!r} is not available for TLS {mode} "
-            f"(see tls{mode.replace('.', '')} in capabilities.json)")
+        raise ValueError(
+            f"--cipher-suite {p!r} is not available for TLS {mode} "
+            f"(see tls{mode.replace('.', '')} in capabilities.json)"
+        )
 
     if ":" in raw:
         left, right = raw.split(":", 1)
@@ -1451,8 +1773,9 @@ def _validate_cipher_suite_for_tls_version(args: Any, *,
             _check_part(part)
 
 
-def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
-    repo: Path | None = None) -> tuple[list[str], list[list[Any]]]:
+def matrix_axis_plan(
+    args: Any, *, known_wrappers: frozenset[str], repo: Path | None = None
+) -> tuple[list[str], list[list[Any]]]:
     """Capability-driven matrix axes (ALL/SKIP, TLS 1.2/1.3)."""
     root = repo or repository_root()
     wr = sorted(known_wrappers)
@@ -1468,7 +1791,11 @@ def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
 
     for item in sorted(catalog, key=lambda x: str(x.get("id", ""))):
         oid = item["id"]
-        if oid in NON_TLS_OPTION_IDS or oid == "tls_port" or oid in NON_MATRIX_OPTION_IDS:
+        if (
+            oid in NON_TLS_OPTION_IDS
+            or oid == "tls_port"
+            or oid in NON_MATRIX_OPTION_IDS
+        ):
             continue
         ch = item.get("choices") or []
         keys.append(oid)
@@ -1476,12 +1803,25 @@ def matrix_axis_plan(args: Any, *, known_wrappers: frozenset[str],
         raw = str(getattr(args, oid, "") or "")
         if oid in CAPABILITY_DIMENSIONS and tokens:
             if oid == "alpn":
-                vals.append(expand_alpn_matrix_axis(raw, wrapper_ids=sorted(matrix_wrappers),
-                    caps_by_wrapper=caps_cache, catalog_choices=tokens))
+                vals.append(
+                    expand_alpn_matrix_axis(
+                        raw,
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                    )
+                )
             else:
-                vals.append(expand_capability_dimension(raw, capability_dimension_name(oid),
-                    wrapper_ids=sorted(matrix_wrappers), caps_by_wrapper=caps_cache, catalog_choices=tokens,
-                    tls_mode=cipher_tls_mode if oid == "cipher_suite" else None))
+                vals.append(
+                    expand_capability_dimension(
+                        raw,
+                        capability_dimension_name(oid),
+                        wrapper_ids=sorted(matrix_wrappers),
+                        caps_by_wrapper=caps_cache,
+                        catalog_choices=tokens,
+                        tls_mode=cipher_tls_mode if oid == "cipher_suite" else None,
+                    )
+                )
         elif tokens:
             vals.append(expand_dimension(raw, tokens))
         else:
