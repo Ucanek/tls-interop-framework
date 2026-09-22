@@ -57,7 +57,7 @@ _CELL_TIMEOUT_POLL_S = 0.25
 _CELL_TIMEOUT_CLEANUP_WAIT_S = 15.0
 _EMERGENCY_CLOSE_GRPC_S = 10.0
 _WORKER_PORT_STRIDE = 100
-_MAX_PARALLEL_JOBS = 32
+MAX_PARALLEL_JOBS = 32
 
 
 def _worker_slot_grpc_overrides(
@@ -242,24 +242,33 @@ class WrapperSession(BaseExecutionSession):
         env["GRPC_PORT"] = str(grpc_port)
         env["WRAPPER"] = backend
         env.update(session_wrapper_env(backend, self.repo, self.backends))
-        # Repo root first; user site before system so pip protobuf wins over distro 3.x.
-        path_parts = [str(self.repo)]
-        try:
-            import site
-
-            user_site = site.getusersitepackages()
-            if user_site and os.path.isdir(user_site):
-                path_parts.append(user_site)
-        except Exception:
-            pass
-        prev = env.get("PYTHONPATH", "")
-        if prev:
-            path_parts.append(prev)
-        env["PYTHONPATH"] = os.pathsep.join(path_parts)
+        # Do not inject PYTHONPATH. ``python …/main.py`` already puts the repo on
+        # ``sys.path[0]``; forcing PYTHONPATH on Fedora makes distro
+        # ``google.protobuf`` shadow the pip install (no ``runtime_version``).
+        env.pop("PYTHONPATH", None)
         return env
 
     def _wrapper_cmd(self, backend: str) -> list[str]:
         return [sys.executable, str(self.repo / "main.py"), "--serve", backend]
+
+    def _wrapper_crash_report(self) -> str | None:
+        """If a spawned wrapper exited, return a diagnostic including its output."""
+        parts: list[str] = []
+        for backend, proc in zip(self.backends, self._procs):
+            code = proc.poll()
+            if code is None:
+                continue
+            out = ""
+            if proc.stdout is not None:
+                try:
+                    out = proc.stdout.read().decode("utf-8", errors="replace").strip()
+                except Exception:
+                    pass
+            detail = f"Wrapper {backend} exited (code {code})"
+            if out:
+                detail += f":\n{out}"
+            parts.append(detail)
+        return "\n".join(parts) if parts else None
 
     def up(self) -> None:
         if not self.backends:
@@ -348,6 +357,9 @@ class WrapperSession(BaseExecutionSession):
         deadline = time.monotonic() + timeout_s
         pending = set(addrs)
         while time.monotonic() < deadline and pending:
+            crash = self._wrapper_crash_report()
+            if crash:
+                raise RuntimeError(crash)
             for addr in list(pending):
                 if _wait_grpc_channel_ready(
                     addr, deadline=deadline, verbose=self.verbose
@@ -356,6 +368,9 @@ class WrapperSession(BaseExecutionSession):
             if pending:
                 time.sleep(_GRPC_STARTUP_POLL_S)
         if pending:
+            crash = self._wrapper_crash_report()
+            if crash:
+                raise RuntimeError(crash)
             raise TimeoutError(
                 f"gRPC not reachable within {timeout_s}s: {', '.join(sorted(pending))}"
             )
@@ -545,6 +560,10 @@ def tls_config_from_cell(
     cfg.signature_schemes.extend(
         _pick_cell_list(cell, "signature_schemes", server=server)
     )
+    # Other role's schemes → trust/peer leaf selection (``signature_schemes_cert``).
+    peer_schemes = _pick_cell_list(cell, "signature_schemes", server=not server)
+    if peer_schemes:
+        cfg.signature_schemes_cert.extend(peer_schemes)
     cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn", server=server))
     from core.catalog import enabled_test_features_from_cell
 

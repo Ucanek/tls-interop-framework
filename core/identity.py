@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 import re
 from collections.abc import Sequence
 from pathlib import Path
@@ -19,18 +18,6 @@ def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
     """True for ``dhe-dss-*``, ``dh-dss-*``, … (not ECDSA)."""
     c = (cipher_catalog_id or "").strip().lower().replace("_", "-")
     return bool(re.search(r"(^|-)dss(-|$)", c))
-
-
-def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    whole = (val or "").strip()
-    if not whole:
-        return [], []
-    if ":" in whole:
-        left, right = whole.split(":", 1)
-        return ([p.strip() for p in left.split(",") if p.strip()],
-                [p.strip() for p in right.split(",") if p.strip()])
-    parts = [p.strip() for p in whole.split(",") if p.strip()]
-    return parts, parts
 
 
 def get_cert_prefix_for_scheme(scheme: str) -> str:
@@ -65,11 +52,9 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
 
 
 def get_cert_prefix_for_schemes(schemes: Sequence[str]) -> str:
-    """First listed scheme wins (TLS signature_algorithms preference order)."""
-    for raw in schemes:
-        if (raw or "").strip():
-            return get_cert_prefix_for_scheme(raw)
-    return DEFAULT_PREFIX
+    """First non-empty scheme wins (TLS signature_algorithms preference order)."""
+    first = next((s for s in schemes if (s or "").strip()), "")
+    return get_cert_prefix_for_scheme(first)
 
 
 def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:
@@ -135,40 +120,14 @@ def repeated_config_tokens(config: Any, field: str) -> list[str]:
     return [str(x).strip() for x in raw if str(x).strip()]
 
 
-def identity_kind_from_prefix(prefix: str) -> str | None:
-    """Coarse identity kind from a ``certs/`` filename prefix."""
-    p = (prefix or "").strip().lower()
-    if p == "dsa_default" or p.startswith("dsa"):
-        return "dsa"
-    if p.startswith("ecdsa"):
-        return "ecdsa"
-    if p == "ed25519":
-        return "ed25519"
-    if p == "ed448":
-        return "ed448"
-    if p.startswith("rsa"):
-        return "rsa"
-    return None
-
-
-def resolve_identity_kind(config: Any) -> str:
-    """Legacy coarse kind (``rsa`` | ``ecdsa`` | ``ed25519`` | ``ed448`` | ``dsa``)."""
-    return identity_kind_from_prefix(get_cert_prefix_for_config(config)) or "rsa"
-
-
 def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
     """
-    Schemes that determine **server** leaf identity for client trust stores.
+    Schemes that select the peer leaf / trust PEM under ``certs/``.
 
-    Prefer ``INTEROP_SERVER_SIGNATURE_SCHEMES`` (manual override), else the
-    server half of ``INTEROP_SIGNATURE_SCHEMES`` when it uses ``SERVER:CLIENT``,
-    else ``TlsConfig.signature_schemes`` from the active request config.
+    Prefer ``TlsConfig.signature_schemes_cert`` (driver fills the other role's
+    schemes when asymmetric), else ``signature_schemes`` on this config.
     """
-    env_raw = (os.environ.get("INTEROP_SERVER_SIGNATURE_SCHEMES") or "").strip()
-    if env_raw:
-        return [p.strip() for p in env_raw.split(",") if p.strip()]
-    gsig = (os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip()
-    if gsig and ":" in gsig:
-        left, _ = split_asymmetric_csv(gsig)
-        return left
+    cert_schemes = repeated_config_tokens(config, "signature_schemes_cert")
+    if cert_schemes:
+        return cert_schemes
     return repeated_config_tokens(config, "signature_schemes")

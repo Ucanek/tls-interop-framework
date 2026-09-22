@@ -10,6 +10,7 @@ import subprocess
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
 from typing import Any
@@ -21,19 +22,11 @@ from core.catalog import (
 
 ensure_import_paths()
 from core.runner import (
-    EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, WrapperSession,
-    WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_certs, remove_certs,
+    EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, MAX_PARALLEL_JOBS,
+    WrapperSession, WorkerSlotPool, ensure_certs, remove_certs,
     required_backends_from_matrix, run_matrix_cell_grpc)
-
-# With ``--suite``, these must not appear on the command line (values come from YAML).
-SUITE_MATRIX_CLI = {
-    "server": "--server",
-    "client": "--client",
-    "cipher_suite": "--cipher-suite",
-    "supported_groups": "--supported-groups",
-    "tls_version": "--tls-version",
-    "alpn": "--alpn",
-    "test_features": "--test-features"}
+from core.suite import (
+    apply_suite_file, enforce_suite_cli_exclusivity, suite_cases_to_combos)
 
 
 def status_for_rc(rc: int) -> str:
@@ -105,105 +98,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     return parser
 
 
-def matrix_flags_present_on_argv(argv: list[str] | None = None) -> list[str]:
-    """Return matrix option dest names explicitly passed on the CLI (not defaults)."""
-    argsv = argv if argv is not None else sys.argv
-    found: list[str] = []
-    for dest, flag in SUITE_MATRIX_CLI.items():
-        for token in argsv[1:]:
-            if token == flag or token.startswith(flag + "="):
-                found.append(dest)
-                break
-    return found
-
-
-def coerce_suite_matrix_value(value: Any, *, key: str = "") -> str:
-    if value is None:
-        return ""
-    if isinstance(value, bool):
-        return "true" if value else "false"
-    if isinstance(value, (int, float)):
-        return str(value)
-    if isinstance(value, list):
-        parts = [str(x).strip() for x in value if str(x).strip()]
-        return ",".join(parts)
-    if isinstance(value, dict):
-        if key == "test_features":
-            enabled = [
-                str(k).strip() for k, flag in value.items()
-                if str(k).strip() and flag is True]
-            return ",".join(enabled)
-        raise ValueError("Suite matrix values must be scalars or lists")
-    return str(value).strip()
-
-
-def suite_cases_to_combos(args: argparse.Namespace, axis_keys: list[str]) -> list[tuple[Any, ...]]:
-    """Expand explicit ``cases`` list from a suite file (not a Cartesian product)."""
-    cases = getattr(args, "suite_cases", None)
-    if not cases:
-        return []
-    combos: list[tuple[Any, ...]] = []
-    for case in cases:
-        row: dict[str, str] = {}
-        for k in axis_keys:
-            if k in case:
-                row[k] = coerce_suite_matrix_value(case[k], key=k)
-            else:
-                row[k] = str(getattr(args, k, "") or "")
-        combos.append(tuple(row[k] for k in axis_keys))
-    return combos
-
-
-def apply_suite_file(args: argparse.Namespace, suite_path: Path) -> None:
-    """Load ``matrix:`` from a YAML suite file into ``args`` (CLI-equivalent strings)."""
-    import yaml
-
-    path = suite_path.expanduser()
-    if not path.is_file():
-        raise ValueError(f"Suite file not found: {path}")
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except yaml.YAMLError as e:
-        raise ValueError(f"Invalid suite YAML {path}: {e}") from e
-    if not isinstance(raw, dict):
-        raise ValueError(f"Suite file must be a YAML mapping: {path}")
-    matrix = raw.get("matrix")
-    if matrix is None:
-        raise ValueError(f"Suite file must contain a top-level 'matrix' key: {path}")
-    if not isinstance(matrix, dict):
-        raise ValueError(f"Suite 'matrix' must be a mapping: {path}")
-
-    for key, value in matrix.items():
-        if not isinstance(key, str) or not key.strip():
-            raise ValueError(f"Invalid matrix key in suite file: {key!r}")
-        dest = key.strip()
-        if not hasattr(args, dest):
-            raise ValueError(
-                f"Unknown matrix key {dest!r} in suite file (not a recognized CLI option)")
-        setattr(args, dest, coerce_suite_matrix_value(value, key=dest))
-
-    cases = raw.get("cases") or raw.get("configurations")
-    if cases is not None:
-        if not isinstance(cases, list):
-            raise ValueError(f"Suite 'cases' must be a list: {path}")
-        for idx, case in enumerate(cases):
-            if not isinstance(case, dict):
-                raise ValueError(f"Suite case {idx + 1} must be a mapping: {path}")
-        args.suite_cases = cases
-
-
-def enforce_suite_cli_exclusivity(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
-    """``--suite`` cannot be combined with matrix flags on the command line."""
-    if not getattr(args, "suite", None):
-        return
-    conflicts = matrix_flags_present_on_argv()
-    if conflicts:
-        flags = ", ".join(sorted(SUITE_MATRIX_CLI[d] for d in conflicts))
-        parser.error(
-            f"argument --suite: not allowed with matrix options on the command line ({flags}); "
-            "put them under 'matrix' in the suite file instead")
-
-
 def cell_summary_label(cell: dict[str, str]) -> str:
     s, c = cell["server"], cell["client"]
     ordered = ("tls_version", "cipher_suite", "supported_groups", "signature_schemes", "alpn")
@@ -211,44 +105,54 @@ def cell_summary_label(cell: dict[str, str]) -> str:
     return f"{s} x {c} | {' / '.join(parts)}"
 
 
-def run_matrix_cell(
-    tup: tuple[Any, ...], *, axis_keys: list[str], args_template: argparse.Namespace,
-    repo: Path, known: frozenset[str], session: BaseExecutionSession | None = None,
-    debug_logs: DebugRunLogs | None = None, slot_pool: WorkerSlotPool | None = None,
-    slot_queue: queue.Queue[int] | None = None, console_lock: threading.Lock | None = None
-) -> tuple[str, int]:
-    cell = {k: str(v) for k, v in zip(axis_keys, tup)}
-    cell = normalize_cell_tls_micro_params(cell, args_template, repo)
+@dataclass
+class WorkerContext:
+    """Shared state for one matrix cell run (serial session or parallel worker slot)."""
+
+    axis_keys: list[str]
+    args_template: argparse.Namespace
+    repo: Path
+    known: frozenset[str]
+    session: BaseExecutionSession | None = None
+    debug_logs: DebugRunLogs | None = None
+    slot_pool: WorkerSlotPool | None = None
+    slot_queue: queue.Queue[int] | None = None
+    console_lock: threading.Lock | None = None
+
+
+def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]:
+    cell = {k: str(v) for k, v in zip(ctx.axis_keys, tup)}
+    cell = normalize_cell_tls_micro_params(cell, ctx.args_template, ctx.repo)
     label = cell_summary_label(cell)
-    skip = cell_capability_skip_reason(cell, repo)
+    skip = cell_capability_skip_reason(cell, ctx.repo)
     if skip:
         skip_s = skip if isinstance(skip, str) else " ".join(str(x) for x in skip)
-        if args_template.verbose:
+        if ctx.args_template.verbose:
             print(f"SKIP (pre-run): {skip_s}", file=sys.stderr)
         else:
             print(f"{label} | SKIP  ({skip_s[:120].replace(chr(10), ' ')})")
         return label, EXIT_SKIP
 
     slot_id: int | None = None
-    active_session = session
-    if slot_pool is not None and slot_queue is not None:
-        slot_id = slot_queue.get()
-        active_session = slot_pool.session(slot_id)
-    elif session is None:
+    active_session = ctx.session
+    if ctx.slot_pool is not None and ctx.slot_queue is not None:
+        slot_id = ctx.slot_queue.get()
+        active_session = ctx.slot_pool.session(slot_id)
+    elif ctx.session is None:
         raise RuntimeError("missing wrapper session for matrix cell")
 
     try:
-        cell_ns = copy.copy(args_template)
-        for k in axis_keys:
+        cell_ns = copy.copy(ctx.args_template)
+        for k in ctx.axis_keys:
             setattr(cell_ns, k, cell[k])
-        validate_run_args(cell_ns, known_wrappers=known, repo=repo)
+        validate_run_args(cell_ns, known_wrappers=ctx.known, repo=ctx.repo)
         rc = run_matrix_cell_grpc(
-            cell, active_session, verbose=bool(args_template.verbose),
-            debug_logs=debug_logs, console_lock=console_lock)
+            cell, active_session, verbose=bool(ctx.args_template.verbose),
+            debug_logs=ctx.debug_logs, console_lock=ctx.console_lock)
         return label, rc
     finally:
-        if slot_pool is not None and slot_queue is not None and slot_id is not None:
-            slot_queue.put(slot_id)
+        if ctx.slot_pool is not None and ctx.slot_queue is not None and slot_id is not None:
+            ctx.slot_queue.put(slot_id)
 
 
 def run_matrix_parallel(
@@ -256,7 +160,7 @@ def run_matrix_parallel(
     repo: Path, known: frozenset[str], backends: frozenset[str],
     debug_logs: DebugRunLogs | None, jobs: int
 ) -> list[tuple[str, int]]:
-    effective_jobs = min(max(1, jobs), len(combos), _MAX_PARALLEL_JOBS)
+    effective_jobs = min(max(1, jobs), len(combos), MAX_PARALLEL_JOBS)
     if effective_jobs < jobs:
         print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
     slot_pool = WorkerSlotPool(
@@ -266,15 +170,14 @@ def run_matrix_parallel(
     for i in range(effective_jobs):
         slot_queue.put(i)
     console_lock = threading.Lock()
+    ctx = WorkerContext(
+        axis_keys=axis_keys, args_template=args, repo=repo, known=known,
+        debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue,
+        console_lock=console_lock)
     slot_pool.start()
     try:
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-            return list(executor.map(
-                lambda tup: run_matrix_cell(
-                    tup, axis_keys=axis_keys, args_template=args, repo=repo, known=known,
-                    debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue,
-                    console_lock=console_lock),
-                combos))
+            return list(executor.map(lambda tup: run_matrix_cell(tup, ctx), combos))
     finally:
         slot_pool.stop()
 
@@ -322,8 +225,8 @@ def main() -> int:
 
         if int(args.jobs) < 1:
             parser.error("--jobs must be >= 1")
-        if int(args.jobs) > _MAX_PARALLEL_JOBS:
-            parser.error(f"--jobs must be <= {_MAX_PARALLEL_JOBS}")
+        if int(args.jobs) > MAX_PARALLEL_JOBS:
+            parser.error(f"--jobs must be <= {MAX_PARALLEL_JOBS}")
         if int(args.jobs) > 1 and bool(args.attach):
             parser.error("--jobs > 1 cannot be used with --attach")
         if int(args.jobs) > 1 and int(args.tls_port) != 0:
@@ -367,10 +270,11 @@ def main() -> int:
                         repo, backends, verbose=bool(args.verbose), attach=bool(args.attach),
                         grpc_port_overrides=grpc_overrides)
                     session.start()
+                ctx = WorkerContext(
+                    axis_keys=axis_keys, args_template=args, repo=repo, known=known,
+                    session=session, debug_logs=debug_logs)
                 for tup in combos:
-                    results.append(run_matrix_cell(
-                        tup, axis_keys=axis_keys, args_template=args, repo=repo,
-                        known=known, session=session, debug_logs=debug_logs))
+                    results.append(run_matrix_cell(tup, ctx))
         except TimeoutError as e:
             print(e, file=sys.stderr)
             return 2
