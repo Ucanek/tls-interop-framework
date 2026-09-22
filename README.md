@@ -1,6 +1,6 @@
 # TLS Interoperability Testing Framework
 
-Cross-test TLS 1.2/1.3 between **OpenSSL**, **GnuTLS**, and **Mozilla NSS**. The driver starts wrapper subprocesses, runs a parameter matrix, and reports **OK** / **FAIL** / **SKIP** per cell (handshake → echo `TRANSMIT` → `CLOSE`). Mismatches are never reported as OK.
+Cross-test TLS 1.2/1.3 between **OpenSSL**, **GnuTLS**, and **Mozilla NSS**. The driver starts wrapper subprocesses, runs a parameter matrix, and reports **PASS** / **FAIL** / **SKIP** per cell (handshake → echo `TRANSMIT` → `CLOSE`). Mismatches are never reported as PASS.
 
 ## Quick start
 
@@ -53,7 +53,7 @@ Applies to `--server`, `--client`, `--cipher-suite`, `--tls-version`, `--support
 
 ```bash
 python3 main.py --suite scenarios/pairwise-tls13.yaml
-python3 main.py -s scenarios/ciphers-tls13.yaml -v
+python3 main.py --suite scenarios/ciphers-tls13.yaml -v
 ```
 
 With `--suite`, do not pass `--server` / `--client` or other matrix flags — values come from the file. See `scenarios/` (start with `pairwise-tls13.yaml`, then `pairwise-tls12.yaml`; `smoke.yaml` is the full 162-cell run).
@@ -61,11 +61,11 @@ With `--suite`, do not pass `--server` / `--client` or other matrix flags — va
 ## Results
 
 
-| OK | FAIL | SKIP | TIMEOUT |
+| PASS | FAIL | SKIP | TIMEOUT |
 |----|------|------|---------|
-| handshake + echo OK | error | unsupported / disabled feature | `--cell-timeout` exceeded |
+| handshake + echo PASS | error | unsupported / disabled feature | cell wall-clock limit exceeded |
 
-Default cell limit: **45 s** (`--cell-timeout`). On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
+Default cell limit: **45 s**. On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
 
 Parallel runs: `--jobs N` (default 1) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
 
