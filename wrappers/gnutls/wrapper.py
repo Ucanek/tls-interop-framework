@@ -23,7 +23,7 @@ from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_schemes, repeated_config_tokens,
     server_trust_signature_schemes_tokens)
-from proto import interop_pb2
+from interop_proto import interop_pb2
 from wrappers.base import (
     BaseTemplateWrapper,
     WrapperSetupError,

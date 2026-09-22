@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tls-interop-tool"
+version = "0.1.0"
+description = "Cross-test TLS 1.2/1.3 interoperability between OpenSSL, GnuTLS, and Mozilla NSS"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "grpcio>=1.60",
+    "protobuf>=4.21",
+    "PyYAML>=6.0",
+]
+
+[tool.setuptools]
+py-modules = ["main"]
+
+[tool.setuptools.packages.find]
+include = ["core*", "wrappers*", "interop_proto*"]

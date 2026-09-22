@@ -86,10 +86,10 @@ DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {
 
 
 def repository_root() -> Path:
-    """Repository root (directory containing ``proto/interop_pb2.py``)."""
+    """Repository root (directory containing ``interop_proto/interop_pb2.py``)."""
     cur = Path(__file__).resolve().parent
     while True:
-        if (cur / "proto" / "interop_pb2.py").is_file():
+        if (cur / "interop_proto" / "interop_pb2.py").is_file():
             return cur
         parent = cur.parent
         if parent == cur:
@@ -99,53 +99,11 @@ def repository_root() -> Path:
     for candidate in (p.parents[1], p.parents[2] if len(p.parents) > 2 else None):
         if candidate is None:
             continue
-        if (candidate / "proto" / "interop_pb2.py").is_file():
+        if (candidate / "interop_proto" / "interop_pb2.py").is_file():
             return candidate
     raise FileNotFoundError(
-        "Could not locate repository root containing proto directory"
+        "Could not locate repository root containing interop_proto directory"
     )
-
-
-_purged_foreign_proto = False
-
-
-def _purge_foreign_proto_module() -> None:
-    """Drop unrelated PyPI ``proto`` (proto-plus) so ``import proto`` hits this repo."""
-    global _purged_foreign_proto
-    if _purged_foreign_proto:
-        return
-    mod = sys.modules.get("proto")
-    if mod is None:
-        _purged_foreign_proto = True
-        return
-    if hasattr(mod, "interop_pb2"):
-        _purged_foreign_proto = True
-        return
-    # Our package mid-import (``proto/__init__.py`` calls this before ``interop_pb2`` loads).
-    mod_file = (getattr(mod, "__file__", None) or "").replace("\\", "/")
-    if mod_file.endswith("/proto/__init__.py") or "/interoperability_tool/proto/" in mod_file:
-        return
-    for key in list(sys.modules):
-        if key == "proto" or key.startswith("proto."):
-            del sys.modules[key]
-    _purged_foreign_proto = True
-
-
-def ensure_import_paths() -> Path:
-    """
-    Put repo root on ``sys.path[0]`` before ``import proto``.
-
-    Call once at process entry (``main``, ``driver``) or rely on ``proto/__init__.py``.
-    """
-    root = repository_root()
-    if not (root / "proto" / "interop_pb2.py").is_file():
-        raise ImportError(f"project proto/ not found under {root}")
-    rs = str(root)
-    while rs in sys.path:
-        sys.path.remove(rs)
-    sys.path.insert(0, rs)
-    _purge_foreign_proto_module()
-    return root
 
 
 @dataclass(frozen=True)
@@ -239,14 +197,6 @@ def discover_wrapper_ids(repo: Path) -> tuple[str, ...]:
         if (path / "wrapper.py").is_file() and (path / "capabilities.json").is_file():
             found.append(path.name)
     return tuple(found)
-
-
-def _ensure_repo_importable(repo: Path | None = None) -> Path:
-    root = (repo or repository_root()).resolve()
-    root_s = str(root)
-    if root_s not in sys.path:
-        sys.path.insert(0, root_s)
-    return root
 
 
 def load_capabilities(backend_name: str, repo: Path | None = None) -> dict[str, Any]:
@@ -430,7 +380,6 @@ def load_backend_component(
     Returns ``(wrapper_module, capabilities)``.
     """
     name = (backend_name or "").strip().lower()
-    _ensure_repo_importable(repo)
     capabilities = load_capabilities(name, repo)
     module = importlib.import_module(f"wrappers.{name}.wrapper")
     return module, capabilities
@@ -1634,7 +1583,7 @@ def run_args_tls_config_view(args: Any, *, server: bool) -> SimpleNamespace:
 def _validate_wrapper_config_conflicts(
     args: Any, *, known_wrappers: frozenset[str]
 ) -> None:
-    from proto import interop_pb2
+    from interop_proto import interop_pb2
 
     for attr, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
         wid = (getattr(args, attr, None) or "").strip().lower()

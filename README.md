@@ -5,20 +5,19 @@ Cross-test TLS 1.2/1.3 between **OpenSSL**, **GnuTLS**, and **Mozilla NSS**. The
 ## Quick start
 
 ```bash
-# Fedora                          # Debian / Ubuntu
 sudo dnf install openssl gnutls-bin nss-tools
 sudo apt-get install openssl gnutls-bin libnss3-tools
 
-pip install 'grpcio>=1.60' 'protobuf>=4.21' 'PyYAML>=6.0'
+pip install -e .
 
 python3 main.py --server openssl --client gnutls
-python3 main.py --suite scenarios/pairwise-tls13.yaml   # 9 cells, TLS 1.3 3×3
+python3 main.py --suite scenarios/pairwise-tls13.yaml
 
 python3 main.py --list-wrappers
-python3 main.py --list-options     # catalog ids: aes-128-gcm, x25519, …
+python3 main.py --list-options
 ```
 
-`certs/` is created on first run (`core/gen_interop_certs.sh`).
+Always run from the repo root. `pip install -e .` only installs Python dependencies.
 
 
 | Backend | gRPC  | TLS   | Server CLI         | Client CLI         |
@@ -61,9 +60,10 @@ With `--suite`, do not pass `--server` / `--client` or other matrix flags — va
 ## Results
 
 
-| PASS | FAIL | SKIP | TIMEOUT |
-|----|------|------|---------|
+| PASS                  | FAIL  | SKIP                           | TIMEOUT                        |
+| --------------------- | ----- | ------------------------------ | ------------------------------ |
 | handshake + echo PASS | error | unsupported / disabled feature | cell wall-clock limit exceeded |
+
 
 Default cell limit: **45 s**. On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
 
@@ -90,11 +90,15 @@ Notes:
 - **Same backend on both sides** (`openssl` × `openssl`): one wrapper process is enough — driver uses a single gRPC connection for server and client roles.
 - `--attach` works with matrix flags and `--suite`; every backend in the matrix must already be running on the expected gRPC ports.
 
+
+
 ## NSS
 
 - Fedora 43+: `tstclnt` / `selfserv` in `/usr/lib64/nss/unsupported-tools/` (auto-resolved).
 - `tstclnt` has no ALPN; `selfserv` serves one connection then exits (wrapper restarts it).
 - GnuTLS server × NSS client: `INTEROP_GNUTLS_NSS_PAIR` is set automatically when both run in one matrix.
+
+
 
 ## New wrapper
 

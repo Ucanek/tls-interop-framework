@@ -20,14 +20,12 @@ import grpc
 
 from core.catalog import (
     backend_grpc_addr, backend_tls_endpoint, cell_capability_skip_reason,
-    check_local_cli_tools, discover_wrapper_ids, ensure_import_paths, load_capabilities,
+    check_local_cli_tools, discover_wrapper_ids, load_capabilities,
     merged_orchestration_env, norm_token, normalize_cell_tls_micro_params, parse_asymmetric,
     session_wrapper_env, tls_version_to_capability_name)
 
-ensure_import_paths()
-
 from wrappers.utils import remove_tls_session_artifact_files, test_feature_enabled_in_config
-from proto import interop_pb2, interop_pb2_grpc
+from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
 
 # Distinct from 0 (pass) and 1 (fail) so matrix runners can show SKIP vs OK / TIMEOUT.
@@ -226,9 +224,8 @@ class WrapperSession(BaseExecutionSession):
         return env
 
     def _wrapper_cmd(self, backend: str) -> list[str]:
-        # ``cwd`` is the repo; avoid ``python -m`` (Fedora protobuf) and CLI ``--serve``.
+        # Prefer installed package imports; cwd is still the repo for certs/hooks.
         code = (
-            "from core.catalog import ensure_import_paths; ensure_import_paths(); "
             "from core.runner import serve_wrapper_process; "
             "import sys; raise SystemExit(serve_wrapper_process(sys.argv[1]))")
         return [sys.executable, "-c", code, backend]

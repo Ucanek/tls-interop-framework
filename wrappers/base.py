@@ -14,8 +14,8 @@ from grpc import ServicerContext
 from core.catalog import catalog_parameter_conflicts
 from core.identity import (
     catalog_identity_pem_paths_for_prefix, get_cert_prefix_for_config)
-from proto import interop_pb2
-from proto import interop_pb2_grpc
+from interop_proto import interop_pb2
+from interop_proto import interop_pb2_grpc
 from wrappers.utils import (
     capability,
     format_cli_debug_logs,

@@ -16,11 +16,9 @@ from pathlib import Path
 from typing import Any
 
 from core.catalog import (
-    cell_capability_skip_reason, discover_wrapper_ids, ensure_import_paths,
+    cell_capability_skip_reason, discover_wrapper_ids,
     grpc_port_overrides_from_args, matrix_axis_plan, normalize_cell_tls_micro_params,
     print_catalog_options, repository_root, validate_run_args)
-
-ensure_import_paths()
 from core.runner import (
     EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, MAX_PARALLEL_JOBS,
     WrapperSession, WorkerSlotPool, ensure_certs, remove_certs,
