@@ -85,7 +85,7 @@ def _grpc_host_port(addr: str) -> tuple[str, int]:
     return host or "127.0.0.1", int(port_s)
 
 
-def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
+def ensure_certs(repo: Path, *, verbose: bool = False) -> None:
     """Create ``certs/{prefix}.crt`` bundles when any are missing."""
     from core.identity import IDENTITY_PREFIXES
 
@@ -111,8 +111,8 @@ def ensure_interop_certs(repo: Path, *, verbose: bool = False) -> None:
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
 
 
-def remove_interop_certs(repo: Path, *, verbose: bool = False) -> None:
-    """Remove ``certs/`` after a matrix run (including ``dh2048.pem``)."""
+def remove_certs(repo: Path, *, verbose: bool = False) -> None:
+    """Remove ``certs/`` after a matrix run."""
     cert_dir = repo / "certs"
     if not cert_dir.is_dir():
         return
@@ -277,7 +277,7 @@ class WrapperSession(BaseExecutionSession):
                 "Requires grpcio on the host Python "
                 "(pip install 'grpcio>=1.60' 'protobuf>=4.21')"
             ) from e
-        ensure_interop_certs(self.repo, verbose=self.verbose)
+        ensure_certs(self.repo, verbose=self.verbose)
         missing = check_local_cli_tools(self.backends, self.repo)
         if missing:
             raise RuntimeError(

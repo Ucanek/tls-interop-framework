@@ -12,7 +12,8 @@ from typing import Tuple
 from grpc import ServicerContext
 
 from core.catalog import catalog_parameter_conflicts
-from core.identity import catalog_identity_pem_paths_for_config
+from core.identity import (
+    catalog_identity_pem_paths_for_prefix, get_cert_prefix_for_config)
 from proto import interop_pb2
 from proto import interop_pb2_grpc
 from wrappers.utils import (
@@ -159,7 +160,8 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                     pass
             self._used_ephemeral_pem = False
 
-        sel_cert, sel_key = catalog_identity_pem_paths_for_config(config)
+        sel_cert, sel_key = catalog_identity_pem_paths_for_prefix(
+            get_cert_prefix_for_config(config))
         if sel_cert and sel_key:
             return sel_cert, sel_key
 

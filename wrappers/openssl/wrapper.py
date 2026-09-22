@@ -19,12 +19,9 @@ from core.catalog import (
     repository_root,
 )
 from core.identity import (
-    catalog_identity_pem_paths_for_prefix,
-    catalog_identity_trust_pem_path,
-    cipher_catalog_id_uses_dsa_auth,
-    repeated_config_tokens,
-    server_trust_signature_schemes_tokens,
-)
+    catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
+    get_cert_prefix_for_schemes, repeated_config_tokens,
+    server_trust_signature_schemes_tokens)
 from wrappers.base import (
     BaseTemplateWrapper,
     WrapperSetupError,
@@ -318,9 +315,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if test_feature_enabled_in_config(config, "mtls"):
             ca_path = (getattr(config, "ca_file", None) or "").strip()
             if not ca_path or not os.path.isfile(ca_path):
-                ca_path = catalog_identity_trust_pem_path(
-                    server_trust_signature_schemes_tokens(config)
-                )
+                ca_path, _ = catalog_identity_pem_paths_for_prefix(
+                    get_cert_prefix_for_schemes(server_trust_signature_schemes_tokens(config)))
             if not ca_path or not os.path.isfile(ca_path):
                 ca_path = cert_path
             cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]

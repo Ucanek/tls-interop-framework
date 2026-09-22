@@ -9,18 +9,10 @@ from pathlib import Path
 from typing import Any
 
 # Catalog prefixes under ``certs/`` (``{prefix}.crt`` + ``{prefix}.key``).
-IDENTITY_PREFIXES: tuple[str, ...] = (
-    "rsa_default",
-    "rsa_pss_pure",
-    "dsa_default",
-    "ecdsa_p256",
-    "ecdsa_p384",
-    "ecdsa_p521",
-    "ed25519",
-    "ed448",
-)
-
-_DEFAULT_PREFIX = "rsa_default"
+IDENTITY_PREFIXES = (
+    "rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256", "ecdsa_p384",
+    "ecdsa_p521", "ed25519", "ed448")
+DEFAULT_PREFIX = "rsa_default"
 
 
 def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
@@ -29,22 +21,16 @@ def cipher_catalog_id_uses_dsa_auth(cipher_catalog_id: str) -> bool:
     return bool(re.search(r"(^|-)dss(-|$)", c))
 
 
-def _split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
+def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
     whole = (val or "").strip()
     if not whole:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return (
-            [p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()],
-        )
+        return ([p.strip() for p in left.split(",") if p.strip()],
+                [p.strip() for p in right.split(",") if p.strip()])
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
-
-
-def _norm_scheme_token(raw: str) -> str:
-    return (raw or "").strip().lower().replace(" ", "").replace("_", "-")
 
 
 def get_cert_prefix_for_scheme(scheme: str) -> str:
@@ -56,26 +42,26 @@ def get_cert_prefix_for_scheme(scheme: str) -> str:
       ``rsa-pss-pss-sha256`` → ``rsa_pss_pure``
       ``ecdsa-secp384r1-sha384`` → ``ecdsa_p384``
     """
-    tok = _norm_scheme_token(scheme)
+    tok = (scheme or "").strip().lower().replace(" ", "").replace("_", "-")
     if not tok:
-        return _DEFAULT_PREFIX
-    if tok.startswith("ed25519") or tok == "ed25519":
+        return DEFAULT_PREFIX
+    if tok.startswith("ed25519"):
         return "ed25519"
-    if tok.startswith("ed448") or tok == "ed448":
+    if tok.startswith("ed448"):
         return "ed448"
-    if tok.startswith("dsa") or tok == "dsa":
+    if tok.startswith("dsa"):
         return "dsa_default"
     if "ecdsa" in tok:
-        if "secp521" in tok or "-p521" in tok or tok.endswith("p521"):
+        if "secp521" in tok:
             return "ecdsa_p521"
-        if "secp384" in tok or "p384" in tok or "384" in tok:
+        if "secp384" in tok:
             return "ecdsa_p384"
         return "ecdsa_p256"
-    if "rsa-pss-pss" in tok or "rsapss-pss" in tok.replace("-", ""):
+    if "rsa-pss-pss" in tok:
         return "rsa_pss_pure"
-    if tok.startswith("rsa") or "rsa" in tok:
+    if "rsa" in tok:
         return "rsa_default"
-    return _DEFAULT_PREFIX
+    return DEFAULT_PREFIX
 
 
 def get_cert_prefix_for_schemes(schemes: Sequence[str]) -> str:
@@ -83,25 +69,14 @@ def get_cert_prefix_for_schemes(schemes: Sequence[str]) -> str:
     for raw in schemes:
         if (raw or "").strip():
             return get_cert_prefix_for_scheme(raw)
-    return _DEFAULT_PREFIX
+    return DEFAULT_PREFIX
 
 
 def get_cert_prefix_for_cipher_suite(cipher_catalog_id: str) -> str:
     """Coarse fallback when ``signature_schemes`` is unset (cipher auth hint only)."""
-    c = (cipher_catalog_id or "").strip().lower()
-    if not c:
-        return _DEFAULT_PREFIX
-    if cipher_catalog_id_uses_dsa_auth(c):
+    if cipher_catalog_id_uses_dsa_auth(cipher_catalog_id):
         return "dsa_default"
-    if "ecdsa" in c:
-        return "ecdsa_p256"
-    if "ed25519" in c:
-        return "ed25519"
-    if "ed448" in c:
-        return "ed448"
-    if "rsa" in c:
-        return "rsa_default"
-    return _DEFAULT_PREFIX
+    return get_cert_prefix_for_scheme(cipher_catalog_id)
 
 
 def get_cert_prefix_for_config(config: Any) -> str:
@@ -109,16 +84,13 @@ def get_cert_prefix_for_config(config: Any) -> str:
     schemes = repeated_config_tokens(config, "signature_schemes")
     if schemes:
         return get_cert_prefix_for_schemes(schemes)
-    return get_cert_prefix_for_cipher_suite(
-        str(getattr(config, "cipher_suite", "") or "")
-    )
+    return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
 
 
 def interop_certs_dir(repo: Path | None = None) -> Path:
     if repo is not None:
         return repo / "certs"
     from core.catalog import repository_root
-
     return repository_root() / "certs"
 
 
@@ -132,18 +104,12 @@ def catalog_identity_pem_paths_for_prefix(
     prefix: str, *, repo: Path | None = None
 ) -> tuple[str, str]:
     """Return absolute paths to ``{prefix}.crt`` and ``{prefix}.key`` when present."""
-    p = (prefix or "").strip() or _DEFAULT_PREFIX
-    cert_name = f"{p}.crt"
-    key_name = f"{p}.key"
-    candidates_dirs = ([interop_certs_dir(repo)] if repo is not None else []) + [
-        interop_certs_dir(None)
-    ]
-
-    cert = ""
-    key = ""
-    for base in candidates_dirs:
-        c = base / cert_name
-        k = base / key_name
+    p = (prefix or "").strip() or DEFAULT_PREFIX
+    cert_name, key_name = f"{p}.crt", f"{p}.key"
+    candidates = ([interop_certs_dir(repo)] if repo is not None else []) + [interop_certs_dir(None)]
+    cert, key = "", ""
+    for base in candidates:
+        c, k = base / cert_name, base / key_name
         if c.is_file() and k.is_file():
             return str(c.resolve()), str(k.resolve())
         if not cert and c.is_file():
@@ -155,9 +121,7 @@ def catalog_identity_pem_paths_for_prefix(
     return "", ""
 
 
-def read_identity_pem_bytes(
-    prefix: str, *, repo: Path | None = None
-) -> tuple[bytes, bytes]:
+def read_identity_pem_bytes(prefix: str, *, repo: Path | None = None) -> tuple[bytes, bytes]:
     cert_path, key_path = catalog_identity_pem_paths_for_prefix(prefix, repo=repo)
     if not cert_path or not key_path:
         return b"", b""
@@ -168,64 +132,28 @@ def repeated_config_tokens(config: Any, field: str) -> list[str]:
     raw = getattr(config, field, None)
     if not raw:
         return []
-    out: list[str] = []
-    for x in raw:
-        s = str(x).strip()
-        if s:
-            out.append(s)
-    return out
+    return [str(x).strip() for x in raw if str(x).strip()]
 
 
-def identity_kind_from_signature_schemes(schemes: Sequence[str]) -> str:
-    """Legacy coarse kind (``rsa`` | ``ecdsa`` | ``ed25519`` | ``ed448``)."""
-    prefix = get_cert_prefix_for_schemes(schemes)
-    if prefix == "dsa_default" or prefix.startswith("dsa"):
+def identity_kind_from_prefix(prefix: str) -> str | None:
+    """Coarse identity kind from a ``certs/`` filename prefix."""
+    p = (prefix or "").strip().lower()
+    if p == "dsa_default" or p.startswith("dsa"):
         return "dsa"
-    if prefix.startswith("ecdsa"):
+    if p.startswith("ecdsa"):
         return "ecdsa"
-    if prefix == "ed25519":
+    if p == "ed25519":
         return "ed25519"
-    if prefix == "ed448":
+    if p == "ed448":
         return "ed448"
-    return "rsa"
-
-
-def identity_kind_from_cipher_suite(cipher_catalog_id: str) -> str | None:
-    prefix = get_cert_prefix_for_cipher_suite(cipher_catalog_id)
-    if prefix == "dsa_default" or prefix.startswith("dsa"):
-        return "dsa"
-    if prefix.startswith("ecdsa"):
-        return "ecdsa"
-    if prefix == "ed25519":
-        return "ed25519"
-    if prefix == "ed448":
-        return "ed448"
-    if prefix.startswith("rsa"):
+    if p.startswith("rsa"):
         return "rsa"
     return None
 
 
 def resolve_identity_kind(config: Any) -> str:
-    return (
-        identity_kind_from_signature_schemes(
-            repeated_config_tokens(config, "signature_schemes")
-        )
-        or identity_kind_from_cipher_suite(
-            str(getattr(config, "cipher_suite", "") or "")
-        )
-        or "rsa"
-    )
-
-
-def catalog_identity_pem_paths_for_config(config: Any) -> tuple[str, str]:
-    return catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
-
-
-def catalog_identity_trust_pem_path(schemes: Sequence[str]) -> str:
-    cert, _ = catalog_identity_pem_paths_for_prefix(
-        get_cert_prefix_for_schemes(schemes)
-    )
-    return cert
+    """Legacy coarse kind (``rsa`` | ``ecdsa`` | ``ed25519`` | ``ed448`` | ``dsa``)."""
+    return identity_kind_from_prefix(get_cert_prefix_for_config(config)) or "rsa"
 
 
 def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
@@ -241,6 +169,6 @@ def server_trust_signature_schemes_tokens(config: Any) -> list[str]:
         return [p.strip() for p in env_raw.split(",") if p.strip()]
     gsig = (os.environ.get("INTEROP_SIGNATURE_SCHEMES") or "").strip()
     if gsig and ":" in gsig:
-        left, _ = _split_asymmetric_csv(gsig)
+        left, _ = split_asymmetric_csv(gsig)
         return left
     return repeated_config_tokens(config, "signature_schemes")

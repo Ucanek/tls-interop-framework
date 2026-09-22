@@ -20,12 +20,9 @@ from core.catalog import (
     repository_root,
 )
 from core.identity import (
-    catalog_identity_pem_paths_for_prefix,
-    catalog_identity_trust_pem_path,
-    cipher_catalog_id_uses_dsa_auth,
-    repeated_config_tokens,
-    server_trust_signature_schemes_tokens,
-)
+    catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
+    get_cert_prefix_for_schemes, repeated_config_tokens,
+    server_trust_signature_schemes_tokens)
 from proto import interop_pb2
 from wrappers.base import (
     BaseTemplateWrapper,
@@ -359,9 +356,8 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             cert, _ = catalog_identity_pem_paths_for_prefix("dsa_default")
             if cert and os.path.isfile(cert):
                 return cert
-        trust = catalog_identity_trust_pem_path(
-            server_trust_signature_schemes_tokens(config)
-        )
+        trust, _ = catalog_identity_pem_paths_for_prefix(
+            get_cert_prefix_for_schemes(server_trust_signature_schemes_tokens(config)))
         if trust and os.path.isfile(trust):
             return trust
         for candidate in (os.path.join(os.getcwd(), "cert.pem"), "cert.pem"):

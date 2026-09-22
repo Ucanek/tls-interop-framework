@@ -22,7 +22,7 @@ from core.catalog import (
 ensure_import_paths()
 from core.runner import (
     EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, WrapperSession,
-    WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_interop_certs, remove_interop_certs,
+    WorkerSlotPool, _MAX_PARALLEL_JOBS, ensure_certs, remove_certs,
     required_backends_from_matrix, run_matrix_cell_grpc)
 
 # With ``--suite``, these must not appear on the command line (values come from YAML).
@@ -55,10 +55,8 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
         "matrix TLS options for a Cartesian matrix.")
     groups = {
         "basic": parser.add_argument_group("Basic", "Runner and TLS listen port."),
-        "crypto": parser.add_argument_group(
-            "Cryptography", "Ciphers, ECDH groups, and signature algorithms."),
-        "protocol": parser.add_argument_group(
-            "Protocol", "TLS protocol version (TlsConfig.version).")}
+        "crypto": parser.add_argument_group("Cryptography", "Ciphers, ECDH groups, and signature algorithms."),
+        "protocol": parser.add_argument_group("Protocol", "TLS protocol version (TlsConfig.version).")}
 
     list_group = groups["basic"].add_mutually_exclusive_group()
     list_group.add_argument("--list-wrappers", action="store_true",
@@ -131,13 +129,11 @@ def coerce_suite_matrix_value(value: Any, *, key: str = "") -> str:
         return ",".join(parts)
     if isinstance(value, dict):
         if key == "test_features":
-            truthy = ("true", "1", "yes", "on")
             enabled = [
                 str(k).strip() for k, flag in value.items()
-                if str(k).strip() and (flag is True or str(flag).strip().lower() in truthy)]
+                if str(k).strip() and flag is True]
             return ",".join(enabled)
-        raise ValueError(
-            "suite matrix values must be scalars or lists, not nested mappings")
+        raise ValueError("Suite matrix values must be scalars or lists")
     return str(value).strip()
 
 
@@ -309,7 +305,6 @@ def main() -> int:
     repo = repository_root()
     parser = build_parser(repo)
     args = parser.parse_args()
-    cleanup_certs = False
     try:
         enforce_suite_cli_exclusivity(args, parser)
         if getattr(args, "suite", None):
@@ -335,8 +330,7 @@ def main() -> int:
             parser.error("--jobs > 1 cannot be used with --tls-port")
         grpc_overrides = grpc_port_overrides_from_args(args)
         if int(args.jobs) > 1 and grpc_overrides:
-            parser.error(
-                "--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
+            parser.error("--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
 
         known = frozenset(discover_wrapper_ids(repo))
         axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
@@ -355,8 +349,7 @@ def main() -> int:
         print(f"Running matrix of {n_tests} tests...")
         debug_logs: DebugRunLogs | None = DebugRunLogs(repo) if combos else None
         if combos:
-            ensure_interop_certs(repo, verbose=bool(args.verbose))
-            cleanup_certs = True
+            ensure_certs(repo, verbose=bool(args.verbose))
         backends, _ = required_backends_from_matrix(
             axis_keys, combos, args_template=args, repo=repo, known=known)
 
@@ -407,8 +400,7 @@ def main() -> int:
         print(e, file=sys.stderr)
         return 2
     finally:
-        if cleanup_certs:
-            remove_interop_certs(repo, verbose=bool(args.verbose))
+        remove_certs(repo, verbose=bool(args.verbose))
 
 
 if __name__ == "__main__":
