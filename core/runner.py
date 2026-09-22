@@ -26,7 +26,7 @@ from core.catalog import (
 
 ensure_import_paths()
 
-from wrappers.utils import remove_tls_session_artifact_files
+from wrappers.utils import remove_tls_session_artifact_files, test_feature_enabled_in_config
 from proto import interop_pb2, interop_pb2_grpc
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
 
@@ -43,8 +43,7 @@ MAX_PARALLEL_JOBS = 32
 
 def _worker_slot_grpc_overrides(
     repo: Path, backends: frozenset[str] | set[str], slot_id: int,
-    base_overrides: Mapping[str, int] | None = None
-) -> dict[str, int]:
+    base_overrides: Mapping[str, int] | None = None) -> dict[str, int]:
     """gRPC listen ports per backend for one parallel worker slot."""
     overrides = {k.strip().lower(): int(v) for k, v in (base_overrides or {}).items()}
     offset = int(slot_id) * WORKER_PORT_STRIDE
@@ -100,8 +99,7 @@ def remove_certs(repo: Path, *, verbose: bool = False) -> None:
 def apply_matrix_tls_endpoints(
     server: str, client: str, server_conf: interop_pb2.TlsConfig,
     client_conf: interop_pb2.TlsConfig, *, repo: Path,
-    cell: dict[str, str] | None = None, session: BaseExecutionSession | None = None
-) -> tuple[str, int]:
+    cell: dict[str, str] | None = None, session: BaseExecutionSession | None = None) -> tuple[str, int]:
     """Return host TCP coordinates for the driver check after ESTABLISH."""
     port_raw = ((cell or {}).get("tls_port") or "").strip()
     if port_raw:
@@ -120,8 +118,7 @@ def apply_matrix_tls_endpoints(
 
 def required_backends_from_matrix(
     axis_keys: list[str], combos: list[tuple[Any, ...]], *, args_template: Any,
-    repo: Path, known: frozenset[str]
-) -> tuple[frozenset[str], int]:
+    repo: Path, known: frozenset[str]) -> tuple[frozenset[str], int]:
     """
     Collect backends needed by non-SKIP matrix cells.
 
@@ -194,8 +191,7 @@ class WrapperSession(BaseExecutionSession):
 
     def __init__(
         self, repo: Path, backends: frozenset[str], *, verbose: bool = False,
-        attach: bool = False, grpc_port_overrides: Mapping[str, int] | None = None
-    ) -> None:
+        attach: bool = False, grpc_port_overrides: Mapping[str, int] | None = None) -> None:
         known = frozenset(discover_wrapper_ids(repo))
         unknown = backends - known
         if unknown:
@@ -376,8 +372,7 @@ class WorkerSlotSession(WrapperSession):
 
     def __init__(
         self, repo: Path, backends: frozenset[str], slot_id: int, *, verbose: bool = False,
-        grpc_port_overrides: Mapping[str, int] | None = None
-    ) -> None:
+        grpc_port_overrides: Mapping[str, int] | None = None) -> None:
         overrides = _worker_slot_grpc_overrides(
             repo, backends, slot_id, grpc_port_overrides)
         super().__init__(
@@ -405,8 +400,7 @@ class WorkerSlotPool:
 
     def __init__(
         self, repo: Path, backends: frozenset[str], num_slots: int, *, verbose: bool = False,
-        grpc_base_overrides: Mapping[str, int] | None = None
-    ) -> None:
+        grpc_base_overrides: Mapping[str, int] | None = None) -> None:
         if num_slots < 1:
             raise ValueError("num_slots must be >= 1")
         self.repo = repo.resolve()
@@ -434,10 +428,6 @@ class WorkerSlotPool:
             session.stop()
 
 
-def _cell_truthy(val: str | None) -> bool:
-    return (val or "").strip().lower() in ("true", "1", "yes", "on")
-
-
 def _pick_cell_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
     raw = (cell.get(field) or "").strip()
     if not raw:
@@ -456,10 +446,6 @@ def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[s
     return list(left if server else right)
 
 
-def _server_signature_schemes_from_cell(cell: dict[str, str]) -> list[str]:
-    return _pick_cell_list(cell, "signature_schemes", server=True)
-
-
 def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
     """False when wrapper uses out-of-band identity (e.g. NSS DB nicknames)."""
     try:
@@ -470,15 +456,13 @@ def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
     return "certificate" not in blocked and "private_key" not in blocked
 
 
-def _attach_cell_server_identity(
-    cfg: interop_pb2.TlsConfig, cell: dict[str, str], *, repo: Path
-) -> None:
+def _attach_cell_server_identity(cfg: interop_pb2.TlsConfig, cell: dict[str, str], *, repo: Path) -> None:
     """Load server leaf PEM bytes from ``certs/{prefix}.*`` for this cell's sig schemes."""
     from core.identity import (
         get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes,
         read_identity_pem_bytes)
 
-    schemes = _server_signature_schemes_from_cell(cell)
+    schemes = _pick_cell_list(cell, "signature_schemes", server=True)
     if schemes:
         prefix = get_cert_prefix_for_schemes(schemes)
     else:
@@ -490,9 +474,7 @@ def _attach_cell_server_identity(
         cfg.private_key = key_b
 
 
-def tls_config_from_cell(
-    cell: dict[str, str], role: int, *, repo: Path | None = None
-) -> interop_pb2.TlsConfig:
+def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None = None) -> interop_pb2.TlsConfig:
     """Build ``TlsConfig`` for one matrix role from a normalized cell dict."""
     server = role == interop_pb2.SERVER
     cfg = interop_pb2.TlsConfig()
@@ -519,7 +501,7 @@ def tls_config_from_cell(
     from core.catalog import enabled_test_features_from_cell
 
     cfg.psk_modes.extend(sorted(enabled_test_features_from_cell(cell)))
-    if _cell_truthy(cell.get("expect_hrr")):
+    if cell.get("expect_hrr") == "true":
         cfg.expect_hrr = True
     if server and repo is not None:
         backend = (cell.get("server") or "").strip().lower()
@@ -543,14 +525,6 @@ def _console_print(console_lock: threading.Lock | None, *args: Any, **kwargs: An
             print(*args, **kwargs)
     else:
         print(*args, **kwargs)
-
-
-def tls_config_resumption_or_0rtt_active(cfg: interop_pb2.TlsConfig) -> bool:
-    from wrappers.utils import test_feature_enabled_in_config
-
-    return (
-        test_feature_enabled_in_config(cfg, "resumption")
-        or test_feature_enabled_in_config(cfg, "0rtt"))
 
 
 def _format_output_data(data: bytes) -> str:
@@ -687,9 +661,7 @@ class DebugRunLogs:
         return self._dir
 
 
-def _cell_log_basename(
-    server: str, client: str, cell: dict[str, str] | None, *, kind: str
-) -> str:
+def _cell_log_basename(server: str, client: str, cell: dict[str, str] | None, *, kind: str) -> str:
     base = f"{server}_x_{client}"
     if cell:
         tags: list[str] = []
@@ -722,8 +694,7 @@ def write_cell_debug_log(
     repo: Path, *, server: str, client: str, server_conf: interop_pb2.TlsConfig,
     client_conf: interop_pb2.TlsConfig, driver: "InteropDriver", debug_logs: DebugRunLogs,
     cell: dict[str, str] | None = None, tcp_host: str = "", tcp_port: int = 0,
-    extra_error: str = "", result_kind: str = "FAIL"
-) -> Path:
+    extra_error: str = "", result_kind: str = "FAIL") -> Path:
     """Write one cell log into the run's debug directory; return the log file path."""
     debug_run_dir = debug_logs.ensure_dir()
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -776,8 +747,7 @@ def write_cell_debug_log(
 def _run_driver_test_timed(
     driver: InteropDriver, server_conf: interop_pb2.TlsConfig,
     client_conf: interop_pb2.TlsConfig, *, tcp_host: str, tcp_port: int,
-    client_wrapper: str, cell_timeout_s: float, verbose: bool
-) -> tuple[bool | None, bool, Exception | None]:
+    client_wrapper: str, cell_timeout_s: float, verbose: bool) -> tuple[bool | None, bool, Exception | None]:
     """
     Run one cell in a worker thread. Returns ``(ok, timed_out, worker_exception)``.
     ``ok`` is None when ``timed_out`` is True.
@@ -814,8 +784,7 @@ def _run_driver_test_timed(
 def run_matrix_cell_grpc(
     cell: dict[str, str], session: BaseExecutionSession, *, verbose: bool,
     debug_logs: DebugRunLogs | None = None, cell_timeout_s: float = DEFAULT_CELL_TIMEOUT_S,
-    console_lock: threading.Lock | None = None
-) -> int:
+    console_lock: threading.Lock | None = None) -> int:
     """Run one matrix cell over persistent local wrappers."""
     server = (cell.get("server") or "").strip().lower()
     client = (cell.get("client") or "").strip().lower()
@@ -842,7 +811,7 @@ def run_matrix_cell_grpc(
                 _console_print(console_lock, f"[Driver] SKIP: {skip}")
             else:
                 short = skip[:120].replace("\n", " ")
-                _console_print(console_lock, f"SKIP  interop  ({short})")
+                _console_print(console_lock, f"SKIP  ({short})")
             return EXIT_SKIP
 
         driver._last_skip_reason = None
@@ -868,7 +837,7 @@ def run_matrix_cell_grpc(
             if verbose:
                 _console_print(console_lock, f"[Driver] TIMEOUT: {summary}")
             else:
-                _console_print(console_lock, f"TIMEOUT  interop  ({summary})")
+                _console_print(console_lock, f"TIMEOUT  ({summary})")
             return EXIT_TIMEOUT
 
         if worker_exc is not None:
@@ -879,7 +848,7 @@ def run_matrix_cell_grpc(
                 _console_print(console_lock, f"[Driver] SKIP: {driver._last_skip_reason}")
                 return EXIT_SKIP
             short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-            _console_print(console_lock, f"SKIP  interop  ({short})")
+            _console_print(console_lock, f"SKIP  ({short})")
             return EXIT_SKIP
         if not ok:
             if debug_logs is not None:
@@ -898,11 +867,11 @@ def run_matrix_cell_grpc(
                 detail = (
                     (driver._last_failure[2] or "").replace("\n", " ").strip()[:220])
             suf = f"  ({detail})" if detail else ""
-            _console_print(console_lock, f"FAIL  interop{suf}")
+            _console_print(console_lock, f"FAIL{suf}")
             return 1
         if verbose:
             return 0
-        _console_print(console_lock, "PASS  interop")
+        _console_print(console_lock, "PASS")
         return 0
     except Exception as e:
         if driver is None:
@@ -925,7 +894,7 @@ def run_matrix_cell_grpc(
         else:
             _console_print(
                 console_lock,
-                f"FAIL  interop  ({str(e).replace(chr(10), ' ').strip()[:220]})")
+                f"FAIL  ({str(e).replace(chr(10), ' ').strip()[:220]})")
         return 1
     finally:
         remove_tls_session_artifact_files(wroot)
@@ -1026,9 +995,7 @@ class InteropDriver:
         suf = "..." if len(versions) > 5 else ""
         self._vprint(f"         supported_versions={versions[:5]}{suf}")
 
-    def _metadata_can_negotiate_version(
-        self, metadata: interop_pb2.LibraryMetadata | None, capability_name: str, role: int
-    ) -> bool:
+    def _metadata_can_negotiate_version(self, metadata: interop_pb2.LibraryMetadata | None, capability_name: str, role: int) -> bool:
         if metadata is None:
             return True
         if metadata.roles and role not in metadata.roles:
@@ -1039,9 +1006,7 @@ class InteropDriver:
         return any(
             c.name == capability_name and interop_pb2.NEGOTIATE in c.flags for c in caps)
 
-    def scenario_skip_reason_for_configs(
-        self, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig
-    ) -> str | None:
+    def scenario_skip_reason_for_configs(self, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig) -> str | None:
         """Skip run if peer metadata disagrees with role ``TlsConfig`` values."""
         if self.server_metadata is None or self.client_metadata is None:
             return None
@@ -1074,9 +1039,7 @@ class InteropDriver:
                 return f"client ({cn_c}) lacks group(s) {grp} per GetMetadata"
         return None
 
-    def _metadata_supports_cipher(
-        self, metadata: interop_pb2.LibraryMetadata | None, catalog_cipher: str
-    ) -> bool:
+    def _metadata_supports_cipher(self, metadata: interop_pb2.LibraryMetadata | None, catalog_cipher: str) -> bool:
         if metadata is None or not (catalog_cipher or "").strip():
             return True
         cat_fold = norm_token(catalog_cipher)
@@ -1088,9 +1051,7 @@ class InteropDriver:
                 return True
         return False
 
-    def _metadata_supports_groups(
-        self, metadata: interop_pb2.LibraryMetadata | None, group_tokens: list[str]
-    ) -> bool:
+    def _metadata_supports_groups(self, metadata: interop_pb2.LibraryMetadata | None, group_tokens: list[str]) -> bool:
         if metadata is None or not group_tokens:
             return True
         avail = {norm_token(c.name) for c in metadata.groups}
@@ -1125,8 +1086,7 @@ class InteropDriver:
 
     def _check_hrr_assertion(
         self, resp: interop_pb2.OperationResponse, client_conf: interop_pb2.TlsConfig,
-        label: str, *, client_wrapper: str = ""
-    ) -> bool:
+        label: str, *, client_wrapper: str = "") -> bool:
         if not getattr(client_conf, "expect_hrr", False):
             return True
         cw = (client_wrapper or "").strip().lower()
@@ -1150,8 +1110,7 @@ class InteropDriver:
 
     def _execute_establish(
         self, stub: interop_pb2_grpc.TlsInteropWrapperStub, role: int,
-        cfg: interop_pb2.TlsConfig
-    ) -> interop_pb2.OperationResponse:
+        cfg: interop_pb2.TlsConfig) -> interop_pb2.OperationResponse:
         return stub.ExecuteOperation(
             interop_pb2.OperationRequest(
                 type=interop_pb2.OperationRequest.ESTABLISH, role=role, config=cfg))
@@ -1184,8 +1143,7 @@ class InteropDriver:
 
     def _run_post_establish_round_trip(
         self, *, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig,
-        tcp_host: str, tcp_port: int, ver: str, client_wrapper: str = ""
-    ) -> bool:
+        tcp_host: str, tcp_port: int, ver: str, client_wrapper: str = "") -> bool:
         """Host TCP check, TRANSMIT client→server, verify echoed payload."""
         tcp_after_establish_s = 20.0
         transmit_gap_s = 1.0
@@ -1209,8 +1167,9 @@ class InteropDriver:
 
         if (
             (client_wrapper or "").strip().lower() == "nss"
-            and tls_config_resumption_or_0rtt_active(client_conf)
-        ):
+            and (
+                test_feature_enabled_in_config(client_conf, "resumption")
+                or test_feature_enabled_in_config(client_conf, "0rtt"))        ):
             time.sleep(nss_resumption_pre_transmit_s)
 
         self._vprint(f"[Driver] Transmitting: {test_payload.decode()}")
@@ -1243,12 +1202,13 @@ class InteropDriver:
 
     def run_test_with_configs(
         self, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig, *,
-        tcp_host: str, tcp_port: int, client_wrapper: str = ""
-    ) -> bool:
+        tcp_host: str, tcp_port: int, client_wrapper: str = "") -> bool:
         """ESTABLISH server → client (optional save/resume) → TCP → TRANSMIT → CLOSE."""
         self._last_skip_reason = None
         ver = (server_conf.version or "").strip() or "default"
-        resumption = tls_config_resumption_or_0rtt_active(client_conf)
+        resumption = (
+            test_feature_enabled_in_config(client_conf, "resumption")
+            or test_feature_enabled_in_config(client_conf, "0rtt"))
         try:
             kind = "Resumption/0-RTT round-trip" if resumption else "Round-trip"
             self._vprint(f"[Driver] {kind} (TLS {ver})")
