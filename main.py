@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import copy
 import queue
 import subprocess
 import sys
@@ -20,7 +19,7 @@ from core.catalog import (
     grpc_port_overrides_from_args, matrix_axis_plan, normalize_cell_tls_micro_params,
     print_catalog_options, repository_root, validate_run_args)
 from core.runner import (
-    EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, DebugRunLogs, MAX_PARALLEL_JOBS,
+    EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, MAX_PARALLEL_JOBS,
     WrapperSession, WorkerSlotPool, ensure_certs, remove_certs,
     required_backends_from_matrix, run_matrix_cell_grpc)
 from core.suite import (
@@ -108,9 +107,8 @@ class WorkerContext:
     axis_keys: list[str]
     args_template: argparse.Namespace
     repo: Path
-    known: frozenset[str]
     session: BaseExecutionSession | None = None
-    debug_logs: DebugRunLogs | None = None
+    debug_logs: dict[str, Path | None] | None = None
     slot_pool: WorkerSlotPool | None = None
     slot_queue: queue.Queue[int] | None = None
     console_lock: threading.Lock | None = None
@@ -130,18 +128,14 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
         return label, EXIT_SKIP
 
     slot_id: int | None = None
-    active_session = ctx.session
-    if ctx.slot_pool is not None and ctx.slot_queue is not None:
-        slot_id = ctx.slot_queue.get()
-        active_session = ctx.slot_pool.session(slot_id)
-    elif ctx.session is None:
-        raise RuntimeError("missing wrapper session for matrix cell")
-
     try:
-        cell_ns = copy.copy(ctx.args_template)
-        for k in ctx.axis_keys:
-            setattr(cell_ns, k, cell[k])
-        validate_run_args(cell_ns, known_wrappers=ctx.known, repo=ctx.repo)
+        active_session = ctx.session
+        if ctx.slot_pool is not None and ctx.slot_queue is not None:
+            slot_id = ctx.slot_queue.get()
+            active_session = ctx.slot_pool.session(slot_id)
+        elif ctx.session is None:
+            raise RuntimeError("missing wrapper session for matrix cell")
+
         rc = run_matrix_cell_grpc(
             cell, active_session, verbose=bool(ctx.args_template.verbose),
             debug_logs=ctx.debug_logs, console_lock=ctx.console_lock)
@@ -154,7 +148,7 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
 def run_matrix_parallel(
     combos: list[tuple[Any, ...]], *, axis_keys: list[str], args: argparse.Namespace,
     repo: Path, known: frozenset[str], backends: frozenset[str],
-    debug_logs: DebugRunLogs | None, jobs: int) -> list[tuple[str, int]]:
+    debug_logs: dict[str, Path | None] | None, jobs: int) -> list[tuple[str, int]]:
     effective_jobs = min(max(1, jobs), len(combos), MAX_PARALLEL_JOBS)
     if effective_jobs < jobs:
         print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
@@ -166,7 +160,7 @@ def run_matrix_parallel(
         slot_queue.put(i)
     console_lock = threading.Lock()
     ctx = WorkerContext(
-        axis_keys=axis_keys, args_template=args, repo=repo, known=known,
+        axis_keys=axis_keys, args_template=args, repo=repo,
         debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue,
         console_lock=console_lock)
     slot_pool.start()
@@ -207,6 +201,7 @@ def main() -> int:
             parser.error("--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
 
         known = frozenset(discover_wrapper_ids(repo))
+        validate_run_args(args, known_wrappers=known, repo=repo)
         axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
         if getattr(args, "suite_cases", None):
             for case in args.suite_cases:
@@ -221,7 +216,7 @@ def main() -> int:
                 n_tests *= len(av)
             combos = list(product(*axis_vals))
         print(f"Running matrix of {n_tests} tests...")
-        debug_logs: DebugRunLogs | None = DebugRunLogs(repo) if combos else None
+        debug_logs: dict[str, Path | None] | None = {"path": None} if combos else None
         if combos:
             ensure_certs(repo, verbose=bool(args.verbose))
         backends, _ = required_backends_from_matrix(
@@ -242,7 +237,7 @@ def main() -> int:
                         grpc_port_overrides=grpc_overrides)
                     session.start()
                 ctx = WorkerContext(
-                    axis_keys=axis_keys, args_template=args, repo=repo, known=known,
+                    axis_keys=axis_keys, args_template=args, repo=repo,
                     session=session, debug_logs=debug_logs)
                 for tup in combos:
                     results.append(run_matrix_cell(tup, ctx))
@@ -263,11 +258,11 @@ def main() -> int:
         for label, rc in results:
             print(f"{label} | {status_for_rc(rc)}")
         if any(rc not in (0, EXIT_SKIP) for _, rc in results):
-            if debug_logs is not None and debug_logs.ready:
-                run_dir = debug_logs.path
+            run_dir = debug_logs.get("path") if debug_logs else None
+            if run_dir is not None:
                 rel = (
                     run_dir.relative_to(repo)
-                    if run_dir and run_dir.is_relative_to(repo) else run_dir)
+                    if run_dir.is_relative_to(repo) else run_dir)
                 print(f"Debug logs for this run: {rel}/")
             return 1
         return 0

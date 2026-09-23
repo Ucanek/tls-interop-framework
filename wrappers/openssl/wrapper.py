@@ -9,13 +9,12 @@ from pathlib import Path
 from typing import Any
 
 from core.catalog import (
+    BackendCapabilities,
     TranslationResult,
     cipher_catalog_id_requires_anon,
     cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities,
     load_local_capabilities,
     norm_catalog_token,
-    psk_material_from_capabilities,
     repository_root,
 )
 from core.identity import (
@@ -81,7 +80,7 @@ def _build_tls_argv(
     argv: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = cipher_maps_from_capabilities(caps)
+    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
 
     tv = caps.get("tls_version")
     if isinstance(tv, dict):
@@ -117,7 +116,7 @@ def _build_tls_argv(
         and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
-        mat = psk_material_from_capabilities(caps, raw_cipher)
+        mat = BackendCapabilities("", caps).psk_material(raw_cipher)
         if mat:
             argv.extend(["-psk_identity", mat[0], "-psk", mat[1]])
         else:
@@ -240,9 +239,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return ["openssl", "version"]
 
     def _build_library_metadata(self, version: str):
-        return standard_library_metadata(
-            self._component_name, version, capabilities=CAPABILITIES
-        )
+        return standard_library_metadata(self._component_name, version)
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
         text = stdout or ""
@@ -279,8 +276,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
 
         role = interop_pb2.SERVER if for_server else interop_pb2.CLIENT
         args = list(_build_tls_argv(config, role=role).argv)
-        if for_server and bool(getattr(config, "session_tickets_enabled", False)):
-            args.extend(["-num_tickets", "2"])
         alpn = alpn_cli_protocol_list(config)
         if alpn:
             args.extend(["-alpn", alpn])
@@ -313,10 +308,8 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if has_0rtt:
             cmd = list(cmd) + ["-early_data"]
         if test_feature_enabled_in_config(config, "mtls"):
-            ca_path = (getattr(config, "ca_file", None) or "").strip()
-            if not ca_path or not os.path.isfile(ca_path):
-                ca_path, _ = catalog_identity_pem_paths_for_prefix(
-                    get_cert_prefix_for_schemes(server_trust_signature_schemes_tokens(config)))
+            ca_path, _ = catalog_identity_pem_paths_for_prefix(
+                get_cert_prefix_for_schemes(server_trust_signature_schemes_tokens(config)))
             if not ca_path or not os.path.isfile(ca_path):
                 ca_path = cert_path
             cmd = list(cmd) + ["-Verify", "1", "-CAfile", ca_path]

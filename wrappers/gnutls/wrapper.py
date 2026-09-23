@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from core.catalog import (
+    BackendCapabilities,
     TranslationResult,
     cipher_catalog_id_requires_anon,
     cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities,
     load_local_capabilities,
     norm_catalog_token,
-    psk_material_from_capabilities,
     repository_root,
 )
 from core.identity import (
@@ -173,7 +172,7 @@ def _build_tls_argv(
     extras: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = cipher_maps_from_capabilities(caps)
+    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
     gprio: list[str] = []
 
     profiles = caps.get("gnutls_priority_base")
@@ -231,7 +230,7 @@ def _build_tls_argv(
         and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
-        mat = psk_material_from_capabilities(caps, raw_cipher)
+        mat = BackendCapabilities("", caps).psk_material(raw_cipher)
         if mat:
             extras.extend(_gnutls_psk_argv(role, mat[0], mat[1]))
         else:
@@ -285,9 +284,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         return ["gnutls-cli", "--version"]
 
     def _build_library_metadata(self, version: str):
-        return standard_library_metadata(
-            self._component_name, version, capabilities=CAPABILITIES
-        )
+        return standard_library_metadata(self._component_name, version)
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
         text = stdout or ""

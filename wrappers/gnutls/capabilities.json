@@ -2,7 +2,7 @@
   "runtime": {
     "grpc_addr": "127.0.0.1:15052",
     "tls_port": 15552,
-    "unsupported_tls_fields": ["ca_file"],
+    "unsupported_tls_fields": [],
     "local_cli": ["gnutls-cli", "gnutls-serv"]
   },
   "gnutls_priority_base": {

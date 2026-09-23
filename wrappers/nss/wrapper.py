@@ -17,13 +17,12 @@ import threading
 from pathlib import Path
 
 from core.catalog import (
+    BackendCapabilities,
     TranslationResult,
     cipher_catalog_id_requires_anon,
     cipher_catalog_id_requires_psk,
-    cipher_maps_from_capabilities,
     load_local_capabilities,
     norm_catalog_token,
-    psk_material_from_capabilities,
 )
 from core.identity import repeated_config_tokens
 from wrappers.base import (
@@ -102,7 +101,7 @@ def _nss_psk_z_argv(config, caps: dict) -> list[str]:
         if raw_cipher and cipher_catalog_id_requires_psk(raw_cipher)
         else "psk-aes-128-gcm-sha256"
     )
-    mat = psk_material_from_capabilities(caps, cipher_for_psk)
+    mat = BackendCapabilities("", caps).psk_material(cipher_for_psk)
     if not mat:
         return []
     identity, secret_hex = mat
@@ -115,7 +114,7 @@ def _build_tls_argv(config, *, role=None, capabilities=None) -> TranslationResul
     argv: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = cipher_maps_from_capabilities(caps)
+    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
 
     raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
     if raw_cipher:
@@ -266,9 +265,7 @@ class NSSWrapper(BaseTemplateWrapper):
     def GetMetadata(self, request, context):
         self._ensure_nss_db_ready()
         version = get_nss_library_version() or "unknown"
-        return standard_library_metadata(
-            self._component_name, version, capabilities=CAPABILITIES
-        )
+        return standard_library_metadata(self._component_name, version)
 
     def _parse_negotiated_params(self, stdout: str) -> dict[str, str]:
         text = stdout or ""
@@ -303,9 +300,6 @@ class NSSWrapper(BaseTemplateWrapper):
 
     def _db_spec(self) -> str:
         return f"sql:{os.path.abspath(self._nssdb)}"
-
-    def _session_ticket_args(self, config):
-        return ["-u"] if bool(getattr(config, "session_tickets_enabled", False)) else []
 
     def _nss_tls_argv(self, config) -> list[str]:
         return list(_build_tls_argv(config).argv)
@@ -364,9 +358,7 @@ class NSSWrapper(BaseTemplateWrapper):
             cmd.append("-R")
         if test_feature_enabled_in_config(config, "mtls"):
             cmd.extend(["-n", "interop_rsa_default"])
-        cmd.extend(
-            ["-p", str(port), *extra, "-V", nss_ver, *self._session_ticket_args(config)]
-        )
+        cmd.extend(["-p", str(port), *extra, "-V", nss_ver])
         cwd = os.getcwd()
         return (
             popen_stdio_merged(cmd, cwd=cwd),

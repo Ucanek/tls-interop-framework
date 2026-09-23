@@ -17,7 +17,6 @@ from core.identity import (
 from interop_proto import interop_pb2
 from interop_proto import interop_pb2_grpc
 from wrappers.utils import (
-    capability,
     format_cli_debug_logs,
     format_executed_command,
     hrr_detected_in_cli_output,
@@ -41,7 +40,6 @@ __all__ = [
     "WrapperRuntimeError",
     "WrapperSetupError",
     "WrapperSkipError",
-    "capability",
     "format_cli_debug_logs",
     "format_executed_command",
     "is_server_role",
@@ -404,10 +402,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             time.sleep(delay)
 
     def _build_library_metadata(self, version: str) -> interop_pb2.LibraryMetadata:
-        caps = getattr(self.__class__, "CAPABILITIES", None)
-        return standard_library_metadata(
-            self._component_name, version, capabilities=caps
-        )
+        return standard_library_metadata(self._component_name, version)
 
     def _validate_config_supported(
         self, config: interop_pb2.TlsConfig, *, role: int

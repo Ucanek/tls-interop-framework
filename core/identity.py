@@ -87,9 +87,7 @@ def identity_pem_present(prefix: str, *, repo: Path | None = None) -> bool:
     return bool(cert_path and key_path)
 
 
-def catalog_identity_pem_paths_for_prefix(
-    prefix: str, *, repo: Path | None = None
-) -> tuple[str, str]:
+def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = None) -> tuple[str, str]:
     """Return absolute paths to ``{prefix}.crt`` and ``{prefix}.key`` when present."""
     p = (prefix or "").strip() or DEFAULT_PREFIX
     cert_name, key_name = f"{p}.crt", f"{p}.key"

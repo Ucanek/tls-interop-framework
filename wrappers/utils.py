@@ -10,7 +10,7 @@ import subprocess
 import time
 from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
 
-from core.catalog import metadata_from_capabilities, tls_mode_from_version
+from core.catalog import tls_mode_from_version
 from core.identity import repeated_config_tokens
 from interop_proto import interop_pb2
 
@@ -245,40 +245,15 @@ def read_nonblocking_stdout(
     return b"".join(chunks)
 
 
-def capability(
-    name: str, *flags: interop_pb2.ModifyFlag.ValueType
-) -> interop_pb2.Capability:
-    return interop_pb2.Capability(name=name, flags=list(flags))
-
-
 def standard_library_metadata(
     component_name: str, version: str, *, capabilities: dict | None = None
 ) -> interop_pb2.LibraryMetadata:
-    """Returns capability matrix from ``capabilities.json`` when provided."""
-    cap = capability
-    r, n = interop_pb2.READ, interop_pb2.NEGOTIATE
-    s = interop_pb2.SET
-    version_caps: list[tuple[str, bool]] = []
-    cipher_caps: list[str] = []
-    group_caps: list[str] = []
-    try:
-        if capabilities:
-            version_caps, cipher_caps, group_caps = metadata_from_capabilities(
-                capabilities, component_name=component_name
-            )
-    except Exception:
-        pass
-    version_caps_msg = [
-        cap(name, r, s, n) if can_set else cap(name, r, n)
-        for name, can_set in version_caps
-    ]
+    """Identity for ``GetMetadata`` (name + version + roles). Capability lists live in JSON."""
+    del capabilities  # kept for call-site compatibility; not advertised over RPC
     return interop_pb2.LibraryMetadata(
         component_name=component_name,
         version=version,
         roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-        supported_versions=version_caps_msg,
-        cipher_suites=[cap(name, r, n) for name in cipher_caps],
-        groups=[cap(name, r, n) for name in group_caps],
     )
 
 

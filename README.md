@@ -28,6 +28,7 @@ Always run from the repo root. `pip install -e .` only installs Python dependenc
 
 
 Wrappers live in `wrappers/<backend>/` (`wrapper.py` + `capabilities.json`).
+Per-backend JSON is loaded via `load_backend_capabilities` in `core/catalog.py`.
 
 ## CLI matrix
 
@@ -55,7 +56,7 @@ python3 main.py --suite scenarios/pairwise-tls13.yaml
 python3 main.py --suite scenarios/ciphers-tls13.yaml -v
 ```
 
-With `--suite`, do not pass `--server` / `--client` or other matrix flags — values come from the file. See `scenarios/` (start with `pairwise-tls13.yaml`, then `pairwise-tls12.yaml`; `smoke.yaml` is the full 162-cell run).
+With `--suite`, do not pass `--server` / `--client` or other matrix flags — values come from the file.
 
 ## Results
 
@@ -69,7 +70,7 @@ Default cell limit: **45 s**. On expiry the driver sends gRPC CLOSE (kills wrapp
 
 Parallel runs: `--jobs N` (default 1) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
 
-On **FAIL** or **TIMEOUT**, logs appear under `debug_logs/run_<timestamp>/` (`fail_*.log` or `timeout_*.log`). No folder if all cells pass.
+On **FAIL** or **TIMEOUT**, a short log appears under `debug_logs/run_<timestamp>/` (`fail_*.log` / `timeout_*.log`: cell, last failure, endpoints, operation traces). No folder if all cells pass.
 
 ## Manual debug (`--attach`)
 
