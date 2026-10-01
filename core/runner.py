@@ -192,9 +192,7 @@ class WrapperSession:
         return env
 
     def _wrapper_cmd(self, backend: str) -> list[str]:
-        code = (
-            "from core.runner import serve_wrapper_process; "
-            "import sys; raise SystemExit(serve_wrapper_process(sys.argv[1]))")
+        code = "from core.runner import serve_wrapper_process; import sys; raise SystemExit(serve_wrapper_process(sys.argv[1]))"
         return [sys.executable, "-c", code, backend]
 
     def _wrapper_crash_report(self) -> str | None:
@@ -320,56 +318,64 @@ class WrapperSession:
         self._procs.clear()
 
 
-def _pick_cell_val(cell: dict[str, str], field: str, *, server: bool, is_list: bool = False) -> Any:
+def _pick_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
     raw = (cell.get(field) or "").strip()
     if not raw:
-        return [] if is_list else ""
-    if is_list:
-        left, right = split_asymmetric_csv(raw)
-        return list(left if server else right)
+        return ""
     if ":" in raw:
         left, right = parse_asymmetric(raw)
         return left if server else right
     return raw
 
 
+def _pick_list(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
+    raw = (cell.get(field) or "").strip()
+    if not raw:
+        return []
+    left, right = split_asymmetric_csv(raw)
+    return list(left if server else right)
+
+
+def _apply_identity_material(
+    cfg: interop_pb2.TlsConfig, cell: dict[str, str], repo: Path) -> None:
+    """Attach server leaf PEM when the backend accepts inline certificate/private_key."""
+    backend = (cell.get("server") or "").strip().lower()
+    try:
+        blocked = frozenset(
+            load_backend_capabilities(backend).runtime().get("unsupported_tls_fields") or ())
+    except (FileNotFoundError, ValueError):
+        blocked = frozenset()
+    if "certificate" in blocked or "private_key" in blocked:
+        return
+    schemes = _pick_list(cell, "signature_schemes", server=True)
+    if schemes:
+        prefix = get_cert_prefix_for_schemes(schemes)
+    else:
+        cipher = _pick_scalar(cell, "cipher_suite", server=True)
+        prefix = get_cert_prefix_for_cipher_suite(cipher)
+    cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
+    if cert_b and key_b:
+        cfg.certificate = cert_b
+        cfg.private_key = key_b
+
+
 def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None = None) -> interop_pb2.TlsConfig:
     server = role == interop_pb2.SERVER
     cfg = interop_pb2.TlsConfig()
-    cfg.version = _pick_cell_val(cell, "tls_version", server=server) or "1.3"
-    cfg.cipher_suite = _pick_cell_val(cell, "cipher_suite", server=server)
-    port_raw = _pick_cell_val(cell, "tls_port", server=server)
+    cfg.version = _pick_scalar(cell, "tls_version", server=server) or "1.3"
+    cfg.cipher_suite = _pick_scalar(cell, "cipher_suite", server=server)
+    port_raw = _pick_scalar(cell, "tls_port", server=server)
     cfg.port = int(port_raw) if port_raw else 5555
-    cfg.supported_groups.extend(
-        _pick_cell_val(cell, "supported_groups", server=server, is_list=True))
-    cfg.signature_schemes.extend(
-        _pick_cell_val(cell, "signature_schemes", server=server, is_list=True))
-    cfg.signature_schemes_cert.extend(
-        _pick_cell_val(cell, "signature_schemes", server=not server, is_list=True))
-    cfg.alpn_protocols.extend(_pick_cell_val(cell, "alpn", server=server, is_list=True))
+    cfg.supported_groups.extend(_pick_list(cell, "supported_groups", server=server))
+    cfg.signature_schemes.extend(_pick_list(cell, "signature_schemes", server=server))
+    cfg.signature_schemes_cert.extend(_pick_list(cell, "signature_schemes", server=not server))
+    cfg.alpn_protocols.extend(_pick_list(cell, "alpn", server=server))
     features = parse_test_features_enabled(str(cell.get("test_features") or ""))
     cfg.psk_modes.extend(sorted(features))
     if not server and cell.get("expect_hrr") == "true":
         cfg.expect_hrr = True
     if server and repo is not None:
-        backend = (cell.get("server") or "").strip().lower()
-        caps_path = repo / "wrappers" / backend / "capabilities.json"
-        if caps_path.is_file():
-            blocked = frozenset(
-                load_backend_capabilities(backend).runtime().get("unsupported_tls_fields") or ())
-        else:
-            blocked = frozenset()
-        if "certificate" not in blocked and "private_key" not in blocked:
-            schemes = _pick_cell_val(cell, "signature_schemes", server=True, is_list=True)
-            if schemes:
-                prefix = get_cert_prefix_for_schemes(schemes)
-            else:
-                cipher = _pick_cell_val(cell, "cipher_suite", server=True)
-                prefix = get_cert_prefix_for_cipher_suite(cipher)
-            cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
-            if cert_b and key_b:
-                cfg.certificate = cert_b
-                cfg.private_key = key_b
+        _apply_identity_material(cfg, cell, repo)
     return cfg
 
 
@@ -380,11 +386,6 @@ def wrapper_filesystem_root(session: WrapperSession) -> str:
         root.mkdir(parents=True, exist_ok=True)
         return str(root.resolve())
     return str(session.repo.resolve())
-
-
-def _console_print(console_lock: threading.Lock | None, *args: Any, **kwargs: Any) -> None:
-    with console_lock or nullcontext():
-        print(*args, **kwargs)
 
 
 @dataclass
@@ -417,14 +418,14 @@ class DebugRunLogs:
             cell_text = ", ".join(
                 f"{k}={v}" for k, v in sorted(cell.items()) if str(v).strip())
             parts.append(f"cell: {cell_text}")
-        if driver._last_failure:
-            label, detail = driver._last_failure
+        if driver.last_failure:
+            label, detail = driver.last_failure
             parts.append(f"last_failure: {label}")
             parts.append(detail)
         if extra:
             parts.append(f"extra: {extra}")
         parts.append("")
-        parts.extend(driver._fail_log or ["(no operation logs)"])
+        parts.extend(driver.fail_log or ["(no operation logs)"])
         path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
         return path
 
@@ -454,9 +455,9 @@ class InteropDriver:
     def __init__(self, server_addr: str, client_addr: str, verbose: bool = False) -> None:
         self._verbose = verbose
         self._channels: list[grpc.Channel] = []
-        self._last_failure: tuple[str, str] | None = None
-        self._last_skip_reason: str | None = None
-        self._fail_log: list[str] = []
+        self.last_failure: tuple[str, str] | None = None
+        self.last_skip_reason: str | None = None
+        self.fail_log: list[str] = []
         if server_addr == client_addr:
             channel = grpc.insecure_channel(server_addr)
             self._channels.append(channel)
@@ -470,18 +471,14 @@ class InteropDriver:
             self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(channel_s)
             self.client_stub = interop_pb2_grpc.TlsInteropWrapperStub(channel_c)
 
-    def _stub(self, role: int) -> interop_pb2_grpc.TlsInteropWrapperStub:
-        if role == interop_pb2.SERVER:
-            return self.server_stub
-        return self.client_stub
-
     def _execute(
         self, op_type: int, role: int, cfg: interop_pb2.TlsConfig | None = None,
         payload: bytes = b"", timeout_s: float | None = None) -> interop_pb2.OperationResponse:
         request = interop_pb2.OperationRequest(
             type=op_type, role=role, payload=payload, config=cfg)
         timeout = None if timeout_s is None else max(0.5, timeout_s)
-        return self._stub(role).ExecuteOperation(request, timeout=timeout)
+        stub = self.server_stub if role == interop_pb2.SERVER else self.client_stub
+        return stub.ExecuteOperation(request, timeout=timeout)
 
     def _note_response(self, label: str, resp: interop_pb2.OperationResponse) -> None:
         status_name = {
@@ -499,7 +496,7 @@ class InteropDriver:
         out = bytes(resp.output_data or b"")
         if out:
             parts.append(f"output_data: {out!r}")
-        self._fail_log.append("\n".join(parts))
+        self.fail_log.append("\n".join(parts))
 
     def _vprint(self, *args: Any, **kwargs: Any) -> None:
         if self._verbose:
@@ -510,9 +507,9 @@ class InteropDriver:
         msg = (resp.message or "").strip()
         if resp.status == interop_pb2.OperationResponse.SUCCESS:
             if msg.lower().startswith("skip:"):
-                self._last_skip_reason = (
+                self.last_skip_reason = (
                     msg[5:].strip() or "wrapper reported unsupported option")
-                self._vprint(f"[Driver] {label}: SKIP - {self._last_skip_reason}")
+                self._vprint(f"[Driver] {label}: SKIP - {self.last_skip_reason}")
                 return False
             logs = (resp.logs or "").strip()
             if logs:
@@ -520,7 +517,7 @@ class InteropDriver:
                 self._vprint(f"[Driver] {label} (wrapper cmd): {first}")
             return True
         fail_summary = msg or "no message"
-        self._last_failure = (label, fail_summary)
+        self.last_failure = (label, fail_summary)
         if resp.status == interop_pb2.OperationResponse.FAILURE:
             lab = "FAILURE"
         else:
@@ -539,7 +536,7 @@ class InteropDriver:
         summary = (
             "expected Hello Retry Request (expect_hrr=true) "
             "but negotiated.hrr_occurred is false")
-        self._last_failure = (label, summary)
+        self.last_failure = (label, summary)
         self._vprint(f"[Driver] {label}: FAILURE - {summary}")
         return False
 
@@ -563,7 +560,7 @@ class InteropDriver:
                     interop_pb2.OperationRequest.CLOSE, role, timeout_s=grpc_timeout_s)
                 self._note_response(f"CLOSE {label} (timeout watchdog)", resp)
             except Exception as e:
-                self._fail_log.append(
+                self.fail_log.append(
                     f"--- CLOSE {label} (timeout watchdog) (ERROR) ---\n{e}")
                 if self._verbose:
                     print(f"[Driver] emergency CLOSE {label}: {e}")
@@ -574,7 +571,7 @@ class InteropDriver:
             tcp_host, int(tcp_port), timeout_s=TCP_AFTER_ESTABLISH_S)
         if not ok_peer:
             self._vprint(f"[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}")
-            self._last_failure = (
+            self.last_failure = (
                 "wait_tcp",
                 f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH ({tcp_err})")
             return False
@@ -594,7 +591,7 @@ class InteropDriver:
             self._vprint(f">>> PASSED: payload echoed (TLS {ver}) <<<")
             return True
         self._vprint(">>> FAILED: echo mismatch <<<")
-        self._last_failure = (
+        self.last_failure = (
             "verify",
             "server output did not contain echoed payload\n"
             f"expected: {TEST_PAYLOAD!r}\n"
@@ -606,7 +603,7 @@ class InteropDriver:
         self, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig, *,
         tcp_host: str, tcp_port: int) -> bool:
         """ESTABLISH server → client (optional save/resume) → TCP → TRANSMIT → CLOSE."""
-        self._last_skip_reason = None
+        self.last_skip_reason = None
         ver = (server_conf.version or "").strip() or "default"
         resumption = (
             test_feature_enabled_in_config(client_conf, "resumption")
@@ -669,6 +666,7 @@ def execute_matrix_cell(
     repo = session.repo
     wroot = wrapper_filesystem_root(session)
     driver: InteropDriver | None = None
+    lock = console_lock or nullcontext()
 
     def save_debug(kind: str, extra: str = "") -> None:
         if debug_logs is None or driver is None:
@@ -681,9 +679,11 @@ def execute_matrix_cell(
         else:
             rel = log_path
         tag = "TIMEOUT!" if kind == "TIMEOUT" else "FAIL!"
-        _console_print(console_lock, f"{tag} Details saved to: {rel}")
+        with lock:
+            print(f"{tag} Details saved to: {rel}")
 
-    _console_print(console_lock, f"========== {server}x{client} ==========")
+    with lock:
+        print(f"========== {server}x{client} ==========")
     server_conf = tls_config_from_cell(cell, interop_pb2.SERVER, repo=repo)
     client_conf = tls_config_from_cell(cell, interop_pb2.CLIENT, repo=repo)
     server_conf.repo_root = wroot
@@ -715,23 +715,25 @@ def execute_matrix_cell(
             summary = (
                 f"cell exceeded {cell_timeout_s}s wall-clock limit "
                 "(CLOSE sent, CLI processes killed)")
-            driver._last_failure = ("cell_timeout", summary)
+            driver.last_failure = ("cell_timeout", summary)
             save_debug("TIMEOUT")
-            if verbose:
-                _console_print(console_lock, f"[Driver] TIMEOUT: {summary}")
-            else:
-                _console_print(console_lock, f"TIMEOUT  ({summary})")
+            with lock:
+                if verbose:
+                    print(f"[Driver] TIMEOUT: {summary}")
+                else:
+                    print(f"TIMEOUT  ({summary})")
             return EXIT_TIMEOUT
 
         if holder["exc"] is not None:
             raise holder["exc"]
 
-        if driver._last_skip_reason:
-            if verbose:
-                _console_print(console_lock, f"[Driver] SKIP: {driver._last_skip_reason}")
-            else:
-                short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-                _console_print(console_lock, f"SKIP  ({short})")
+        if driver.last_skip_reason:
+            with lock:
+                if verbose:
+                    print(f"[Driver] SKIP: {driver.last_skip_reason}")
+                else:
+                    short = driver.last_skip_reason[:200].replace("\n", " ").strip()
+                    print(f"SKIP  ({short})")
             return EXIT_SKIP
 
         if not holder["ok"]:
@@ -739,28 +741,31 @@ def execute_matrix_cell(
             if verbose:
                 return 1
             detail = ""
-            if driver._last_failure:
-                detail = (driver._last_failure[1] or "").replace("\n", " ").strip()[:220]
+            if driver.last_failure:
+                detail = (driver.last_failure[1] or "").replace("\n", " ").strip()[:220]
             suf = f"  ({detail})" if detail else ""
-            _console_print(console_lock, f"FAIL{suf}")
+            with lock:
+                print(f"FAIL{suf}")
             return 1
 
         if not verbose:
-            _console_print(console_lock, "PASS")
+            with lock:
+                print("PASS")
         return 0
     except Exception as e:
         if driver is None:
             driver = InteropDriver(
                 session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
-            driver._last_failure = ("grpc", str(e))
+            driver.last_failure = ("grpc", str(e))
         else:
-            driver._last_failure = driver._last_failure or ("grpc", str(e))
+            driver.last_failure = driver.last_failure or ("grpc", str(e))
         save_debug("FAIL", extra=str(e))
-        if verbose:
-            _console_print(console_lock, f"[Driver] exception: {e}")
-        else:
-            short = str(e).replace("\n", " ").strip()[:220]
-            _console_print(console_lock, f"FAIL  ({short})")
+        with lock:
+            if verbose:
+                print(f"[Driver] exception: {e}")
+            else:
+                short = str(e).replace("\n", " ").strip()[:220]
+                print(f"FAIL  ({short})")
         return 1
     finally:
         remove_tls_session_artifact_files(wroot)
