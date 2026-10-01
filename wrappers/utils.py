@@ -245,11 +245,8 @@ def read_nonblocking_stdout(
     return b"".join(chunks)
 
 
-def standard_library_metadata(
-    component_name: str, version: str, *, capabilities: dict | None = None
-) -> interop_pb2.LibraryMetadata:
-    """Identity for ``GetMetadata`` (name + version + roles). Capability lists live in JSON."""
-    del capabilities  # kept for call-site compatibility; not advertised over RPC
+def standard_library_metadata(component_name: str, version: str) -> interop_pb2.LibraryMetadata:
+    """Identity for ``GetMetadata`` (name + version + roles). Catalogs live in JSON."""
     return interop_pb2.LibraryMetadata(
         component_name=component_name,
         version=version,

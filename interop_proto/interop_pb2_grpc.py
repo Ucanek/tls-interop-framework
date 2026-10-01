@@ -3,7 +3,7 @@
 import grpc
 import warnings
 
-from . import interop_pb2 as interop__pb2
+from interop_proto import interop_pb2 as interop__proto_dot_interop__pb2
 
 GRPC_GENERATED_VERSION = '1.80.0'
 GRPC_VERSION = grpc.__version__
@@ -18,7 +18,7 @@ except ImportError:
 if _version_not_supported:
     raise RuntimeError(
         f'The grpc package installed is at version {GRPC_VERSION},'
-        + ' but the generated code in interop_pb2_grpc.py depends on'
+        + ' but the generated code in interop_proto/interop_pb2_grpc.py depends on'
         + f' grpcio>={GRPC_GENERATED_VERSION}.'
         + f' Please upgrade your grpc module to grpcio>={GRPC_GENERATED_VERSION}'
         + f' or downgrade your generated code using grpcio-tools<={GRPC_VERSION}.'
@@ -38,13 +38,13 @@ class TlsInteropWrapperStub(object):
         """
         self.GetMetadata = channel.unary_unary(
                 '/tls.interop.TlsInteropWrapper/GetMetadata',
-                request_serializer=interop__pb2.Empty.SerializeToString,
-                response_deserializer=interop__pb2.LibraryMetadata.FromString,
+                request_serializer=interop__proto_dot_interop__pb2.Empty.SerializeToString,
+                response_deserializer=interop__proto_dot_interop__pb2.LibraryMetadata.FromString,
                 _registered_method=True)
         self.ExecuteOperation = channel.unary_unary(
                 '/tls.interop.TlsInteropWrapper/ExecuteOperation',
-                request_serializer=interop__pb2.OperationRequest.SerializeToString,
-                response_deserializer=interop__pb2.OperationResponse.FromString,
+                request_serializer=interop__proto_dot_interop__pb2.OperationRequest.SerializeToString,
+                response_deserializer=interop__proto_dot_interop__pb2.OperationResponse.FromString,
                 _registered_method=True)
 
 
@@ -70,13 +70,13 @@ def add_TlsInteropWrapperServicer_to_server(servicer, server):
     rpc_method_handlers = {
             'GetMetadata': grpc.unary_unary_rpc_method_handler(
                     servicer.GetMetadata,
-                    request_deserializer=interop__pb2.Empty.FromString,
-                    response_serializer=interop__pb2.LibraryMetadata.SerializeToString,
+                    request_deserializer=interop__proto_dot_interop__pb2.Empty.FromString,
+                    response_serializer=interop__proto_dot_interop__pb2.LibraryMetadata.SerializeToString,
             ),
             'ExecuteOperation': grpc.unary_unary_rpc_method_handler(
                     servicer.ExecuteOperation,
-                    request_deserializer=interop__pb2.OperationRequest.FromString,
-                    response_serializer=interop__pb2.OperationResponse.SerializeToString,
+                    request_deserializer=interop__proto_dot_interop__pb2.OperationRequest.FromString,
+                    response_serializer=interop__proto_dot_interop__pb2.OperationResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -106,8 +106,8 @@ class TlsInteropWrapper(object):
             request,
             target,
             '/tls.interop.TlsInteropWrapper/GetMetadata',
-            interop__pb2.Empty.SerializeToString,
-            interop__pb2.LibraryMetadata.FromString,
+            interop__proto_dot_interop__pb2.Empty.SerializeToString,
+            interop__proto_dot_interop__pb2.LibraryMetadata.FromString,
             options,
             channel_credentials,
             insecure,
@@ -133,8 +133,8 @@ class TlsInteropWrapper(object):
             request,
             target,
             '/tls.interop.TlsInteropWrapper/ExecuteOperation',
-            interop__pb2.OperationRequest.SerializeToString,
-            interop__pb2.OperationResponse.FromString,
+            interop__proto_dot_interop__pb2.OperationRequest.SerializeToString,
+            interop__proto_dot_interop__pb2.OperationResponse.FromString,
             options,
             channel_credentials,
             insecure,

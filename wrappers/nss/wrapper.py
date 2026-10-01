@@ -53,9 +53,7 @@ _TRUTHY_ENV = frozenset({"1", "true", "yes", "on"})
 
 def nss_db_directory(repo: Path, backend_id: str = "nss") -> Path:
     """Per-backend NSS SQL DB path: ``<repo>/wrappers/nss/nssdb/<backend_id>``."""
-    from core.catalog import wrappers_plugin_dir
-
-    return wrappers_plugin_dir(repo) / "nss" / "nssdb" / backend_id
+    return repo / "wrappers" / "nss" / "nssdb" / backend_id
 
 
 def _nss_repo_root(_nssdb_path: str) -> Path:
@@ -101,7 +99,7 @@ def _nss_psk_z_argv(config, caps: dict) -> list[str]:
         if raw_cipher and cipher_catalog_id_requires_psk(raw_cipher)
         else "psk-aes-128-gcm-sha256"
     )
-    mat = BackendCapabilities("", caps).psk_material(cipher_for_psk)
+    mat = BackendCapabilities(caps).psk_material(cipher_for_psk)
     if not mat:
         return []
     identity, secret_hex = mat
@@ -114,7 +112,7 @@ def _build_tls_argv(config, *, role=None, capabilities=None) -> TranslationResul
     argv: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
+    cap13, cap12 = BackendCapabilities(caps).cipher_maps()
 
     raw_cipher = (getattr(config, "cipher_suite", None) or "").strip()
     if raw_cipher:
@@ -201,11 +199,11 @@ def orchestration_env(active_backends: frozenset[str] | set[str]) -> dict[str, s
 
 
 def local_wrapper_env(
-    repo: Path, backend_id: str, active_backends: frozenset[str] | set[str]
-) -> dict[str, str]:
-    """Plugin hook: per-backend NSS DB directory."""
+    repo: Path, backend_id: str, active_backends: frozenset[str] | set[str],
+    *, slot_id: int | None = None) -> dict[str, str]:
     del active_backends
-    return {"NSSDB": str(nss_db_directory(repo, backend_id))}
+    db_id = f"nss_slot{slot_id}" if slot_id is not None else backend_id
+    return {"NSSDB": str(nss_db_directory(repo, db_id))}
 
 
 def _tls_version_range(config):
@@ -233,6 +231,14 @@ class NSSWrapper(BaseTemplateWrapper):
         self._tstclnt = resolve_cli_tool("tstclnt") or "tstclnt"
         self._nss_db_ready = False
         self._nss_db_lock = threading.Lock()
+        self._pre_transmit_pause_s = 0.0
+
+    def _pre_transmit_pause_seconds(self, role: int) -> float:
+        from interop_proto import interop_pb2
+
+        if int(role) != int(interop_pb2.CLIENT):
+            return 0.0
+        return self._pre_transmit_pause_s
 
     def _ensure_nss_db_ready(self) -> None:
         """Populate NSS DB once; deferred so gRPC can listen before pk12util work."""
@@ -339,6 +345,9 @@ class NSSWrapper(BaseTemplateWrapper):
         has_resumption = test_feature_enabled_in_config(config, "resumption")
         has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         step = (getattr(config, "resumption_step", None) or "").strip()
+        # After ticket resume, tstclnt needs a short settle before TRANSMIT.
+        self._pre_transmit_pause_s = (
+            0.5 if (has_resumption or has_0rtt) and step == "resume" else 0.0)
 
         self._ensure_nss_db_ready()
         nss_ver = _tls_version_range(config)
@@ -370,6 +379,7 @@ class NSSWrapper(BaseTemplateWrapper):
         return True
 
     def _extra_cleanup(self) -> None:
+        self._pre_transmit_pause_s = 0.0
         super()._extra_cleanup()
         self._cleanup_nss_db()
 

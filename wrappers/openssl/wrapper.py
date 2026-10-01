@@ -80,7 +80,7 @@ def _build_tls_argv(
     argv: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
+    cap13, cap12 = BackendCapabilities(caps).cipher_maps()
 
     tv = caps.get("tls_version")
     if isinstance(tv, dict):
@@ -116,7 +116,7 @@ def _build_tls_argv(
         and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
-        mat = BackendCapabilities("", caps).psk_material(raw_cipher)
+        mat = BackendCapabilities(caps).psk_material(raw_cipher)
         if mat:
             argv.extend(["-psk_identity", mat[0], "-psk", mat[1]])
         else:

@@ -172,7 +172,7 @@ def _build_tls_argv(
     extras: list[str] = []
     unsupported: list[str] = []
     mode = tls_mode_12_or_13(config)
-    cap13, cap12 = BackendCapabilities("", caps).cipher_maps()
+    cap13, cap12 = BackendCapabilities(caps).cipher_maps()
     gprio: list[str] = []
 
     profiles = caps.get("gnutls_priority_base")
@@ -230,7 +230,7 @@ def _build_tls_argv(
         and test_feature_enabled_in_config(config, "psk")
         and cipher_catalog_id_requires_psk(raw_cipher)
     ):
-        mat = BackendCapabilities("", caps).psk_material(raw_cipher)
+        mat = BackendCapabilities(caps).psk_material(raw_cipher)
         if mat:
             extras.extend(_gnutls_psk_argv(role, mat[0], mat[1]))
         else:

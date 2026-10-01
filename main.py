@@ -19,9 +19,9 @@ from core.catalog import (
     grpc_port_overrides_from_args, matrix_axis_plan, normalize_cell_tls_micro_params,
     print_catalog_options, repository_root, validate_run_args)
 from core.runner import (
-    EXIT_SKIP, EXIT_TIMEOUT, BaseExecutionSession, MAX_PARALLEL_JOBS,
-    WrapperSession, WorkerSlotPool, ensure_certs, remove_certs,
-    required_backends_from_matrix, run_matrix_cell_grpc)
+    EXIT_SKIP, EXIT_TIMEOUT, DebugRunLogs, MAX_PARALLEL_JOBS,
+    WORKER_PORT_STRIDE, WrapperSession, ensure_certs,
+    execute_matrix_cell, required_backends_from_matrix)
 from core.suite import (
     apply_suite_file, enforce_suite_cli_exclusivity, suite_cases_to_combos)
 
@@ -107,9 +107,9 @@ class WorkerContext:
     axis_keys: list[str]
     args_template: argparse.Namespace
     repo: Path
-    session: BaseExecutionSession | None = None
-    debug_logs: dict[str, Path | None] | None = None
-    slot_pool: WorkerSlotPool | None = None
+    session: WrapperSession | None = None
+    debug_logs: DebugRunLogs | None = None
+    slot_sessions: list[WrapperSession] | None = None
     slot_queue: queue.Queue[int] | None = None
     console_lock: threading.Lock | None = None
 
@@ -130,45 +130,54 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
     slot_id: int | None = None
     try:
         active_session = ctx.session
-        if ctx.slot_pool is not None and ctx.slot_queue is not None:
+        if ctx.slot_sessions is not None and ctx.slot_queue is not None:
             slot_id = ctx.slot_queue.get()
-            active_session = ctx.slot_pool.session(slot_id)
+            active_session = ctx.slot_sessions[slot_id]
         elif ctx.session is None:
             raise RuntimeError("missing wrapper session for matrix cell")
 
-        rc = run_matrix_cell_grpc(
+        rc = execute_matrix_cell(
             cell, active_session, verbose=bool(ctx.args_template.verbose),
             debug_logs=ctx.debug_logs, console_lock=ctx.console_lock)
         return label, rc
     finally:
-        if ctx.slot_pool is not None and ctx.slot_queue is not None and slot_id is not None:
+        if ctx.slot_sessions is not None and ctx.slot_queue is not None and slot_id is not None:
             ctx.slot_queue.put(slot_id)
 
 
 def run_matrix_parallel(
     combos: list[tuple[Any, ...]], *, axis_keys: list[str], args: argparse.Namespace,
     repo: Path, known: frozenset[str], backends: frozenset[str],
-    debug_logs: dict[str, Path | None] | None, jobs: int) -> list[tuple[str, int]]:
+    debug_logs: DebugRunLogs | None, jobs: int) -> list[tuple[str, int]]:
     effective_jobs = min(max(1, jobs), len(combos), MAX_PARALLEL_JOBS)
     if effective_jobs < jobs:
         print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
-    slot_pool = WorkerSlotPool(
-        repo, backends, effective_jobs, verbose=bool(args.verbose),
-        grpc_base_overrides=grpc_port_overrides_from_args(args))
+    grpc_base = grpc_port_overrides_from_args(args)
+    slot_sessions = [
+        WrapperSession(
+            repo, backends, verbose=bool(args.verbose),
+            grpc_port_overrides=grpc_base, slot_id=i)
+        for i in range(effective_jobs)]
     slot_queue: queue.Queue[int] = queue.Queue()
     for i in range(effective_jobs):
         slot_queue.put(i)
     console_lock = threading.Lock()
     ctx = WorkerContext(
         axis_keys=axis_keys, args_template=args, repo=repo,
-        debug_logs=debug_logs, slot_pool=slot_pool, slot_queue=slot_queue,
+        debug_logs=debug_logs, slot_sessions=slot_sessions, slot_queue=slot_queue,
         console_lock=console_lock)
-    slot_pool.start()
+    for session in slot_sessions:
+        session.start()
+    if args.verbose:
+        print(
+            f"Parallel workers: {len(slot_sessions)} slot(s), "
+            f"port stride {WORKER_PORT_STRIDE}")
     try:
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
             return list(executor.map(lambda tup: run_matrix_cell(tup, ctx), combos))
     finally:
-        slot_pool.stop()
+        for session in slot_sessions:
+            session.stop()
 
 
 def main() -> int:
@@ -216,13 +225,13 @@ def main() -> int:
                 n_tests *= len(av)
             combos = list(product(*axis_vals))
         print(f"Running matrix of {n_tests} tests...")
-        debug_logs: dict[str, Path | None] | None = {"path": None} if combos else None
+        debug_logs: DebugRunLogs | None = DebugRunLogs() if combos else None
         if combos:
             ensure_certs(repo, verbose=bool(args.verbose))
         backends, _ = required_backends_from_matrix(
             axis_keys, combos, args_template=args, repo=repo, known=known)
 
-        session: BaseExecutionSession | None = None
+        session: WrapperSession | None = None
         results: list[tuple[str, int]] = []
         parallel_jobs = int(args.jobs)
         try:
@@ -258,7 +267,7 @@ def main() -> int:
         for label, rc in results:
             print(f"{label} | {status_for_rc(rc)}")
         if any(rc not in (0, EXIT_SKIP) for _, rc in results):
-            run_dir = debug_logs.get("path") if debug_logs else None
+            run_dir = debug_logs.path if debug_logs is not None else None
             if run_dir is not None:
                 rel = (
                     run_dir.relative_to(repo)
@@ -269,8 +278,6 @@ def main() -> int:
     except ValueError as e:
         print(e, file=sys.stderr)
         return 2
-    finally:
-        remove_certs(repo, verbose=bool(args.verbose))
 
 
 if __name__ == "__main__":

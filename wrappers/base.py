@@ -303,19 +303,6 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         """Hook: return a short reason when merged client ESTABLISH output shows handshake failure."""
         return None
 
-    def _format_client_connect_failure(
-        self,
-        proc: subprocess.Popen[bytes] | None,
-        base: str = "Client process exited (connection failed)",
-        *,
-        detail: str | None = None,
-    ) -> str:
-        text = detail if detail is not None else self._drain_process_output(proc)
-        if not text:
-            return base
-        short = text.replace("\n", " ").strip()[:400]
-        return f"{base} | {short}"
-
     def _transmit_payload_bytes(self, payload: bytes, role: int) -> bytes:
         data = payload + b"\n"
         if role == interop_pb2.CLIENT:
@@ -336,6 +323,11 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
     def _transmit_post_write_pause_seconds(self) -> float:
         return 0.5
+
+    def _pre_transmit_pause_seconds(self, role: int) -> float:
+        """Hook: settle time before writing TRANSMIT payload (backend-specific)."""
+        del role
+        return 0.0
 
     def _read_transmit_stdout(
         self, proc: subprocess.Popen[bytes], role: int, *, server_poll: bool = False
@@ -618,6 +610,9 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             logs = self._build_cli_debug_logs(role=role, proc=target, output=out)
         else:
             if request.payload:
+                settle = self._pre_transmit_pause_seconds(request.role)
+                if settle > 0:
+                    time.sleep(settle)
                 data = self._transmit_payload_bytes(request.payload, request.role)
                 try:
                     if target.stdin:
