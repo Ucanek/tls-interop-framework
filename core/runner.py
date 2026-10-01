@@ -20,13 +20,15 @@ import grpc
 from core.catalog import (
     backend_grpc_addr, backend_tls_endpoint, load_backend_capabilities,
     cell_capability_skip_reason, check_local_cli_tools, discover_wrapper_ids,
-    normalize_cell_tls_micro_params, parse_asymmetric, session_wrapper_env)
-
-from wrappers.utils import remove_tls_session_artifact_files, test_feature_enabled_in_config
+    normalize_cell_tls_micro_params, parse_asymmetric, session_wrapper_env,
+    parse_test_features_enabled)
+from core.identity import (
+    get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes,
+    read_identity_pem_bytes, IDENTITY_PREFIXES)
 from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.base import split_asymmetric_csv, wait_tcp_connect
+from wrappers.utils import remove_tls_session_artifact_files, test_feature_enabled_in_config
 
-# Distinct from 0 (pass) and 1 (fail) so matrix runners can show SKIP vs OK / TIMEOUT.
 EXIT_SKIP = 77
 EXIT_TIMEOUT = 78
 
@@ -38,14 +40,19 @@ MAX_PARALLEL_JOBS = 32
 TCP_AFTER_ESTABLISH_S = 20.0
 TRANSMIT_GAP_S = 1.0
 TEST_PAYLOAD = b"PAYLOAD"
-CELL_TIMEOUT_POLL_S = 0.25
 CELL_TIMEOUT_CLEANUP_WAIT_S = 15.0
+
+
+def _grpc_host_port(addr: str) -> tuple[str, int]:
+    host, _, port_s = addr.rpartition(":")
+    if not port_s.isdigit():
+        raise ValueError(f"invalid gRPC address {addr!r}")
+    return host or "127.0.0.1", int(port_s)
 
 
 def _worker_slot_grpc_overrides(
     repo: Path, backends: frozenset[str] | set[str], slot_id: int,
     base_overrides: Mapping[str, int] | None = None) -> dict[str, int]:
-    """gRPC listen ports per backend for one parallel worker slot."""
     overrides = {k.strip().lower(): int(v) for k, v in (base_overrides or {}).items()}
     offset = int(slot_id) * WORKER_PORT_STRIDE
     for backend in backends:
@@ -57,19 +64,12 @@ def _worker_slot_grpc_overrides(
     return overrides
 
 
-def _grpc_host_port(addr: str) -> tuple[str, int]:
-    host, _, port_s = addr.rpartition(":")
-    if not port_s.isdigit():
-        raise ValueError(f"invalid gRPC address {addr!r}")
-    return host or "127.0.0.1", int(port_s)
-
-
 def ensure_certs(repo: Path, *, verbose: bool = False) -> None:
-    from core.identity import IDENTITY_PREFIXES
-
     cert_dir = repo / "certs"
-    if all((cert_dir / f"{p}.crt").is_file() and (cert_dir / f"{p}.key").is_file()
-           for p in IDENTITY_PREFIXES):
+    have_all = all(
+        (cert_dir / f"{prefix}.crt").is_file() and (cert_dir / f"{prefix}.key").is_file()
+        for prefix in IDENTITY_PREFIXES)
+    if have_all:
         return
     script = repo / "core" / "gen_interop_certs.sh"
     if not script.is_file():
@@ -84,26 +84,24 @@ def apply_matrix_tls_endpoints(
     server: str, client: str, server_conf: interop_pb2.TlsConfig,
     client_conf: interop_pb2.TlsConfig, *, repo: Path,
     cell: dict[str, str] | None = None, session: WrapperSession | None = None) -> tuple[str, int]:
-    """Return host TCP coordinates for the driver check after ESTABLISH."""
+    _ = client
     port_raw = ((cell or {}).get("tls_port") or "").strip()
     if port_raw:
-        tcp_host, default_port = backend_tls_endpoint(server, repo)
+        tcp_host, _ = backend_tls_endpoint(server, repo)
         tcp_port = int(port_raw)
     elif session is not None:
         tcp_host, tcp_port = session.tls_endpoint(server)
     else:
-        tcp_host, default_port = backend_tls_endpoint(server, repo)
-        tcp_port = default_port
+        tcp_host, tcp_port = backend_tls_endpoint(server, repo)
     server_conf.port = tcp_port
-    client_conf.server_hostname = "127.0.0.1"
     client_conf.port = tcp_port
+    client_conf.server_hostname = "127.0.0.1"
     return tcp_host, tcp_port
 
 
 def required_backends_from_matrix(
     axis_keys: list[str], combos: list[tuple[Any, ...]], *, args_template: Any,
     repo: Path, known: frozenset[str]) -> tuple[frozenset[str], int]:
-    """Collect backends needed by non-SKIP matrix cells."""
     needed: set[str] = set()
     skips = 0
     for tup in combos:
@@ -112,12 +110,12 @@ def required_backends_from_matrix(
         if cell_capability_skip_reason(cell, repo):
             skips += 1
             continue
-        srv = (cell.get("server") or "").strip().lower()
-        cli = (cell.get("client") or "").strip().lower()
-        if srv in known:
-            needed.add(srv)
-        if cli in known:
-            needed.add(cli)
+        server = (cell.get("server") or "").strip().lower()
+        client = (cell.get("client") or "").strip().lower()
+        if server in known:
+            needed.add(server)
+        if client in known:
+            needed.add(client)
     return frozenset(needed), skips
 
 
@@ -145,9 +143,8 @@ class WrapperSession:
     """Start wrapper gRPC services as host subprocesses, or attach to existing ones."""
 
     def __init__(
-        self, repo: Path, backends: frozenset[str], *, verbose: bool = False,
-        attach: bool = False, grpc_port_overrides: Mapping[str, int] | None = None,
-        slot_id: int | None = None) -> None:
+        self, repo: Path, backends: frozenset[str], *, verbose: bool = False, attach: bool = False,
+        grpc_port_overrides: Mapping[str, int] | None = None, slot_id: int | None = None) -> None:
         known = frozenset(discover_wrapper_ids(repo))
         unknown = backends - known
         if unknown:
@@ -160,20 +157,18 @@ class WrapperSession:
         if self.slot_id is not None:
             if attach:
                 raise ValueError("attach mode is incompatible with parallel slot_id")
-            overrides = _worker_slot_grpc_overrides(
+            self._grpc_port_overrides = _worker_slot_grpc_overrides(
                 repo, backends, self.slot_id, grpc_port_overrides)
         else:
-            overrides = {
-                k.strip().lower(): int(v) for k, v in (grpc_port_overrides or {}).items()
-            }
-        self._grpc_port_overrides = overrides
+            self._grpc_port_overrides = {
+                k.strip().lower(): int(v) for k, v in (grpc_port_overrides or {}).items()}
         self.metadata: dict[str, interop_pb2.LibraryMetadata] = {}
         self._procs: list[subprocess.Popen[bytes]] = []
 
     def grpc_addr(self, backend: str) -> str:
         key = (backend or "").strip().lower()
         override = self._grpc_port_overrides.get(key)
-        return backend_grpc_addr(key, self.repo, port_override=override or None)
+        return backend_grpc_addr(key, self.repo, port_override=override)
 
     def tls_endpoint(self, backend: str) -> tuple[str, int]:
         key = (backend or "").strip().lower()
@@ -191,20 +186,18 @@ class WrapperSession:
             env["INTEROP_SLOT_ID"] = str(self.slot_id)
         env.update(session_wrapper_env(
             backend, self.repo, self.backends, slot_id=self.slot_id))
-        # Do not inject PYTHONPATH: cwd is the repo for ``python -c`` spawn, and
-        # forcing PYTHONPATH on Fedora makes distro ``google.protobuf`` shadow pip.
+        # cwd is the repo for ``python -c`` spawn; do not inject PYTHONPATH
+        # (Fedora distro google.protobuf can shadow pip).
         env.pop("PYTHONPATH", None)
         return env
 
     def _wrapper_cmd(self, backend: str) -> list[str]:
-        # Prefer installed package imports; cwd is still the repo for certs/hooks.
         code = (
             "from core.runner import serve_wrapper_process; "
             "import sys; raise SystemExit(serve_wrapper_process(sys.argv[1]))")
         return [sys.executable, "-c", code, backend]
 
     def _wrapper_crash_report(self) -> str | None:
-        """If a spawned wrapper exited, return a diagnostic including its output."""
         parts: list[str] = []
         for backend, proc in zip(self.backends, self._procs):
             code = proc.poll()
@@ -229,12 +222,6 @@ class WrapperSession:
             targets = ", ".join(f"{b} @ {self.grpc_addr(b)}" for b in self.backends)
             print(f"Attach mode: connecting to existing wrapper(s) on localhost ({targets})")
             return
-        try:
-            import grpc  # noqa: F401
-        except ImportError as e:
-            raise RuntimeError(
-                "Requires grpcio on the host Python "
-                "(pip install 'grpcio>=1.60' 'protobuf>=4.21')") from e
         ensure_certs(self.repo, verbose=self.verbose)
         missing = check_local_cli_tools(self.backends, self.repo)
         if missing:
@@ -253,11 +240,11 @@ class WrapperSession:
             cmd = self._wrapper_cmd(backend)
             if self.verbose:
                 print(f"[Wrapper] {backend}: {' '.join(cmd)} (GRPC_PORT from env)")
+            stdout = subprocess.PIPE if self.verbose else subprocess.DEVNULL
+            stderr = subprocess.STDOUT if self.verbose else subprocess.DEVNULL
             proc = subprocess.Popen(
                 cmd, cwd=self.repo, env=self._wrapper_env(backend), stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE if self.verbose else subprocess.DEVNULL,
-                stderr=subprocess.STDOUT if self.verbose else subprocess.DEVNULL,
-                start_new_session=True)
+                stdout=stdout, stderr=stderr, start_new_session=True)
             self._procs.append(proc)
             if proc.poll() is not None:
                 out = ""
@@ -266,12 +253,13 @@ class WrapperSession:
                         out = proc.stdout.read().decode("utf-8", errors="replace")
                     except Exception:
                         pass
-                raise RuntimeError(
-                    f"Wrapper {backend} exited immediately (code {proc.returncode})"
-                    + (f":\n{out}" if out else ""))
+                detail = f"Wrapper {backend} exited immediately (code {proc.returncode})"
+                if out:
+                    detail += f":\n{out}"
+                raise RuntimeError(detail)
 
     def _wait_grpc_ready(self, timeout_s: float = DEFAULT_GRPC_STARTUP_S) -> None:
-        grpc_startup_poll_s = 0.4
+        poll_s = 0.4
         addrs = sorted({self.grpc_addr(b) for b in self.backends})
         if not addrs:
             return
@@ -281,11 +269,13 @@ class WrapperSession:
             crash = self._wrapper_crash_report()
             if crash:
                 raise RuntimeError(crash)
-            for addr in list(pending):
-                if _wait_grpc_channel_ready(addr, deadline=deadline, verbose=self.verbose):
-                    pending.discard(addr)
+            still_pending: set[str] = set()
+            for addr in pending:
+                if not _wait_grpc_channel_ready(addr, deadline=deadline, verbose=self.verbose):
+                    still_pending.add(addr)
+            pending = still_pending
             if pending:
-                time.sleep(grpc_startup_poll_s)
+                time.sleep(poll_s)
         if pending:
             crash = self._wrapper_crash_report()
             if crash:
@@ -295,16 +285,12 @@ class WrapperSession:
 
     def _load_metadata(self) -> None:
         for backend in self.backends:
-            addr = self.grpc_addr(backend)
-            ch = grpc.insecure_channel(addr)
+            channel = grpc.insecure_channel(self.grpc_addr(backend))
             try:
-                stub = interop_pb2_grpc.TlsInteropWrapperStub(ch)
+                stub = interop_pb2_grpc.TlsInteropWrapperStub(channel)
                 self.metadata[backend] = stub.GetMetadata(interop_pb2.Empty())
             finally:
-                try:
-                    ch.close()
-                except Exception:
-                    pass
+                channel.close()
 
     def start(self) -> None:
         self._spawn_wrappers()
@@ -334,86 +320,56 @@ class WrapperSession:
         self._procs.clear()
 
 
-def _pick_cell_scalar(cell: dict[str, str], field: str, *, server: bool) -> str:
+def _pick_cell_val(cell: dict[str, str], field: str, *, server: bool, is_list: bool = False) -> Any:
     raw = (cell.get(field) or "").strip()
     if not raw:
-        return ""
+        return [] if is_list else ""
+    if is_list:
+        left, right = split_asymmetric_csv(raw)
+        return list(left if server else right)
     if ":" in raw:
         left, right = parse_asymmetric(raw)
         return left if server else right
     return raw
 
 
-def _pick_cell_list(cell: dict[str, str], field: str, *, server: bool) -> list[str]:
-    raw = (cell.get(field) or "").strip()
-    if not raw:
-        return []
-    left, right = split_asymmetric_csv(raw)
-    return list(left if server else right)
-
-
-def _server_accepts_inline_pem_identity(backend: str, repo: Path) -> bool:
-    """False when wrapper uses out-of-band identity (e.g. NSS DB nicknames)."""
-    try:
-        rt = load_backend_capabilities(backend).runtime()
-    except (FileNotFoundError, ValueError):
-        return True
-    blocked = frozenset(rt.get("unsupported_tls_fields") or ())
-    return "certificate" not in blocked and "private_key" not in blocked
-
-
-def _attach_cell_server_identity(cfg: interop_pb2.TlsConfig, cell: dict[str, str], *, repo: Path) -> None:
-    """Load server leaf PEM bytes from ``certs/{prefix}.*`` for this cell's sig schemes."""
-    from core.identity import (
-        get_cert_prefix_for_cipher_suite, get_cert_prefix_for_schemes,
-        read_identity_pem_bytes)
-
-    schemes = _pick_cell_list(cell, "signature_schemes", server=True)
-    if schemes:
-        prefix = get_cert_prefix_for_schemes(schemes)
-    else:
-        cs = _pick_cell_scalar(cell, "cipher_suite", server=True)
-        prefix = get_cert_prefix_for_cipher_suite(cs)
-    cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
-    if cert_b and key_b:
-        cfg.certificate = cert_b
-        cfg.private_key = key_b
-
-
 def tls_config_from_cell(cell: dict[str, str], role: int, *, repo: Path | None = None) -> interop_pb2.TlsConfig:
-    """Build ``TlsConfig`` for one matrix role from a normalized cell dict."""
     server = role == interop_pb2.SERVER
     cfg = interop_pb2.TlsConfig()
-    ver = _pick_cell_scalar(cell, "tls_version", server=server)
-    if ver:
-        cfg.version = ver
-    else:
-        cfg.version = "1.3"
-    cs = _pick_cell_scalar(cell, "cipher_suite", server=server)
-    if cs:
-        cfg.cipher_suite = cs
-    port_raw = _pick_cell_scalar(cell, "tls_port", server=server)
-    if port_raw:
-        cfg.port = int(port_raw)
-    elif (cell.get("tls_port") or "").strip() == "":
-        cfg.port = 5555
-    cfg.supported_groups.extend(_pick_cell_list(cell, "supported_groups", server=server))
-    cfg.signature_schemes.extend(_pick_cell_list(cell, "signature_schemes", server=server))
-    # Other role's schemes → trust/peer leaf selection (``signature_schemes_cert``).
-    peer_schemes = _pick_cell_list(cell, "signature_schemes", server=not server)
-    if peer_schemes:
-        cfg.signature_schemes_cert.extend(peer_schemes)
-    cfg.alpn_protocols.extend(_pick_cell_list(cell, "alpn", server=server))
-    from core.catalog import parse_test_features_enabled
-
-    cfg.psk_modes.extend(sorted(parse_test_features_enabled(str(cell.get("test_features") or ""))))
-    # expect_hrr is a client-side provoke/assert flag (single-key-share / log parse).
+    cfg.version = _pick_cell_val(cell, "tls_version", server=server) or "1.3"
+    cfg.cipher_suite = _pick_cell_val(cell, "cipher_suite", server=server)
+    port_raw = _pick_cell_val(cell, "tls_port", server=server)
+    cfg.port = int(port_raw) if port_raw else 5555
+    cfg.supported_groups.extend(
+        _pick_cell_val(cell, "supported_groups", server=server, is_list=True))
+    cfg.signature_schemes.extend(
+        _pick_cell_val(cell, "signature_schemes", server=server, is_list=True))
+    cfg.signature_schemes_cert.extend(
+        _pick_cell_val(cell, "signature_schemes", server=not server, is_list=True))
+    cfg.alpn_protocols.extend(_pick_cell_val(cell, "alpn", server=server, is_list=True))
+    features = parse_test_features_enabled(str(cell.get("test_features") or ""))
+    cfg.psk_modes.extend(sorted(features))
     if not server and cell.get("expect_hrr") == "true":
         cfg.expect_hrr = True
     if server and repo is not None:
         backend = (cell.get("server") or "").strip().lower()
-        if _server_accepts_inline_pem_identity(backend, repo):
-            _attach_cell_server_identity(cfg, cell, repo=repo)
+        caps_path = repo / "wrappers" / backend / "capabilities.json"
+        if caps_path.is_file():
+            blocked = frozenset(
+                load_backend_capabilities(backend).runtime().get("unsupported_tls_fields") or ())
+        else:
+            blocked = frozenset()
+        if "certificate" not in blocked and "private_key" not in blocked:
+            schemes = _pick_cell_val(cell, "signature_schemes", server=True, is_list=True)
+            if schemes:
+                prefix = get_cert_prefix_for_schemes(schemes)
+            else:
+                cipher = _pick_cell_val(cell, "cipher_suite", server=True)
+                prefix = get_cert_prefix_for_cipher_suite(cipher)
+            cert_b, key_b = read_identity_pem_bytes(prefix, repo=repo)
+            if cert_b and key_b:
+                cfg.certificate = cert_b
+                cfg.private_key = key_b
     return cfg
 
 
@@ -445,7 +401,7 @@ class DebugRunLogs:
         return self.path
 
     def write_fail_log(
-        self, *, repo: Path, server: str, client: str, driver: "InteropDriver",
+        self, *, repo: Path, server: str, client: str, driver: InteropDriver,
         cell: dict[str, str] | None = None, extra: str = "", kind: str = "FAIL") -> Path:
         run_dir = self.ensure_run_dir(repo)
         kind_u = (kind or "FAIL").strip().upper()
@@ -456,11 +412,11 @@ class DebugRunLogs:
         if cipher:
             name = f"{name}_{cipher}"
         path = run_dir / f"{name}.log"
-        parts: list[str] = [f"TLS interop {kind_u}", f"server={server} client={client}"]
+        parts = [f"TLS interop {kind_u}", f"server={server} client={client}"]
         if cell:
-            parts.append(
-                "cell: "
-                + ", ".join(f"{k}={v}" for k, v in sorted(cell.items()) if str(v).strip()))
+            cell_text = ", ".join(
+                f"{k}={v}" for k, v in sorted(cell.items()) if str(v).strip())
+            parts.append(f"cell: {cell_text}")
         if driver._last_failure:
             label, detail = driver._last_failure
             parts.append(f"last_failure: {label}")
@@ -471,12 +427,6 @@ class DebugRunLogs:
         parts.extend(driver._fail_log or ["(no operation logs)"])
         path.write_text("\n".join(parts).rstrip() + "\n", encoding="utf-8")
         return path
-
-
-# --- gRPC test driver ---
-
-SUCCESS = interop_pb2.OperationResponse.SUCCESS
-FAILURE = interop_pb2.OperationResponse.FAILURE
 
 
 def _wait_grpc_channel_ready(address: str, *, deadline: float, verbose: bool) -> bool:
@@ -508,39 +458,35 @@ class InteropDriver:
         self._last_skip_reason: str | None = None
         self._fail_log: list[str] = []
         if server_addr == client_addr:
-            ch = grpc.insecure_channel(server_addr)
-            self._channels.append(ch)
-            stub = interop_pb2_grpc.TlsInteropWrapperStub(ch)
+            channel = grpc.insecure_channel(server_addr)
+            self._channels.append(channel)
+            stub = interop_pb2_grpc.TlsInteropWrapperStub(channel)
             self.server_stub = stub
             self.client_stub = stub
         else:
-            ch_s = grpc.insecure_channel(server_addr)
-            ch_c = grpc.insecure_channel(client_addr)
-            self._channels.extend([ch_s, ch_c])
-            self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(ch_s)
-            self.client_stub = interop_pb2_grpc.TlsInteropWrapperStub(ch_c)
+            channel_s = grpc.insecure_channel(server_addr)
+            channel_c = grpc.insecure_channel(client_addr)
+            self._channels.extend([channel_s, channel_c])
+            self.server_stub = interop_pb2_grpc.TlsInteropWrapperStub(channel_s)
+            self.client_stub = interop_pb2_grpc.TlsInteropWrapperStub(channel_c)
 
     def _stub(self, role: int) -> interop_pb2_grpc.TlsInteropWrapperStub:
-        return self.server_stub if role == interop_pb2.SERVER else self.client_stub
+        if role == interop_pb2.SERVER:
+            return self.server_stub
+        return self.client_stub
 
-    def _establish(self, role: int, cfg: interop_pb2.TlsConfig) -> interop_pb2.OperationResponse:
-        return self._stub(role).ExecuteOperation(
-            interop_pb2.OperationRequest(
-                type=interop_pb2.OperationRequest.ESTABLISH, role=role, config=cfg))
-
-    def _transmit(self, role: int, payload: bytes = b"") -> interop_pb2.OperationResponse:
-        return self._stub(role).ExecuteOperation(
-            interop_pb2.OperationRequest(
-                type=interop_pb2.OperationRequest.TRANSMIT, role=role, payload=payload))
-
-    def _close(self, role: int, *, timeout_s: float | None = None) -> interop_pb2.OperationResponse:
-        close_req = interop_pb2.OperationRequest(type=interop_pb2.OperationRequest.CLOSE)
+    def _execute(
+        self, op_type: int, role: int, cfg: interop_pb2.TlsConfig | None = None,
+        payload: bytes = b"", timeout_s: float | None = None) -> interop_pb2.OperationResponse:
+        request = interop_pb2.OperationRequest(
+            type=op_type, role=role, payload=payload, config=cfg)
         timeout = None if timeout_s is None else max(0.5, timeout_s)
-        return self._stub(role).ExecuteOperation(close_req, timeout=timeout)
+        return self._stub(role).ExecuteOperation(request, timeout=timeout)
 
     def _note_response(self, label: str, resp: interop_pb2.OperationResponse) -> None:
         status_name = {
-            SUCCESS: "SUCCESS", FAILURE: "FAILURE",
+            interop_pb2.OperationResponse.SUCCESS: "SUCCESS",
+            interop_pb2.OperationResponse.FAILURE: "FAILURE",
             interop_pb2.OperationResponse.ERROR: "ERROR"
         }.get(resp.status, str(resp.status))
         parts = [f"--- {label} ({status_name}) ---"]
@@ -562,23 +508,24 @@ class InteropDriver:
     def _check_response(self, resp: interop_pb2.OperationResponse, label: str) -> bool:
         self._note_response(label, resp)
         msg = (resp.message or "").strip()
-        if resp.status == SUCCESS and msg.lower().startswith("skip:"):
-            self._last_skip_reason = (
-                msg[5:].strip() or "wrapper reported unsupported option")
-            if self._verbose:
-                print(f"[Driver] {label}: SKIP - {self._last_skip_reason}")
-            return False
-        if resp.status == SUCCESS:
+        if resp.status == interop_pb2.OperationResponse.SUCCESS:
+            if msg.lower().startswith("skip:"):
+                self._last_skip_reason = (
+                    msg[5:].strip() or "wrapper reported unsupported option")
+                self._vprint(f"[Driver] {label}: SKIP - {self._last_skip_reason}")
+                return False
             logs = (resp.logs or "").strip()
-            if self._verbose and logs:
+            if logs:
                 first = logs.split("\n", 1)[0]
                 self._vprint(f"[Driver] {label} (wrapper cmd): {first}")
             return True
         fail_summary = msg or "no message"
         self._last_failure = (label, fail_summary)
-        if self._verbose:
-            lab = "FAILURE" if resp.status == FAILURE else "ERROR"
-            print(f"[Driver] {label}: {lab} - {fail_summary}")
+        if resp.status == interop_pb2.OperationResponse.FAILURE:
+            lab = "FAILURE"
+        else:
+            lab = "ERROR"
+        self._vprint(f"[Driver] {label}: {lab} - {fail_summary}")
         return False
 
     def _check_hrr_assertion(
@@ -587,22 +534,21 @@ class InteropDriver:
         if not getattr(client_conf, "expect_hrr", False):
             return True
         if resp.negotiated.hrr_occurred:
-            if self._verbose:
-                self._vprint(f"[Driver] {label}: HRR assertion OK")
+            self._vprint(f"[Driver] {label}: HRR assertion OK")
             return True
         summary = (
             "expected Hello Retry Request (expect_hrr=true) "
             "but negotiated.hrr_occurred is false")
         self._last_failure = (label, summary)
-        if self._verbose:
-            print(f"[Driver] {label}: FAILURE - {summary}")
+        self._vprint(f"[Driver] {label}: FAILURE - {summary}")
         return False
 
     def _cleanup(self) -> None:
         self._vprint("[Driver] Cleaning up...")
         for label, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
             try:
-                self._check_response(self._close(role), f"CLOSE {label}")
+                resp = self._execute(interop_pb2.OperationRequest.CLOSE, role)
+                self._check_response(resp, f"CLOSE {label}")
             except Exception as e:
                 if self._verbose:
                     print(f"[Driver] CLOSE {label} exception: {e}")
@@ -610,10 +556,11 @@ class InteropDriver:
                     print(f"FAIL  CLOSE {label}: {e}")
 
     def emergency_cleanup(self, *, grpc_timeout_s: float = EMERGENCY_CLOSE_GRPC_S) -> None:
-        """On cell timeout: CLOSE both roles with a short gRPC deadline (kills wrapper CLI procs)."""
+        """On cell timeout: CLOSE both roles with a short gRPC deadline."""
         for label, role in (("server", interop_pb2.SERVER), ("client", interop_pb2.CLIENT)):
             try:
-                resp = self._close(role, timeout_s=grpc_timeout_s)
+                resp = self._execute(
+                    interop_pb2.OperationRequest.CLOSE, role, timeout_s=grpc_timeout_s)
                 self._note_response(f"CLOSE {label} (timeout watchdog)", resp)
             except Exception as e:
                 self._fail_log.append(
@@ -633,12 +580,13 @@ class InteropDriver:
             return False
 
         self._vprint(f"[Driver] Transmitting: {TEST_PAYLOAD.decode()}")
-        r_tx = self._transmit(interop_pb2.CLIENT, TEST_PAYLOAD)
+        r_tx = self._execute(
+            interop_pb2.OperationRequest.TRANSMIT, interop_pb2.CLIENT, payload=TEST_PAYLOAD)
         if not self._check_response(r_tx, "TRANSMIT client"):
             return False
 
         time.sleep(TRANSMIT_GAP_S)
-        r_srv = self._transmit(interop_pb2.SERVER)
+        r_srv = self._execute(interop_pb2.OperationRequest.TRANSMIT, interop_pb2.SERVER)
         if not self._check_response(r_srv, "TRANSMIT server"):
             return False
 
@@ -666,10 +614,13 @@ class InteropDriver:
         try:
             kind = "Resumption/0-RTT round-trip" if resumption else "Round-trip"
             self._vprint(f"[Driver] {kind} (TLS {ver})")
-            self._vprint(
-                "[Driver] Establishing server (persistent)..."
-                if resumption else "[Driver] Establishing connection...")
-            r = self._establish(interop_pb2.SERVER, server_conf)
+            if resumption:
+                self._vprint("[Driver] Establishing server (persistent)...")
+            else:
+                self._vprint("[Driver] Establishing connection...")
+
+            r = self._execute(
+                interop_pb2.OperationRequest.ESTABLISH, interop_pb2.SERVER, server_conf)
             if not self._check_response(r, "ESTABLISH server"):
                 return False
 
@@ -678,21 +629,25 @@ class InteropDriver:
                 save_conf.CopyFrom(client_conf)
                 save_conf.resumption_step = "save"
                 self._vprint("[Driver] Resumption step 1: save session ticket...")
-                r = self._establish(interop_pb2.CLIENT, save_conf)
+                r = self._execute(
+                    interop_pb2.OperationRequest.ESTABLISH, interop_pb2.CLIENT, save_conf)
                 if not self._check_response(r, "ESTABLISH client (resumption save)"):
                     return False
                 if not self._check_hrr_assertion(
                     r, client_conf, "ESTABLISH client (resumption save)"):
                     return False
+
                 resume_conf = interop_pb2.TlsConfig()
                 resume_conf.CopyFrom(client_conf)
                 resume_conf.resumption_step = "resume"
                 self._vprint("[Driver] Resumption step 2: resume session...")
-                r = self._establish(interop_pb2.CLIENT, resume_conf)
+                r = self._execute(
+                    interop_pb2.OperationRequest.ESTABLISH, interop_pb2.CLIENT, resume_conf)
                 if not self._check_response(r, "ESTABLISH client (resumption resume)"):
                     return False
             else:
-                r = self._establish(interop_pb2.CLIENT, client_conf)
+                r = self._execute(
+                    interop_pb2.OperationRequest.ESTABLISH, interop_pb2.CLIENT, client_conf)
                 if not self._check_response(r, "ESTABLISH client"):
                     return False
                 if not self._check_hrr_assertion(r, client_conf, "ESTABLISH client"):
@@ -704,56 +659,27 @@ class InteropDriver:
             self._cleanup()
 
 
-def _run_driver_test_timed(
-    driver: InteropDriver, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, *, tcp_host: str, tcp_port: int,
-    cell_timeout_s: float, verbose: bool) -> tuple[bool | None, bool, Exception | None]:
-    """Returns ``(ok, timed_out, worker_exception)``; ``ok`` is None on timeout."""
-    holder: dict[str, Any] = {"ok": None, "exc": None}
-
-    def _worker() -> None:
-        try:
-            holder["ok"] = driver.run_test_with_configs(
-                server_conf, client_conf, tcp_host=tcp_host, tcp_port=tcp_port)
-        except Exception as e:
-            holder["exc"] = e
-
-    thread = threading.Thread(target=_worker, name="interop-cell", daemon=True)
-    thread.start()
-    deadline = time.monotonic() + max(0.1, cell_timeout_s)
-    while thread.is_alive() and time.monotonic() < deadline:
-        thread.join(timeout=CELL_TIMEOUT_POLL_S)
-    if not thread.is_alive():
-        return holder["ok"], False, holder["exc"]
-
-    if verbose:
-        print(f"[Driver] cell timeout ({cell_timeout_s}s): sending CLOSE to wrappers")
-    driver.emergency_cleanup()
-    thread.join(timeout=CELL_TIMEOUT_CLEANUP_WAIT_S)
-    if thread.is_alive() and verbose:
-        print("[Driver] worker still running after emergency cleanup; continuing matrix")
-    return None, True, holder["exc"]
-
-
 def execute_matrix_cell(
     cell: dict[str, str], session: WrapperSession, *, verbose: bool,
-    debug_logs: DebugRunLogs | None = None,
-    cell_timeout_s: float = DEFAULT_CELL_TIMEOUT_S,
+    debug_logs: DebugRunLogs | None = None, cell_timeout_s: float = DEFAULT_CELL_TIMEOUT_S,
     console_lock: threading.Lock | None = None) -> int:
-    """Build configs and run one ``InteropDriver`` cell with timeout + debug logs."""
+    """Build configs and run one InteropDriver cell with timeout + debug logs."""
     server = (cell.get("server") or "").strip().lower()
     client = (cell.get("client") or "").strip().lower()
     repo = session.repo
     wroot = wrapper_filesystem_root(session)
     driver: InteropDriver | None = None
 
-    def _save_debug(kind: str, *, extra: str = "") -> None:
+    def save_debug(kind: str, extra: str = "") -> None:
         if debug_logs is None or driver is None:
             return
         log_path = debug_logs.write_fail_log(
             repo=repo, server=server, client=client, driver=driver,
             cell=cell, extra=extra, kind=kind)
-        rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path
+        if log_path.is_relative_to(repo):
+            rel: Path | str = log_path.relative_to(repo)
+        else:
+            rel = log_path
         tag = "TIMEOUT!" if kind == "TIMEOUT" else "FAIL!"
         _console_print(console_lock, f"{tag} Details saved to: {rel}")
 
@@ -764,52 +690,63 @@ def execute_matrix_cell(
     client_conf.repo_root = wroot
     tcp_host, tcp_port = apply_matrix_tls_endpoints(
         server, client, server_conf, client_conf, repo=repo, cell=cell, session=session)
+
     try:
         driver = InteropDriver(
             session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
-        driver._last_skip_reason = None
-        driver._last_failure = None
-        driver._fail_log.clear()
-        ok, timed_out, worker_exc = _run_driver_test_timed(
-            driver, server_conf, client_conf, tcp_host=tcp_host, tcp_port=tcp_port,
-            cell_timeout_s=cell_timeout_s, verbose=verbose)
+        holder: dict[str, Any] = {"ok": None, "exc": None}
 
-        if timed_out:
+        def worker() -> None:
+            try:
+                holder["ok"] = driver.run_test_with_configs(
+                    server_conf, client_conf, tcp_host=tcp_host, tcp_port=tcp_port)
+            except Exception as e:
+                holder["exc"] = e
+
+        thread = threading.Thread(target=worker, name="interop-cell", daemon=True)
+        thread.start()
+        thread.join(timeout=max(0.1, cell_timeout_s))
+
+        if thread.is_alive():
+            if verbose:
+                print(f"[Driver] cell timeout ({cell_timeout_s}s): sending CLOSE to wrappers")
+            driver.emergency_cleanup()
+            thread.join(timeout=CELL_TIMEOUT_CLEANUP_WAIT_S)
             summary = (
                 f"cell exceeded {cell_timeout_s}s wall-clock limit "
                 "(CLOSE sent, CLI processes killed)")
             driver._last_failure = ("cell_timeout", summary)
-            _save_debug("TIMEOUT")
+            save_debug("TIMEOUT")
             if verbose:
                 _console_print(console_lock, f"[Driver] TIMEOUT: {summary}")
             else:
                 _console_print(console_lock, f"TIMEOUT  ({summary})")
             return EXIT_TIMEOUT
 
-        if worker_exc is not None:
-            raise worker_exc
+        if holder["exc"] is not None:
+            raise holder["exc"]
 
         if driver._last_skip_reason:
             if verbose:
                 _console_print(console_lock, f"[Driver] SKIP: {driver._last_skip_reason}")
-                return EXIT_SKIP
-            short = driver._last_skip_reason[:200].replace("\n", " ").strip()
-            _console_print(console_lock, f"SKIP  ({short})")
+            else:
+                short = driver._last_skip_reason[:200].replace("\n", " ").strip()
+                _console_print(console_lock, f"SKIP  ({short})")
             return EXIT_SKIP
-        if not ok:
-            _save_debug("FAIL")
+
+        if not holder["ok"]:
+            save_debug("FAIL")
             if verbose:
                 return 1
             detail = ""
             if driver._last_failure:
-                detail = (
-                    (driver._last_failure[1] or "").replace("\n", " ").strip()[:220])
+                detail = (driver._last_failure[1] or "").replace("\n", " ").strip()[:220]
             suf = f"  ({detail})" if detail else ""
             _console_print(console_lock, f"FAIL{suf}")
             return 1
-        if verbose:
-            return 0
-        _console_print(console_lock, "PASS")
+
+        if not verbose:
+            _console_print(console_lock, "PASS")
         return 0
     except Exception as e:
         if driver is None:
@@ -818,13 +755,12 @@ def execute_matrix_cell(
             driver._last_failure = ("grpc", str(e))
         else:
             driver._last_failure = driver._last_failure or ("grpc", str(e))
-        _save_debug("FAIL", extra=str(e))
+        save_debug("FAIL", extra=str(e))
         if verbose:
             _console_print(console_lock, f"[Driver] exception: {e}")
         else:
-            _console_print(
-                console_lock,
-                f"FAIL  ({str(e).replace(chr(10), ' ').strip()[:220]})")
+            short = str(e).replace("\n", " ").strip()[:220]
+            _console_print(console_lock, f"FAIL  ({short})")
         return 1
     finally:
         remove_tls_session_artifact_files(wroot)

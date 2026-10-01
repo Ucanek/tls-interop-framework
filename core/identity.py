@@ -9,10 +9,8 @@ from typing import Any
 
 from core.catalog import repository_root
 
-IDENTITY_PREFIXES = (
-    "rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256", "ecdsa_p384",
-    "ecdsa_p521", "ed25519", "ed448"
-)
+
+IDENTITY_PREFIXES = ("rsa_default", "rsa_pss_pure", "dsa_default", "ecdsa_p256", "ecdsa_p384", "ecdsa_p521", "ed25519", "ed448")
 DEFAULT_PREFIX = "rsa_default"
 
 
@@ -66,14 +64,10 @@ def get_cert_prefix_for_config(config: Any) -> str:
     return get_cert_prefix_for_cipher_suite(str(getattr(config, "cipher_suite", "") or ""))
 
 
-def interop_certs_dir(repo: Path | None = None) -> Path:
-    return (repo or repository_root()) / "certs"
-
-
 def catalog_identity_pem_paths_for_prefix(prefix: str, *, repo: Path | None = None) -> tuple[str, str]:
     """Return absolute paths to {prefix}.crt and {prefix}.key when present."""
     p = (prefix or "").strip() or DEFAULT_PREFIX
-    base = interop_certs_dir(repo)
+    base = (repo or repository_root()) / "certs"
     cert, key = base / f"{p}.crt", base / f"{p}.key"
     if cert.is_file() and key.is_file():
         return str(cert.resolve()), str(key.resolve())

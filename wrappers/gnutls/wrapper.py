@@ -127,9 +127,9 @@ def _gnutls_psk_argv(role: Any | None, identity: str, secret_hex: str) -> list[s
 
 
 def _interop_dhparams_pem() -> str:
-    from core.identity import interop_certs_dir
+    from core.catalog import repository_root
 
-    return str(interop_certs_dir() / "dh2048.pem")
+    return str(repository_root() / "certs" / "dh2048.pem")
 
 
 def _profile_key(config: Any, role: Any | None, capabilities: dict[str, Any]) -> str:
