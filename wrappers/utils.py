@@ -9,9 +9,11 @@ import shlex
 import subprocess
 import time
 from contextlib import suppress
-from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
+from collections.abc import Mapping, MutableMapping, Sequence
+from pathlib import Path
+from typing import Any, Literal
 
-from core.catalog import tls_mode_from_version
+from core.catalog import repository_root, tls_mode_from_version
 from core.identity import repeated_config_tokens
 from interop_proto import interop_pb2
 
@@ -20,13 +22,8 @@ TlsModeLiteral = Literal["1.2", "1.3"]
 _HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
-        r"hello\s*retry\s*request",
-        r"helloretryrequest",
-        r"hello_retry_request",
-        r"received\s+hrr",
-        r"retry\s+request",
-    )
-)
+        r"hello\s*retry\s*request", r"helloretryrequest", r"hello_retry_request",
+        r"received\s+hrr", r"retry\s+request"))
 
 
 def hrr_detected_in_cli_output(text: str) -> bool:
@@ -84,6 +81,13 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
             os.unlink(os.path.join(root, name))
 
 
+def tls_session_state_paths(config) -> tuple[str, str]:
+    """Session ticket and 0-RTT payload paths under ``TlsConfig.repo_root`` (or repo root)."""
+    raw = (getattr(config, "repo_root", None) or "").strip()
+    root = Path(raw).resolve() if raw else repository_root()
+    return str(root / "session.ticket"), str(root / "early_data.txt")
+
+
 def _interop_slot_suffix() -> str:
     slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
     return f"_{slot}" if slot else ""
@@ -133,20 +137,14 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None, stdout: str
 
 
 def popen_stdio_merged(
-    cmd: Sequence[object],
-    *,
-    cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None,
+    cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None
 ) -> subprocess.Popen[bytes]:
     """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
     p = subprocess.Popen(
-        cmd,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         cwd=os.fspath(cwd) if cwd is not None else None,
-        env=dict(env) if env is not None else None,
-    )
+        env=dict(env) if env is not None else None)
     if p.stdout:
         flags = fcntl.fcntl(p.stdout.fileno(), fcntl.F_GETFL)
         fcntl.fcntl(p.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
@@ -154,13 +152,8 @@ def popen_stdio_merged(
 
 
 def read_nonblocking_stdout(
-    proc: subprocess.Popen[bytes],
-    *,
-    timeout_s: float = 2.0,
-    idle_s: float = 0.05,
-    poll_s: float = 0.02,
-    max_bytes: int = 1 << 20,
-) -> bytes:
+    proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0, idle_s: float = 0.05,
+    poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
     """Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk."""
     if proc.stdout is None:
         return b""
@@ -192,10 +185,8 @@ def read_nonblocking_stdout(
 def standard_library_metadata(component_name: str, version: str) -> interop_pb2.LibraryMetadata:
     """Identity for ``GetMetadata`` (name + version + roles). Catalogs live in JSON."""
     return interop_pb2.LibraryMetadata(
-        component_name=component_name,
-        version=version,
-        roles=[interop_pb2.CLIENT, interop_pb2.SERVER],
-    )
+        component_name=component_name, version=version,
+        roles=[interop_pb2.CLIENT, interop_pb2.SERVER])
 
 
 def run_cli_version(argv: list[str], timeout: float = 5) -> str:
@@ -209,7 +200,7 @@ def run_cli_version(argv: list[str], timeout: float = 5) -> str:
     return "unknown"
 
 
-def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
+def serve_insecure(wrapper_cls: type[Any], display_name: str) -> None:
     """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
     from concurrent import futures
     import grpc

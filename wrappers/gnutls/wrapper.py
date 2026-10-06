@@ -20,16 +20,10 @@ from wrappers.base import BaseTemplateWrapper, WrapperSetupError
 from wrappers.utils import (
     alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
     interop_staging_sidecar_path, is_server_role, popen_stdio_merged, serve_insecure,
-    test_feature_enabled_in_config, tls_mode_12_or_13)
+    test_feature_enabled_in_config, tls_mode_12_or_13, tls_session_state_paths)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
-
-
-def _gnutls_session_state_paths(config) -> tuple[str, str]:
-    raw = (getattr(config, "repo_root", None) or "").strip()
-    root = Path(raw).resolve() if raw else repository_root()
-    return str(root / "session.ticket"), str(root / "early_data.txt")
 
 
 def _gnutls_popen_env(*, session_env: dict[str, str]) -> dict[str, str]:
@@ -238,7 +232,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
                       or test_feature_enabled_in_config(config, "0rtt"))
         if not has_ticket:
             return [], {}
-        session_file, early_data_file = _gnutls_session_state_paths(config)
+        session_file, early_data_file = tls_session_state_paths(config)
         step = (getattr(config, "resumption_step", None) or "").strip()
         extra: list[str] = []
         env: dict[str, str] = {}

@@ -9,11 +9,12 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import grpc
 

@@ -8,8 +8,7 @@ from pathlib import Path
 
 from core.catalog import (
     BackendCapabilities, TranslationResult, cipher_catalog_id_requires_anon,
-    cipher_catalog_id_requires_psk, load_local_capabilities, norm_catalog_token,
-    repository_root)
+    cipher_catalog_id_requires_psk, load_local_capabilities, norm_catalog_token)
 from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_schemes, repeated_config_tokens,
@@ -18,7 +17,7 @@ from wrappers.base import BaseTemplateWrapper, WrapperSetupError
 from wrappers.utils import (
     alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
     popen_stdio_merged, serve_insecure, test_feature_enabled_in_config,
-    tls_mode_12_or_13)
+    tls_mode_12_or_13, tls_session_state_paths)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _DNS_LABEL_OK = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -41,12 +40,6 @@ def _append_seclevel_zero(cipher_val: str) -> str:
     if ":@SECLEVEL" in cipher_val:
         return cipher_val
     return f"{cipher_val}:@SECLEVEL=0"
-
-
-def _openssl_session_state_paths(config) -> tuple[str, str]:
-    raw = (getattr(config, "repo_root", None) or "").strip()
-    root = Path(raw).resolve() if raw else repository_root()
-    return str(root / "session.ticket"), str(root / "early_data.txt")
 
 
 def _tls_version_argv(caps: dict, mode: str) -> list[str]:
@@ -210,7 +203,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
                       or test_feature_enabled_in_config(config, "0rtt"))
         if not has_ticket:
             return []
-        session_file, early_data_file = _openssl_session_state_paths(config)
+        session_file, early_data_file = tls_session_state_paths(config)
         step = (getattr(config, "resumption_step", "") or "").strip()
         extra: list[str] = []
         if step == "save":
