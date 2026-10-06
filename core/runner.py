@@ -18,11 +18,11 @@ from typing import Any
 
 import grpc
 
-from core.catalog import (
-    backend_grpc_addr, backend_tls_endpoint, load_backend_capabilities,
-    cell_capability_skip_reason, check_local_cli_tools, discover_wrapper_ids,
-    normalize_cell_tls_micro_params, parse_asymmetric, session_wrapper_env,
-    parse_test_features_enabled)
+from core.catalog import discover_wrapper_ids, load_backend_capabilities, parse_asymmetric
+from core.features import parse_test_features_enabled
+from core.matrix import apply_matrix_tls_endpoints
+from core.orchestration import (
+    backend_grpc_addr, backend_tls_endpoint, check_local_cli_tools, session_wrapper_env)
 from core.identity import (
     get_cert_prefix_for_scheme, get_cert_prefix_for_schemes,
     read_identity_pem_bytes, IDENTITY_PREFIXES)
@@ -80,45 +80,6 @@ def ensure_certs(repo: Path, *, verbose: bool = False) -> None:
     if verbose:
         print(f"Generating identity PEMs via {script}")
     subprocess.run(["bash", str(script)], cwd=repo, check=True)
-
-
-def apply_matrix_tls_endpoints(
-    server: str, client: str, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, *, repo: Path,
-    cell: dict[str, str] | None = None, session: WrapperSession | None = None) -> tuple[str, int]:
-    _ = client
-    port_raw = ((cell or {}).get("tls_port") or "").strip()
-    if port_raw:
-        tcp_host, _ = backend_tls_endpoint(server, repo)
-        tcp_port = int(port_raw)
-    elif session is not None:
-        tcp_host, tcp_port = session.tls_endpoint(server)
-    else:
-        tcp_host, tcp_port = backend_tls_endpoint(server, repo)
-    server_conf.port = tcp_port
-    client_conf.port = tcp_port
-    client_conf.server_hostname = "127.0.0.1"
-    return tcp_host, tcp_port
-
-
-def required_backends_from_matrix(
-    axis_keys: list[str], combos: list[tuple[Any, ...]], *, args_template: Any,
-    repo: Path, known: frozenset[str]) -> tuple[frozenset[str], int]:
-    needed: set[str] = set()
-    skips = 0
-    for tup in combos:
-        cell = {k: str(v) for k, v in zip(axis_keys, tup)}
-        cell = normalize_cell_tls_micro_params(cell, args_template, repo)
-        if cell_capability_skip_reason(cell, repo):
-            skips += 1
-            continue
-        server = (cell.get("server") or "").strip().lower()
-        client = (cell.get("client") or "").strip().lower()
-        if server in known:
-            needed.add(server)
-        if client in known:
-            needed.add(client)
-    return frozenset(needed), skips
 
 
 class WrapperSession:
@@ -648,10 +609,8 @@ class InteropDriver:
 
 
 def _run_cell_worker_thread(
-    driver: InteropDriver, server_conf: interop_pb2.TlsConfig,
-    client_conf: interop_pb2.TlsConfig, tcp_host: str, tcp_port: int,
-    cell_timeout_s: float, verbose: bool
-) -> tuple[bool | None, bool, Exception | None]:
+    driver: InteropDriver, server_conf: interop_pb2.TlsConfig, client_conf: interop_pb2.TlsConfig,
+    tcp_host: str, tcp_port: int, cell_timeout_s: float, verbose: bool) -> tuple[bool | None, bool, Exception | None]:
     """Runs InteropDriver in a worker thread and handles cell timeout."""
     holder: dict[str, Any] = {"ok": None, "exc": None}
 
@@ -677,10 +636,8 @@ def _run_cell_worker_thread(
 
 
 def _save_cell_debug_log(
-    debug_logs: DebugRunLogs | None, driver: InteropDriver | None,
-    repo: Path, server: str, client: str, cell: dict[str, str],
-    kind: str, console_lock: threading.Lock | None, extra: str = ""
-) -> None:
+    debug_logs: DebugRunLogs | None, driver: InteropDriver | None, repo: Path, server: str, client: str,
+    cell: dict[str, str], kind: str, console_lock: threading.Lock | None, extra: str = "") -> None:
     if debug_logs is None or driver is None:
         return
     log_path = debug_logs.write_fail_log(

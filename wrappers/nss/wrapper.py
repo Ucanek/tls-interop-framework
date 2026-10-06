@@ -14,9 +14,9 @@ import threading
 from pathlib import Path
 
 from core.catalog import (
-    BackendCapabilities, TranslationResult, cipher_catalog_id_requires_anon,
-    cipher_catalog_id_requires_psk, load_local_capabilities, norm_catalog_token,
-    repository_root)
+    BackendCapabilities, TranslationResult, load_local_capabilities,
+    norm_catalog_token, repository_root)
+from core.features import cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk
 from core.identity import repeated_config_tokens
 from interop_proto import interop_pb2
 from wrappers.base import BaseTemplateWrapper

@@ -14,13 +14,14 @@ from itertools import product
 from pathlib import Path
 from typing import Any
 
-from core.catalog import (
-    cell_capability_skip_reason, discover_wrapper_ids, grpc_port_overrides_from_args,
-    matrix_axis_plan, normalize_cell_tls_micro_params, print_catalog_options,
-    repository_root, validate_run_args)
+from core.catalog import discover_wrapper_ids, print_catalog_options, repository_root
+from core.matrix import (
+    matrix_axis_plan, normalize_cell_tls_micro_params, required_backends_from_matrix)
+from core.orchestration import grpc_port_overrides_from_args, validate_run_args
+from core.validation import cell_capability_skip_reason
 from core.runner import (
     EXIT_SKIP, EXIT_TIMEOUT, DebugRunLogs, MAX_PARALLEL_JOBS, WORKER_PORT_STRIDE,
-    WrapperSession, ensure_certs, execute_matrix_cell, required_backends_from_matrix)
+    WrapperSession, ensure_certs, execute_matrix_cell)
 from core.suite import apply_suite_file, enforce_suite_cli_exclusivity, suite_cases_to_combos
 
 
@@ -220,8 +221,7 @@ def validate_cli_arguments(args: argparse.Namespace, parser: argparse.ArgumentPa
 
 
 def build_matrix_combos(
-    args: argparse.Namespace, known: frozenset[str], repo: Path
-) -> tuple[list[str], list[tuple[Any, ...]]]:
+    args: argparse.Namespace, known: frozenset[str], repo: Path) -> tuple[list[str], list[tuple[Any, ...]]]:
     axis_keys, axis_vals = matrix_axis_plan(args, known_wrappers=known, repo=repo)
 
     if getattr(args, "suite_cases", None):

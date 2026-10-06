@@ -1,1 +1,1 @@
-"""``catalog``, ``identity`` (certificates), and ``runner`` (local wrappers + gRPC driver)."""
+"""Capabilities catalog, matrix, validation, features, orchestration, identity, runner."""

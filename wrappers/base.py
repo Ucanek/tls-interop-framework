@@ -9,7 +9,7 @@ import subprocess
 import time
 from grpc import ServicerContext
 
-from core.catalog import catalog_parameter_conflicts
+from core.validation import catalog_parameter_conflicts
 from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_config)
@@ -102,8 +102,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         self._used_ephemeral_pem = False
 
     def _dsa_catalog_identity_pem(
-        self, config: interop_pb2.TlsConfig, *, has_inline: bool
-    ) -> tuple[str, str] | None:
+        self, config: interop_pb2.TlsConfig, *, has_inline: bool) -> tuple[str, str] | None:
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
             return None
@@ -135,8 +134,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             "from core/gen_interop_certs.sh)")
 
     def _terminate_process_hard(
-        self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0
-    ) -> None:
+        self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0) -> None:
         """SIGTERM then SIGKILL (best-effort)."""
         if proc is None or proc.poll() is not None:
             return
@@ -167,8 +165,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return raw.decode(errors="replace").strip()
 
     def _get_role_cli_state(
-        self, role: int, cmd: str, proc: subprocess.Popen[bytes] | None
-    ) -> tuple[str, subprocess.Popen[bytes] | None, str]:
+        self, role: int, cmd: str, proc: subprocess.Popen[bytes] | None) -> tuple[str, subprocess.Popen[bytes] | None, str]:
         if role == interop_pb2.SERVER:
             cmd_s = (cmd or self._last_server_cmd or "").strip()
             target = proc if proc is not None else self.server_proc
@@ -262,8 +259,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return standard_library_metadata(self._component_name, version)
 
     def _build_negotiated(
-        self, proc: subprocess.Popen[bytes] | None, text: str | None = None
-    ) -> interop_pb2.NegotiatedTlsParameters | None:
+        self, proc: subprocess.Popen[bytes] | None, text: str | None = None) -> interop_pb2.NegotiatedTlsParameters | None:
         raw_text = text if text is not None else self._drain_process_output(proc)
         d = self._parse_negotiated_params(raw_text or "")
         pv = (d.get("protocol_version") or "").strip()
@@ -277,8 +273,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
 
     def _establish_server(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         proc, cmd_logs, msg = self._start_server(request.config)
         self.server_proc = proc
         self._remember_role_cli(interop_pb2.SERVER, cmd_logs)
@@ -328,9 +323,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return f"{server_out}\n{client_out}" if server_out.strip() else client_out
 
     def _client_fail(
-        self, cmd_logs: str, output: str, message: str,
-        negotiated: interop_pb2.NegotiatedTlsParameters | None = None
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, cmd_logs: str, output: str, message: str, negotiated: interop_pb2.NegotiatedTlsParameters | None = None) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         self._remember_role_cli(interop_pb2.CLIENT, cmd_logs, output)
         logs = self._build_cli_debug_logs(
             role=interop_pb2.CLIENT, cmd=cmd_logs, proc=self.client_proc, output=output)
@@ -349,8 +342,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             time.sleep(delay)
 
     def _finish_client_establish(
-        self, request: interop_pb2.OperationRequest, cmd_logs: str, merged: str
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest, cmd_logs: str, merged: str) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         negotiated = self._build_negotiated(self.client_proc, merged)
         if negotiated is not None and not negotiated.hrr_occurred:
             if self._infer_hrr_from_negotiation(request.config, merged):
@@ -369,8 +361,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return interop_pb2.OperationResponse.SUCCESS, "Client connected", logs, b"", negotiated
 
     def _establish_client_active(
-        self, request: interop_pb2.OperationRequest, cmd_logs: str, port: int
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest, cmd_logs: str, port: int) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         self._wait_client_peer(request, cmd_logs, port)
         if self.client_proc and self.client_proc.poll() is not None:
             out = self._drain_process_output(self.client_proc)
@@ -381,8 +372,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return self._finish_client_establish(request, cmd_logs, merged)
 
     def _establish_client(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         proc, cmd_logs, _ = self._start_client(request.config)
         self.client_proc = proc
         self._remember_role_cli(interop_pb2.CLIENT, cmd_logs)
@@ -401,8 +391,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return self._establish_client_active(request, cmd_logs, port)
 
     def _handle_establish(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         if request.role == interop_pb2.SERVER:
             self._release_server_before_establish()
         else:
@@ -418,8 +407,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return self._establish_client(request)
 
     def _write_transmit_payload(
-        self, target: subprocess.Popen[bytes], payload: bytes, role: int
-    ) -> tuple[bool, str]:
+        self, target: subprocess.Popen[bytes], payload: bytes, role: int) -> tuple[bool, str]:
         settle = self._pre_transmit_pause_seconds(role)
         if settle > 0:
             time.sleep(settle)
@@ -436,8 +424,7 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return True, ""
 
     def _handle_transmit(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         role = request.role
         target = self.server_proc if role == interop_pb2.SERVER else self.client_proc
         if not target:
@@ -463,15 +450,13 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return interop_pb2.OperationResponse.SUCCESS, "", logs, out_data, None
 
     def _handle_close(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         del request
         self._cleanup()
         return interop_pb2.OperationResponse.SUCCESS, "Cleanup successful", "", b"", None
 
     def _dispatch_op(
-        self, request: interop_pb2.OperationRequest
-    ) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
+        self, request: interop_pb2.OperationRequest) -> tuple[int, str, str, bytes, interop_pb2.NegotiatedTlsParameters | None]:
         if request.type == interop_pb2.OperationRequest.ESTABLISH:
             return self._handle_establish(request)
         if request.type == interop_pb2.OperationRequest.TRANSMIT:
@@ -481,15 +466,13 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
         return interop_pb2.OperationResponse.ERROR, f"Unsupported OpType: {request.type}", "", b"", None
 
     def _format_op_error(
-        self, exc: Exception, phase: str, default_status: int, role: int, logs: str
-    ) -> tuple[int, str, str]:
+        self, exc: Exception, phase: str, default_status: int, role: int, logs: str) -> tuple[int, str, str]:
         msg = _exc_message(phase, exc)
         err_logs = logs if logs else self._build_cli_debug_logs(role=role)
         return default_status, msg, err_logs
 
     def ExecuteOperation(
-        self, request: interop_pb2.OperationRequest, context: ServicerContext
-    ) -> interop_pb2.OperationResponse:
+        self, request: interop_pb2.OperationRequest, context: ServicerContext) -> interop_pb2.OperationResponse:
         status = interop_pb2.OperationResponse.SUCCESS
         msg = ""
         logs = ""

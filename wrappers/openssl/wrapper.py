@@ -6,8 +6,8 @@ import os
 import re
 
 from core.catalog import (
-    BackendCapabilities, TranslationResult, cipher_catalog_id_requires_anon,
-    cipher_catalog_id_requires_psk, load_local_capabilities, norm_catalog_token)
+    BackendCapabilities, TranslationResult, load_local_capabilities, norm_catalog_token)
+from core.features import cipher_catalog_id_requires_anon, cipher_catalog_id_requires_psk
 from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_schemes, repeated_config_tokens,

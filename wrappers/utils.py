@@ -149,8 +149,7 @@ def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None, stdout: str
 
 def popen_stdio_merged(
     cmd: Sequence[object], *, cwd: str | os.PathLike[str] | None = None,
-    env: Mapping[str, str] | MutableMapping[str, str] | None = None
-) -> subprocess.Popen[bytes]:
+    env: Mapping[str, str] | MutableMapping[str, str] | None = None) -> subprocess.Popen[bytes]:
     """Starts subprocess with stdin and merged stdout/stderr (stdout non-blocking)."""
     p = subprocess.Popen(
         cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
