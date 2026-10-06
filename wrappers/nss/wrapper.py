@@ -24,8 +24,9 @@ from wrappers.nss.nss_db import (
     _ensure_nss_db_identities, get_nss_library_version, nss_interop_identity_import_rows,
     nss_server_nickname_for_config, resolve_cli_tool)
 from wrappers.utils import (
-    format_executed_command, popen_stdio_merged, serve_insecure,
-    standard_library_metadata, test_feature_enabled_in_config, tls_mode_12_or_13)
+    format_executed_command, popen_stdio_merged, resumption_or_0rtt_enabled,
+    serve_insecure, standard_library_metadata, test_feature_enabled_in_config,
+    tls_mode_12_or_13)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _CLIENT_FAIL_MARKERS = (
@@ -231,11 +232,9 @@ class NSSWrapper(BaseTemplateWrapper):
             "NSS Server started")
 
     def _start_client(self, config):
-        has_resumption = test_feature_enabled_in_config(config, "resumption")
-        has_0rtt = test_feature_enabled_in_config(config, "0rtt")
         step = (getattr(config, "resumption_step", None) or "").strip()
-        self._pre_transmit_pause_s = (
-            0.5 if (has_resumption or has_0rtt) and step == "resume" else 0.0)
+        resume = resumption_or_0rtt_enabled(config) and step == "resume"
+        self._pre_transmit_pause_s = 0.5 if resume else 0.0
         self._ensure_nss_db_ready()
         host = config.server_hostname or "localhost"
         peer, extra = nss_tstclnt_host_and_extra_argv(host, int(config.port))
@@ -243,7 +242,7 @@ class NSSWrapper(BaseTemplateWrapper):
         cmd = [
             self._tstclnt, "-d", self._db_spec(), "-h", peer,
             *tls_argv_for_config(config).argv, "-o"]
-        if (has_resumption or has_0rtt) and step == "resume":
+        if resume:
             cmd.append("-R")
         if test_feature_enabled_in_config(config, "mtls"):
             cmd.extend(["-n", "interop_rsa_default"])

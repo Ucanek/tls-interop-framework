@@ -10,7 +10,9 @@ import time
 from grpc import ServicerContext
 
 from core.catalog import catalog_parameter_conflicts
-from core.identity import catalog_identity_pem_paths_for_prefix, get_cert_prefix_for_config
+from core.identity import (
+    catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
+    get_cert_prefix_for_config)
 from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.utils import (
     format_cli_debug_logs, hrr_detected_in_cli_output, read_nonblocking_stdout,
@@ -108,18 +110,27 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
 
     def _ensure_cert_paths(self, config: interop_pb2.TlsConfig) -> tuple[str, str]:
         """Resolves cert/key from inline TlsConfig bytes or catalog ``certs/`` PEMs."""
+        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         cert_b = getattr(config, "certificate", None) or b""
         key_b = getattr(config, "private_key", None) or b""
-        if cert_b.strip() and key_b.strip():
+        has_inline = bool(cert_b.strip() and key_b.strip())
+        missing = WrapperSetupError(
+            "No identity PEM for this test (set certificate/private_key, or use certs/ "
+            "from core/gen_interop_certs.sh)")
+        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
+            cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
+            if cert and key:
+                return cert, key
+            if not has_inline:
+                raise missing
+        if has_inline:
             return self._write_inline_cert_key(cert_b, key_b)
 
         self._cleanup_ephemeral_pem_if_needed()
         cert, key = self._resolve_existing_pem_paths(config)
         if cert and key:
             return cert, key
-        raise WrapperSetupError(
-            "No identity PEM for this test (set certificate/private_key, or use certs/ "
-            "from core/gen_interop_certs.sh)")
+        raise missing
 
     def _terminate_process_hard(
         self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0

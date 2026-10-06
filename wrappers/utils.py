@@ -18,7 +18,6 @@ from core.identity import repeated_config_tokens
 from interop_proto import interop_pb2
 
 TlsModeLiteral = Literal["1.2", "1.3"]
-
 _HRR_OUTPUT_PATTERNS: tuple[re.Pattern[str], ...] = tuple(
     re.compile(p, re.IGNORECASE)
     for p in (
@@ -86,6 +85,18 @@ def tls_session_state_paths(config) -> tuple[str, str]:
     raw = (getattr(config, "repo_root", None) or "").strip()
     root = Path(raw).resolve() if raw else repository_root()
     return str(root / "session.ticket"), str(root / "early_data.txt")
+
+
+def write_early_data_file(config, payload: str = "Hello 0-RTT") -> str:
+    """Write the 0-RTT payload file and return its path."""
+    _, early = tls_session_state_paths(config)
+    Path(early).write_text(payload, encoding="ascii")
+    return early
+
+
+def resumption_or_0rtt_enabled(config) -> bool:
+    return (test_feature_enabled_in_config(config, "resumption")
+            or test_feature_enabled_in_config(config, "0rtt"))
 
 
 def _interop_slot_suffix() -> str:

@@ -11,7 +11,7 @@ from typing import Any
 
 from core.identity import (
     DEFAULT_PREFIX, IDENTITY_PREFIXES, catalog_identity_pem_paths_for_prefix,
-    cipher_catalog_id_uses_dsa_auth, get_cert_prefix_for_config, identity_pem_present)
+    cipher_catalog_id_uses_dsa_auth, get_cert_prefix_for_config)
 from wrappers.utils import parse_version_line
 
 _UNSUPPORTED_TOOL_PREFIXES = (
@@ -121,10 +121,10 @@ def nss_server_nickname_for_config(config: Any, *, repo: Path | None = None) -> 
     """``selfserv -n`` nickname from server ``signature_schemes`` / ``cipher_suite``."""
     raw_cipher = str(getattr(config, "cipher_suite", None) or "").strip()
     if cipher_catalog_id_uses_dsa_auth(raw_cipher):
-        if not identity_pem_present("dsa_default", repo=repo):
+        cert, _ = catalog_identity_pem_paths_for_prefix("dsa_default", repo=repo)
+        if not cert:
             raise RuntimeError(
-                "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-                "(run core/gen_interop_certs.sh)")
+                "No identity PEM for this test (use certs/ from core/gen_interop_certs.sh)")
         return nss_nickname_for_prefix("dsa_default")
     return nss_nickname_for_prefix(get_cert_prefix_for_config(config))
 

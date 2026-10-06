@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import os
 import re
-from pathlib import Path
 
 from core.catalog import (
     BackendCapabilities, TranslationResult, cipher_catalog_id_requires_anon,
@@ -13,11 +12,12 @@ from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
     get_cert_prefix_for_schemes, repeated_config_tokens,
     server_trust_signature_schemes_tokens)
-from wrappers.base import BaseTemplateWrapper, WrapperSetupError
+from wrappers.base import BaseTemplateWrapper
 from wrappers.utils import (
     alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
-    popen_stdio_merged, serve_insecure, test_feature_enabled_in_config,
-    tls_mode_12_or_13, tls_session_state_paths)
+    popen_stdio_merged, resumption_or_0rtt_enabled, serve_insecure,
+    test_feature_enabled_in_config, tls_mode_12_or_13, tls_session_state_paths,
+    write_early_data_file)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _DNS_LABEL_OK = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -146,21 +146,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     def _ephemeral_pem_paths(self) -> tuple[str, str]:
         return interop_staging_pem_paths("openssl")
 
-    def _ensure_cert_paths(self, config):
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
-        if not _openssl_cipher_needs_legacy_dss(raw_cipher):
-            return super()._ensure_cert_paths(config)
-        cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
-        if cert and key:
-            return cert, key
-        cert_b = getattr(config, "certificate", None) or b""
-        key_b = getattr(config, "private_key", None) or b""
-        if cert_b.strip() and key_b.strip():
-            return super()._ensure_cert_paths(config)
-        raise WrapperSetupError(
-            "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-            "(run core/gen_interop_certs.sh)")
-
     def _version_command(self) -> list[str]:
         return ["openssl", "version"]
 
@@ -199,11 +184,9 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         return ["-servername", host]
 
     def _client_session_argv(self, config) -> list[str]:
-        has_ticket = (test_feature_enabled_in_config(config, "resumption")
-                      or test_feature_enabled_in_config(config, "0rtt"))
-        if not has_ticket:
+        if not resumption_or_0rtt_enabled(config):
             return []
-        session_file, early_data_file = tls_session_state_paths(config)
+        session_file, _ = tls_session_state_paths(config)
         step = (getattr(config, "resumption_step", "") or "").strip()
         extra: list[str] = []
         if step == "save":
@@ -211,8 +194,7 @@ class OpenSSLWrapper(BaseTemplateWrapper):
         if step == "resume":
             extra.extend(["-sess_in", session_file])
             if test_feature_enabled_in_config(config, "0rtt"):
-                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
-                extra.extend(["-early_data", early_data_file])
+                extra.extend(["-early_data", write_early_data_file(config)])
         return extra
 
     def _start_server(self, config):

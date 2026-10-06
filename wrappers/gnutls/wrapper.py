@@ -13,14 +13,14 @@ from core.catalog import (
     repository_root)
 from core.identity import (
     catalog_identity_pem_paths_for_prefix, cipher_catalog_id_uses_dsa_auth,
-    get_cert_prefix_for_schemes, repeated_config_tokens,
-    server_trust_signature_schemes_tokens)
+    get_cert_prefix_for_schemes, repeated_config_tokens, server_trust_signature_schemes_tokens)
 from interop_proto import interop_pb2
 from wrappers.base import BaseTemplateWrapper, WrapperSetupError
 from wrappers.utils import (
     alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
-    interop_staging_sidecar_path, is_server_role, popen_stdio_merged, serve_insecure,
-    test_feature_enabled_in_config, tls_mode_12_or_13, tls_session_state_paths)
+    interop_staging_sidecar_path, is_server_role, popen_stdio_merged,
+    resumption_or_0rtt_enabled, serve_insecure, test_feature_enabled_in_config,
+    tls_mode_12_or_13, tls_session_state_paths, write_early_data_file)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
@@ -199,21 +199,6 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             return False
         return any(g.lower().replace("-", "") in negotiated for g in groups[1:])
 
-    def _ensure_cert_paths(self, config):
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
-        if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
-            return super()._ensure_cert_paths(config)
-        cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
-        if cert and key:
-            return cert, key
-        cert_b = getattr(config, "certificate", None) or b""
-        key_b = getattr(config, "private_key", None) or b""
-        if cert_b.strip() and key_b.strip():
-            return super()._ensure_cert_paths(config)
-        raise WrapperSetupError(
-            "DSS cipher requires certs/dsa_default.crt and certs/dsa_default.key "
-            "(run core/gen_interop_certs.sh)")
-
     def _client_x509_cafile(self, config) -> str:
         raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         if cipher_catalog_id_uses_dsa_auth(raw_cipher):
@@ -228,11 +213,9 @@ class GnuTLSWrapper(BaseTemplateWrapper):
             "No trust PEM under certs/ for this client (run core/gen_interop_certs.sh)")
 
     def _client_session_bits(self, config) -> tuple[list[str], dict[str, str]]:
-        has_ticket = (test_feature_enabled_in_config(config, "resumption")
-                      or test_feature_enabled_in_config(config, "0rtt"))
-        if not has_ticket:
+        if not resumption_or_0rtt_enabled(config):
             return [], {}
-        session_file, early_data_file = tls_session_state_paths(config)
+        session_file, _ = tls_session_state_paths(config)
         step = (getattr(config, "resumption_step", None) or "").strip()
         extra: list[str] = []
         env: dict[str, str] = {}
@@ -242,8 +225,7 @@ class GnuTLSWrapper(BaseTemplateWrapper):
         if step == "resume":
             env["GNUTLS_INTEROP_SESSION_IN"] = session_file
             if test_feature_enabled_in_config(config, "0rtt"):
-                Path(early_data_file).write_text("Hello 0-RTT", encoding="ascii")
-                extra.extend(["--earlydata", early_data_file])
+                extra.extend(["--earlydata", write_early_data_file(config)])
         return extra, env
 
     def _start_server(self, config):
