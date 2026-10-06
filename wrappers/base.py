@@ -101,36 +101,38 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
                 pass
         self._used_ephemeral_pem = False
 
-    def _resolve_existing_pem_paths(self, config: interop_pb2.TlsConfig) -> tuple[str, str]:
-        sel_cert, sel_key = catalog_identity_pem_paths_for_prefix(
-            get_cert_prefix_for_config(config))
-        if sel_cert and sel_key:
-            return sel_cert, sel_key
-        return "", ""
+    def _dsa_catalog_identity_pem(
+        self, config: interop_pb2.TlsConfig, *, has_inline: bool
+    ) -> tuple[str, str] | None:
+        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
+        if not cipher_catalog_id_uses_dsa_auth(raw_cipher):
+            return None
+        cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
+        if cert and key:
+            return cert, key
+        if has_inline:
+            return None
+        raise WrapperSetupError(
+            "No identity PEM for this test (set certificate/private_key, or use certs/ "
+            "from core/gen_interop_certs.sh)")
 
     def _ensure_cert_paths(self, config: interop_pb2.TlsConfig) -> tuple[str, str]:
         """Resolves cert/key from inline TlsConfig bytes or catalog ``certs/`` PEMs."""
-        raw_cipher = str(getattr(config, "cipher_suite", None) or "")
         cert_b = getattr(config, "certificate", None) or b""
         key_b = getattr(config, "private_key", None) or b""
         has_inline = bool(cert_b.strip() and key_b.strip())
-        missing = WrapperSetupError(
-            "No identity PEM for this test (set certificate/private_key, or use certs/ "
-            "from core/gen_interop_certs.sh)")
-        if cipher_catalog_id_uses_dsa_auth(raw_cipher):
-            cert, key = catalog_identity_pem_paths_for_prefix("dsa_default")
-            if cert and key:
-                return cert, key
-            if not has_inline:
-                raise missing
+        dsa_pem = self._dsa_catalog_identity_pem(config, has_inline=has_inline)
+        if dsa_pem:
+            return dsa_pem
         if has_inline:
             return self._write_inline_cert_key(cert_b, key_b)
-
         self._cleanup_ephemeral_pem_if_needed()
-        cert, key = self._resolve_existing_pem_paths(config)
+        cert, key = catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
         if cert and key:
             return cert, key
-        raise missing
+        raise WrapperSetupError(
+            "No identity PEM for this test (set certificate/private_key, or use certs/ "
+            "from core/gen_interop_certs.sh)")
 
     def _terminate_process_hard(
         self, proc: subprocess.Popen[bytes] | None, *, wait_s: float = 3.0
