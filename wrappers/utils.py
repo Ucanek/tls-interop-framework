@@ -8,6 +8,7 @@ import re
 import shlex
 import subprocess
 import time
+from contextlib import suppress
 from typing import Any, Literal, Mapping, MutableMapping, Sequence, Type
 
 from core.catalog import tls_mode_from_version
@@ -33,43 +34,22 @@ def hrr_detected_in_cli_output(text: str) -> bool:
     blob = (text or "").strip()
     if not blob:
         return False
-    for pat in _HRR_OUTPUT_PATTERNS:
-        if pat.search(blob):
-            return True
+    if any(pat.search(blob) for pat in _HRR_OUTPUT_PATTERNS):
+        return True
     lower = blob.lower()
-    if lower.count("write client hello") >= 2:
+    if lower.count("write client hello") >= 2 or lower.count("read client hello") >= 2:
         return True
-    if lower.count("read client hello") >= 2:
-        return True
-    if (
-        len(
-            re.findall(
-                r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello",
-                blob,
-                re.IGNORECASE,
-            )
-        )
-        >= 2
-    ):
-        return True
-    return False
+    return len(re.findall(r"handshake\s*\[\s*length\s+[^\]]+\]\s*,\s*clienthello", blob, re.IGNORECASE)) >= 2
 
 
 def split_asymmetric_csv(val: str | None) -> tuple[list[str], list[str]]:
-    """
-    Split comma-separated tokens per role on the first ``:`` in the raw string.
-
-    With no colon, both sides receive the same parsed list.
-    """
+    """Split comma-separated tokens per role on the first ``:`` in the raw string."""
     whole = (val or "").strip()
     if not whole:
         return [], []
     if ":" in whole:
         left, right = whole.split(":", 1)
-        return (
-            [p.strip() for p in left.split(",") if p.strip()],
-            [p.strip() for p in right.split(",") if p.strip()],
-        )
+        return [p.strip() for p in left.split(",") if p.strip()], [p.strip() for p in right.split(",") if p.strip()]
     parts = [p.strip() for p in whole.split(",") if p.strip()]
     return parts, parts
 
@@ -82,14 +62,10 @@ def parse_version_line(out: str | None) -> str:
     return match.group(0) if match else (first_line[:40] if first_line else "unknown")
 
 
-def alpn_protocols_from_config(config: Any) -> list[str]:
-    raw = getattr(config, "alpn_protocols", None) or []
-    return [str(p).strip() for p in raw if str(p).strip()]
-
-
 def alpn_cli_protocol_list(config: Any) -> str:
     """Comma-separated ALPN ids for backend CLI flags (empty when unset)."""
-    protos = alpn_protocols_from_config(config)
+    raw = getattr(config, "alpn_protocols", None) or []
+    protos = [str(p).strip() for p in raw if str(p).strip()]
     return ",".join(protos) if protos else ""
 
 
@@ -104,30 +80,24 @@ def remove_tls_session_artifact_files(repo_root: str) -> None:
     if not root:
         return
     for name in ("session.ticket", "early_data.txt"):
-        path = os.path.join(root, name)
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            pass
-        except OSError:
-            pass
+        with suppress(OSError):
+            os.unlink(os.path.join(root, name))
+
+
+def _interop_slot_suffix() -> str:
+    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
+    return f"_{slot}" if slot else ""
 
 
 def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
     """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return (
-        f"/tmp/interop_{prefix}_cert{suffix}.pem",
-        f"/tmp/interop_{prefix}_key{suffix}.pem",
-    )
+    suffix = _interop_slot_suffix()
+    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
 
 
 def interop_staging_sidecar_path(prefix: str, name: str) -> str:
     """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot suffix."""
-    slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    suffix = f"_{slot}" if slot else ""
-    return f"/tmp/interop_{prefix}_{name}{suffix}"
+    return f"/tmp/interop_{prefix}_{name}{_interop_slot_suffix()}"
 
 
 def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
@@ -146,47 +116,20 @@ def is_server_role(role: Any | None) -> bool:
         return True
 
 
-def format_executed_command(
-    cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None
-) -> str:
+def format_executed_command(cmd: Sequence[object], cwd: str | os.PathLike[str] | None = None) -> str:
     """Formats argv as a shell-safe log line."""
     line = shlex.join(str(x) for x in cmd)
-    if cwd is not None:
-        return f"cwd={shlex.quote(os.path.abspath(os.fspath(cwd)))} {line}"
-    return line
+    return f"cwd={shlex.quote(os.path.abspath(os.fspath(cwd)))} {line}" if cwd is not None else line
 
 
-def format_cli_debug_logs(
-    *, cmd: str, exit_code: int | None = None, stdout: str = "", stderr: str = ""
-) -> str:
-    """
-    Build ``OperationResponse.logs`` with CMD, exit code, stdout, and stderr.
-
-    Wrappers merge stderr into stdout (``stderr=STDOUT``) to avoid pipe deadlocks
-    on long-lived CLI processes; when ``stderr`` is empty, the stderr section notes that.
-    """
+def format_cli_debug_logs(*, cmd: str, exit_code: int | None = None, stdout: str = "", stderr: str = "") -> str:
+    """Build ``OperationResponse.logs`` (CMD, exit, stdout; stderr is usually merged)."""
     cmd_s = (cmd or "").strip()
-    if cmd_s and not cmd_s.startswith("CMD:"):
-        cmd_s = f"CMD: {cmd_s}"
-    elif not cmd_s:
-        cmd_s = "CMD: (unknown)"
-    if exit_code is None:
-        exit_s = "Exit code: (running)"
-    else:
-        exit_s = f"Exit code: {exit_code}"
-    out_body = (stdout or "").rstrip() if (stdout or "").strip() else "(empty)"
-    if (stderr or "").strip():
-        err_body = stderr.rstrip()
-    else:
-        err_body = "(stderr merged into stdout; see stdout above)"
-    return "\n".join(
-        [cmd_s, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body]
-    )
-
-
-def _make_non_blocking(fd: int) -> None:
-    flags = fcntl.fcntl(fd, fcntl.F_GETFL)
-    fcntl.fcntl(fd, fcntl.F_SETFL, flags | os.O_NONBLOCK)
+    cmd_line = f"CMD: {cmd_s}" if cmd_s and not cmd_s.startswith("CMD:") else (cmd_s or "CMD: (unknown)")
+    out_body = (stdout or "").rstrip() or "(empty)"
+    err_body = (stderr or "").rstrip() or "(stderr merged into stdout; see stdout above)"
+    exit_s = "Exit code: (running)" if exit_code is None else f"Exit code: {exit_code}"
+    return "\n".join((cmd_line, exit_s, "--- stdout ---", out_body, "--- stderr ---", err_body))
 
 
 def popen_stdio_merged(
@@ -205,7 +148,8 @@ def popen_stdio_merged(
         env=dict(env) if env is not None else None,
     )
     if p.stdout:
-        _make_non_blocking(p.stdout.fileno())
+        flags = fcntl.fcntl(p.stdout.fileno(), fcntl.F_GETFL)
+        fcntl.fcntl(p.stdout.fileno(), fcntl.F_SETFL, flags | os.O_NONBLOCK)
     return p
 
 
@@ -217,22 +161,20 @@ def read_nonblocking_stdout(
     poll_s: float = 0.02,
     max_bytes: int = 1 << 20,
 ) -> bytes:
-    """
-    Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk.
-    """
+    """Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk."""
     if proc.stdout is None:
         return b""
     deadline = time.monotonic() + max(0.0, timeout_s)
     chunks: list[bytes] = []
     total = 0
     last_data_at: float | None = None
+
     while time.monotonic() < deadline and total < max_bytes:
         try:
             piece = proc.stdout.read(min(4096, max_bytes - total))
-        except BlockingIOError:
+        except (BlockingIOError, OSError):
             piece = None
-        except OSError:
-            break
+
         if piece:
             chunks.append(piece)
             total += len(piece)
@@ -241,7 +183,9 @@ def read_nonblocking_stdout(
                 continue
         elif last_data_at is not None and (time.monotonic() - last_data_at) >= idle_s:
             break
+
         time.sleep(min(poll_s, max(0.0, deadline - time.monotonic())))
+
     return b"".join(chunks)
 
 
@@ -268,7 +212,6 @@ def run_cli_version(argv: list[str], timeout: float = 5) -> str:
 def serve_insecure(wrapper_cls: Type[Any], display_name: str) -> None:
     """Starts the gRPC ``TlsInteropWrapper`` service without TLS (port from ``GRPC_PORT``)."""
     from concurrent import futures
-
     import grpc
     from interop_proto import interop_pb2_grpc
 
