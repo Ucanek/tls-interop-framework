@@ -22,9 +22,9 @@ Always run from the repo root. `pip install -e .` only installs Python dependenc
 
 | Backend | gRPC  | TLS   | Server CLI         | Client CLI         |
 | ------- | ----- | ----- | ------------------ | ------------------ |
-| openssl | 15051 | 15551 | `openssl s_server` | `openssl s_client` |
-| gnutls  | 15052 | 15552 | `gnutls-serv`      | `gnutls-cli`       |
-| nss     | 15053 | 15553 | `selfserv`         | `tstclnt`          |
+| openssl | 15051 | 25551 | `openssl s_server` | `openssl s_client` |
+| gnutls  | 15052 | 25552 | `gnutls-serv`      | `gnutls-cli`       |
+| nss     | 15053 | 25553 | `selfserv`         | `tstclnt`          |
 
 
 Wrappers live in `wrappers/<backend>/` (`wrapper.py` + `capabilities.json`).
@@ -68,7 +68,7 @@ With `--suite`, do not pass `--server` / `--client` or other matrix flags — va
 
 Default cell limit: **45 s**. On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
 
-Parallel runs: `--jobs N` (default 1) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
+Parallel runs: `--jobs N` (default = half of CPU count; soft-capped there) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). TLS bases sit far above gRPC so slots do not collide. Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
 
 On **FAIL** or **TIMEOUT**, a short log appears under `debug_logs/run_<timestamp>/` (`fail_*.log` / `timeout_*.log`: cell, last failure, endpoints, operation traces). No folder if all cells pass.
 
@@ -90,14 +90,6 @@ Notes:
 
 - **Same backend on both sides** (`openssl` × `openssl`): one wrapper process is enough — driver uses a single gRPC connection for server and client roles.
 - `--attach` works with matrix flags and `--suite`; every backend in the matrix must already be running on the expected gRPC ports.
-
-
-
-## NSS
-
-- Fedora 43+: `tstclnt` / `selfserv` in `/usr/lib64/nss/unsupported-tools/` (auto-resolved).
-- `tstclnt` has no ALPN; `selfserv` serves one connection then exits (wrapper restarts it).
-- GnuTLS server × NSS client: `INTEROP_GNUTLS_NSS_PAIR` is set automatically when both run in one matrix.
 
 
 
