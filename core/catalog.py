@@ -42,7 +42,7 @@ DEFAULT_CIPHER_BY_TLS_MODE: dict[TlsMode, str] = {
     "1.3": "aes-128-gcm", "1.2": "ecdhe-rsa-aes-128-gcm-sha256"}
 
 RUNTIME_DEFAULTS: dict[str, Any] = {
-    "grpc_addr": None, "tls_host": "127.0.0.1", "tls_port": 15551,
+    "grpc_addr": None, "tls_host": "127.0.0.1", "tls_port": 25551,
     "unsupported_tls_fields": (), "local_cli": ()}
 
 

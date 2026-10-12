@@ -1,7 +1,7 @@
 {
   "runtime": {
     "grpc_addr": "127.0.0.1:15053",
-    "tls_port": 15553,
+    "tls_port": 25553,
     "unsupported_tls_fields": ["certificate", "private_key", "alpn_protocols", "expect_hrr"],
     "local_cli": ["tstclnt", "selfserv", "stdbuf", "certutil", "pk12util"]
   },

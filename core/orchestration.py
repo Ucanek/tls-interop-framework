@@ -92,7 +92,7 @@ def grpc_port_overrides_from_args(args: Any) -> dict[str, int]:
 def backend_tls_endpoint(backend_name: str, repo: Path | None = None) -> tuple[str, int]:
     runtime_info = load_backend_capabilities(backend_name).runtime()
     host = str(runtime_info.get("tls_host") or "127.0.0.1")
-    port = int(runtime_info.get("tls_port") or 15551)
+    port = int(runtime_info.get("tls_port") or 25551)
 
     return host, port
 

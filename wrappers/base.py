@@ -21,8 +21,8 @@ from wrappers.utils import (
 FAIL_LOG_TAIL = 65536
 TCP_READY_TIMEOUT_S = 30.0
 POST_ESTABLISH_PAUSE_S = 1.0
-TRANSMIT_CLIENT_READ_S = 1.0
-TRANSMIT_SERVER_READ_S = 2.5
+TRANSMIT_CLIENT_READ_S = 3.0
+TRANSMIT_SERVER_READ_S = 5.0
 TRANSMIT_POST_WRITE_PAUSE_S = 0.5
 
 
@@ -516,7 +516,11 @@ def wait_tcp_connect(
         if proc is not None and proc.poll() is not None:
             return False, "subprocess exited before TCP became ready"
         try:
-            with socket.create_connection((host, port), timeout=0.25):
+            with socket.create_connection((host, port), timeout=0.25) as sock:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
                 return True, ""
         except OSError as e:
             last_err = str(e)

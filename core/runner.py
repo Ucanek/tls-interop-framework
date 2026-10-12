@@ -159,7 +159,9 @@ class WrapperSession:
             in_use, _ = wait_tcp_connect(host, port, timeout_s=0.35)
             if in_use:
                 raise RuntimeError(
-                    f"Port {port} already in use ({addr}); stop other wrapper processes")
+                    f"gRPC port collision: {port} already in use ({addr}). "
+                    "Stop other wrapper processes, or lower --jobs "
+                    f"(each worker slot offsets ports by {WORKER_PORT_STRIDE})")
 
     def _start_one_wrapper(self, backend: str) -> None:
         cmd = [sys.executable, "-m", f"wrappers.{backend}.wrapper"]
@@ -368,7 +370,7 @@ class DebugRunLogs:
 
     def write_fail_log(
         self, *, repo: Path, server: str, client: str, driver: InteropDriver,
-        cell: dict[str, str] | None = None, extra: str = "", kind: str = "FAIL") -> Path:
+        cell: dict[str, str] | None = None, kind: str = "FAIL") -> Path:
         run_dir = self.ensure_run_dir(repo)
         kind_u = (kind or "FAIL").strip().upper()
         cipher = ""
@@ -379,24 +381,18 @@ class DebugRunLogs:
             name = f"{name}_{cipher}"
         path = run_dir / f"{name}.log"
         path.write_text(
-            "\n".join(_fail_log_body(kind_u, server, client, driver, cell, extra)).rstrip() + "\n",
+            "\n".join(_fail_log_body(kind_u, server, client, driver, cell)).rstrip() + "\n",
             encoding="utf-8")
         return path
 
 
 def _fail_log_body(
     kind_u: str, server: str, client: str, driver: InteropDriver,
-    cell: dict[str, str] | None, extra: str) -> list[str]:
+    cell: dict[str, str] | None) -> list[str]:
     parts = [f"TLS interop {kind_u}", f"server={server} client={client}"]
     if cell:
         cell_text = ", ".join(f"{k}={v}" for k, v in sorted(cell.items()) if str(v).strip())
         parts.append(f"cell: {cell_text}")
-    if driver.last_failure:
-        label, detail = driver.last_failure
-        parts.append(f"last_failure: {label}")
-        parts.append(detail)
-    if extra:
-        parts.append(f"extra: {extra}")
     parts.append("")
     parts.extend(driver.fail_log or ["(no operation logs)"])
     return parts
@@ -408,7 +404,6 @@ class InteropDriver:
     def __init__(self, server_addr: str, client_addr: str, verbose: bool = False) -> None:
         self._verbose = verbose
         self._channels: list[grpc.Channel] = []
-        self.last_failure: tuple[str, str] | None = None
         self.last_skip_reason: str | None = None
         self.fail_log: list[str] = []
         if server_addr == client_addr:
@@ -451,6 +446,9 @@ class InteropDriver:
             parts.append(f"output_data: {out!r}")
         self.fail_log.append("\n".join(parts))
 
+    def _note_failure(self, label: str, summary: str) -> None:
+        self.fail_log.append(f"--- {label} (FAILURE) ---\n{summary}")
+
     def _vprint(self, *args: Any, **kwargs: Any) -> None:
         if self._verbose:
             print(*args, **kwargs)
@@ -470,7 +468,6 @@ class InteropDriver:
                 self._vprint(f"[Driver] {label} (wrapper cmd): {first}")
             return True
         fail_summary = msg or "no message"
-        self.last_failure = (label, fail_summary)
         if resp.status == interop_pb2.OperationResponse.FAILURE:
             lab = "FAILURE"
         else:
@@ -489,7 +486,7 @@ class InteropDriver:
         summary = (
             "expected Hello Retry Request (expect_hrr=true) "
             "but negotiated.hrr_occurred is false")
-        self.last_failure = (label, summary)
+        self._note_failure(label, summary)
         self._vprint(f"[Driver] {label}: FAILURE - {summary}")
         return False
 
@@ -524,7 +521,7 @@ class InteropDriver:
             tcp_host, int(tcp_port), timeout_s=TCP_AFTER_ESTABLISH_S)
         if not ok_peer:
             self._vprint(f"[Driver] Timeout waiting for TCP {tcp_host}:{tcp_port}")
-            self.last_failure = (
+            self._note_failure(
                 "wait_tcp",
                 f"TCP {tcp_host}:{tcp_port} not accepting after ESTABLISH ({tcp_err})")
             return False
@@ -544,7 +541,7 @@ class InteropDriver:
             self._vprint(f">>> PASSED: payload echoed (TLS {ver}) <<<")
             return True
         self._vprint(">>> FAILED: echo mismatch <<<")
-        self.last_failure = (
+        self._note_failure(
             "verify",
             "server output did not contain echoed payload\n"
             f"expected: {TEST_PAYLOAD!r}\n"
@@ -637,17 +634,22 @@ def _run_cell_worker_thread(
 
 def _save_cell_debug_log(
     debug_logs: DebugRunLogs | None, driver: InteropDriver | None, repo: Path, server: str, client: str,
-    cell: dict[str, str], kind: str, console_lock: threading.Lock | None, extra: str = "") -> None:
+    cell: dict[str, str], kind: str, console_lock: threading.Lock | None) -> None:
     if debug_logs is None or driver is None:
         return
     log_path = debug_logs.write_fail_log(
-        repo=repo, server=server, client=client, driver=driver,
-        cell=cell, extra=extra, kind=kind)
+        repo=repo, server=server, client=client, driver=driver, cell=cell, kind=kind)
     rel = log_path.relative_to(repo) if log_path.is_relative_to(repo) else log_path
     tag = "TIMEOUT!" if kind == "TIMEOUT" else "FAIL!"
     lock = console_lock or nullcontext()
     with lock:
         print(f"{tag} Details saved to: {rel}")
+
+
+def _fail_console_detail(driver: InteropDriver) -> str:
+    if not driver.fail_log:
+        return ""
+    return driver.fail_log[-1].replace("\n", " ").strip()[:220]
 
 
 def _process_cell_timeout(
@@ -657,7 +659,7 @@ def _process_cell_timeout(
     summary = (
         f"cell exceeded {cell_timeout_s}s wall-clock limit "
         "(CLOSE sent, CLI processes killed)")
-    driver.last_failure = ("cell_timeout", summary)
+    driver._note_failure("cell_timeout", summary)
     _save_cell_debug_log(
         debug_logs, driver, repo, server, client, cell, "TIMEOUT", console_lock)
     lock = console_lock or nullcontext()
@@ -686,9 +688,7 @@ def _process_cell_fail(
         debug_logs, driver, repo, server, client, cell, "FAIL", console_lock)
     if verbose:
         return 1
-    detail = ""
-    if driver.last_failure:
-        detail = (driver.last_failure[1] or "").replace("\n", " ").strip()[:220]
+    detail = _fail_console_detail(driver)
     suf = f"  ({detail})" if detail else ""
     lock = console_lock or nullcontext()
     with lock:
@@ -751,8 +751,8 @@ def execute_matrix_cell(
     except Exception as e:
         if driver is None:
             driver = InteropDriver(session.grpc_addr(server), session.grpc_addr(client), verbose=verbose)
-        driver.last_failure = driver.last_failure or ("grpc", str(e))
-        _save_cell_debug_log(debug_logs, driver, repo, server, client, cell, "FAIL", console_lock, extra=str(e))
+        driver._note_failure("grpc", str(e))
+        _save_cell_debug_log(debug_logs, driver, repo, server, client, cell, "FAIL", console_lock)
         with lock:
             print(f"[Driver] exception: {e}" if verbose else f"FAIL  ({str(e).replace(chr(10), ' ').strip()[:220]})")
         return 1

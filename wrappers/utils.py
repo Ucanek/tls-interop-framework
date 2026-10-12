@@ -162,7 +162,7 @@ def popen_stdio_merged(
 
 
 def read_nonblocking_stdout(
-    proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0, idle_s: float = 0.05,
+    proc: subprocess.Popen[bytes], *, timeout_s: float = 2.0, idle_s: float = 0.3,
     poll_s: float = 0.02, max_bytes: int = 1 << 20) -> bytes:
     """Read merged stdout until ``timeout_s`` or ``idle_s`` without new data after the first chunk."""
     if proc.stdout is None:

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import queue
 import subprocess
 import sys
@@ -77,9 +78,11 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     groups["basic"].add_argument(
         "--attach", action="store_true",
         help="Connect to wrapper gRPC services already running on localhost (do not start subprocesses)")
+    default_jobs = max(1, (os.cpu_count() or 2) // 2)
     groups["basic"].add_argument(
-        "--jobs", type=int, default=1, metavar="N",
-        help="Max parallel matrix cells (isolated wrapper sets per worker slot; default: 1)")
+        "--jobs", type=int, default=default_jobs, metavar="N",
+        help=f"Max parallel matrix cells (isolated wrapper sets per worker slot; "
+        f"default: {default_jobs} = half of CPU count)")
 
     groups["crypto"].add_argument(
         "--cipher-suite", default="",
@@ -208,8 +211,19 @@ def run_matrix_parallel(
 def validate_cli_arguments(args: argparse.Namespace, parser: argparse.ArgumentParser) -> None:
     if int(args.jobs) < 1:
         parser.error("--jobs must be >= 1")
+    max_jobs = max(1, (os.cpu_count() or 2) // 2)
+    if int(args.jobs) > max_jobs:
+        print(
+            f"Warning: --jobs {args.jobs} exceeds recommended CPU limit {max_jobs} "
+            f"(half of os.cpu_count()); capping to {max_jobs} to avoid CPU starvation "
+            "and false-positive test failures (this is not a port collision)",
+            file=sys.stderr)
+        args.jobs = max_jobs
     if int(args.jobs) > MAX_PARALLEL_JOBS:
-        parser.error(f"--jobs must be <= {MAX_PARALLEL_JOBS}")
+        parser.error(
+            f"--jobs must be <= {MAX_PARALLEL_JOBS} "
+            f"(hard worker-slot / port-stride ceiling with stride {WORKER_PORT_STRIDE}; "
+            "not the same as the CPU soft cap above)")
     if int(args.jobs) > 1 and bool(args.attach):
         parser.error("--jobs > 1 cannot be used with --attach")
     if int(args.jobs) > 1 and int(args.tls_port) != 0:
