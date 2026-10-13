@@ -99,20 +99,30 @@ def resumption_or_0rtt_enabled(config) -> bool:
             or test_feature_enabled_in_config(config, "0rtt"))
 
 
-def _interop_slot_suffix() -> str:
+def _interop_slot_part() -> str:
     slot = os.environ.get("INTEROP_SLOT_ID", "").strip()
-    return f"_{slot}" if slot else ""
+    return f"s{slot}_" if slot else ""
 
 
 def interop_staging_pem_paths(prefix: str) -> tuple[str, str]:
-    """Per-process PEM staging under ``/tmp``; ``INTEROP_SLOT_ID`` avoids parallel collisions."""
-    suffix = _interop_slot_suffix()
-    return f"/tmp/interop_{prefix}_cert{suffix}.pem", f"/tmp/interop_{prefix}_key{suffix}.pem"
+    """Unique per-invocation PEM staging under ``/tmp`` (slot + random id; not shared across threads)."""
+    import uuid
+
+    session_id = uuid.uuid4().hex[:8]
+    base = f"/tmp/interop_{prefix}_{_interop_slot_part()}{session_id}"
+    return f"{base}_cert.pem", f"{base}_key.pem"
 
 
 def interop_staging_sidecar_path(prefix: str, name: str) -> str:
-    """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot suffix."""
-    return f"/tmp/interop_{prefix}_{name}{_interop_slot_suffix()}"
+    """Auxiliary staging file (e.g. GnuTLS PSK passwd) with optional slot + unique id."""
+    import uuid
+
+    session_id = uuid.uuid4().hex[:8]
+    stem, dot, ext = name.partition(".")
+    suffix = f"{_interop_slot_part()}{session_id}"
+    if dot:
+        return f"/tmp/interop_{prefix}_{stem}_{suffix}.{ext}"
+    return f"/tmp/interop_{prefix}_{name}_{suffix}"
 
 
 def tls_mode_12_or_13(config: interop_pb2.TlsConfig | None) -> TlsModeLiteral:
@@ -217,7 +227,8 @@ def serve_insecure(wrapper_cls: type[Any], display_name: str) -> None:
     from interop_proto import interop_pb2_grpc
 
     port = int(os.environ.get("GRPC_PORT", "50051"))
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # One worker: servicer holds mutable process/PEM state that is not request-isolated.
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=1))
     interop_pb2_grpc.add_TlsInteropWrapperServicer_to_server(wrapper_cls(), server)
     server.add_insecure_port(f"0.0.0.0:{port}")
     server.start()

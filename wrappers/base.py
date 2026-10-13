@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 import os
 import socket
 import subprocess
+import threading
 import time
 from grpc import ServicerContext
 
@@ -15,8 +16,9 @@ from core.identity import (
     get_cert_prefix_for_config)
 from interop_proto import interop_pb2, interop_pb2_grpc
 from wrappers.utils import (
-    format_cli_debug_logs, hrr_detected_in_cli_output, read_nonblocking_stdout,
-    remove_tls_session_artifact_files, run_cli_version, standard_library_metadata)
+    format_cli_debug_logs, hrr_detected_in_cli_output, interop_staging_pem_paths,
+    read_nonblocking_stdout, remove_tls_session_artifact_files, run_cli_version,
+    standard_library_metadata)
 
 FAIL_LOG_TAIL = 65536
 TCP_READY_TIMEOUT_S = 30.0
@@ -48,7 +50,8 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     def __init__(self) -> None:
         self.server_proc: subprocess.Popen[bytes] | None = None
         self.client_proc: subprocess.Popen[bytes] | None = None
-        self._used_ephemeral_pem: bool = False
+        self._active_temp_files: set[str] = set()
+        self._temp_files_lock = threading.Lock()
         self._session_artifact_repo_root: str = ""
         self._last_server_cmd: str = ""
         self._last_client_cmd: str = ""
@@ -72,14 +75,14 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
     def _start_client(self, config: interop_pb2.TlsConfig) -> tuple[subprocess.Popen[bytes], str, str]:
         """Starts the client; returns ``(popen, logs, human message)``."""
 
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        """Paths for inline-generated PEM files (override to avoid backend clashes)."""
-        return ("/tmp/interop_tls_cert.pem", "/tmp/interop_tls_key.pem")
+    def _track_temp_file(self, path: str) -> None:
+        with self._temp_files_lock:
+            self._active_temp_files.add(path)
 
     def _write_inline_cert_key(self, cert_b: bytes, key_b: bytes) -> tuple[str, str]:
-        self._used_ephemeral_pem = True
-        eph_cert, eph_key = self._ephemeral_pem_paths
+        """Write a matched cert/key pair to unique staging paths (safe under concurrent gRPC)."""
+        prefix = (self._component_name or "tls").strip().lower().replace(" ", "")
+        eph_cert, eph_key = interop_staging_pem_paths(prefix)
         with open(eph_cert, "wb") as f:
             f.write(cert_b)
         with open(eph_key, "wb") as f:
@@ -88,18 +91,19 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             os.chmod(eph_key, 0o600)
         except OSError:
             pass
+        self._track_temp_file(eph_cert)
+        self._track_temp_file(eph_key)
         return eph_cert, eph_key
 
     def _cleanup_ephemeral_pem_if_needed(self) -> None:
-        if not self._used_ephemeral_pem:
-            return
-        eph_cert, eph_key = self._ephemeral_pem_paths
-        for path in (eph_cert, eph_key):
+        with self._temp_files_lock:
+            paths = list(self._active_temp_files)
+            self._active_temp_files.clear()
+        for path in paths:
             try:
                 os.remove(path)
             except OSError:
                 pass
-        self._used_ephemeral_pem = False
 
     def _dsa_catalog_identity_pem(
         self, config: interop_pb2.TlsConfig, *, has_inline: bool) -> tuple[str, str] | None:
@@ -125,7 +129,6 @@ class BaseTemplateWrapper(interop_pb2_grpc.TlsInteropWrapperServicer, ABC):
             return dsa_pem
         if has_inline:
             return self._write_inline_cert_key(cert_b, key_b)
-        self._cleanup_ephemeral_pem_if_needed()
         cert, key = catalog_identity_pem_paths_for_prefix(get_cert_prefix_for_config(config))
         if cert and key:
             return cert, key

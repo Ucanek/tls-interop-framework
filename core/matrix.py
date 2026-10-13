@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import re
-import sys
 from collections.abc import Sequence
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 from core.catalog import (
@@ -49,33 +47,6 @@ def tls_mode_filter_from_args(args: Any) -> TlsMode | None:
     return tls_mode_from_version(raw_version)
 
 
-def _coerce_cipher_tls13_only(cipher_side: str, ver_side: str, caps: dict[str, Any]) -> str | None:
-    if tls_mode_from_version(ver_side) != "1.2":
-        return None
-
-    cipher_id = (cipher_side or "").strip()
-    if not cipher_id:
-        return None
-
-    if BackendCapabilities(caps).cipher_modes(cipher_id) == {"1.3"}:
-        return "1.3"
-
-    return None
-
-
-def _coerce_asymmetric_tls_version(
-    cs_str: str, tv_str: str, srv_caps: dict[str, Any], cli_caps: dict[str, Any]) -> str | None:
-    cs_left, cs_right = parse_asymmetric(cs_str)
-    tv_left, tv_right = parse_asymmetric(tv_str)
-    new_left = _coerce_cipher_tls13_only(cs_left, tv_left, srv_caps)
-    new_right = _coerce_cipher_tls13_only(cs_right, tv_right, cli_caps)
-
-    if new_left or new_right:
-        return f"{new_left or tv_left}:{new_right or tv_right}"
-
-    return None
-
-
 def load_role_capabilities(server: str, client: str) -> tuple[dict[str, Any], dict[str, Any]] | None:
     try:
         srv_caps = load_backend_capabilities(server).raw if server else {}
@@ -83,51 +54,6 @@ def load_role_capabilities(server: str, client: str) -> tuple[dict[str, Any], di
     except (FileNotFoundError, ValueError):
         return None
     return srv_caps, cli_caps
-
-
-def _apply_coerced_tls_version(args: Any, new_ver: str | None, warning_msg: str) -> None:
-    if not new_ver:
-        return
-    print(warning_msg, file=sys.stderr)
-    setattr(args, "tls_version", new_ver)
-
-
-def _parse_coerce_tls_inputs(args: Any) -> tuple[str, str, str, str] | None:
-    cs_raw = getattr(args, "cipher_suite", None)
-    tv_raw = getattr(args, "tls_version", None)
-    if cs_raw in (None, "", 0) or tv_raw in (None, "", 0):
-        return None
-    cs_str = str(cs_raw).strip()
-    tv_str = str(tv_raw).strip()
-    if not cs_str or not tv_str:
-        return None
-    server = (getattr(args, "server", None) or "").strip().lower()
-    client = (getattr(args, "client", None) or "").strip().lower()
-    return cs_str, tv_str, server, client
-
-
-def coerce_tls_version_for_cipher_capabilities(args: Any, repo: Path | None = None) -> None:
-    parsed = _parse_coerce_tls_inputs(args)
-    if parsed is None:
-        return
-    cs_str, tv_str, server, client = parsed
-    loaded = load_role_capabilities(server, client)
-    if loaded is None:
-        return
-    srv_caps, cli_caps = loaded
-
-    warning_msg = (
-        "[catalog] TLS 1.3-only cipher with --tls-version 1.2: "
-        "adjusting protocol version to 1.3 to avoid handshake mismatch.")
-
-    if ":" in cs_str or ":" in tv_str:
-        _apply_coerced_tls_version(
-            args, _coerce_asymmetric_tls_version(cs_str, tv_str, srv_caps, cli_caps), warning_msg)
-        return
-
-    caps = srv_caps if server else cli_caps
-    _apply_coerced_tls_version(
-        args, _coerce_cipher_tls13_only(cs_str, tv_str, caps), warning_msg)
 
 
 def _expand_all_subtraction(value: str, base_choices: list[str]) -> list[str] | None:
@@ -351,17 +277,6 @@ def _clear_unset_tls13_orthogonal_dims(output: dict[str, str], args_template: An
             output[dim] = ""
 
 
-def _apply_cell_tls_version_coerce(
-    output: dict[str, str], server: str, client: str, repo: Path) -> None:
-    coerce_ns = SimpleNamespace(
-        server=server, client=client,
-        cipher_suite=output.get("cipher_suite", ""), tls_version=output.get("tls_version", ""))
-    coerce_tls_version_for_cipher_capabilities(coerce_ns, repo)
-    bumped_ver = str(getattr(coerce_ns, "tls_version", "") or "").strip()
-    if bumped_ver:
-        output["tls_version"] = bumped_ver
-
-
 def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, repo: Path) -> dict[str, str]:
     output = dict(cell)
     port = int(getattr(args_template, "tls_port", 0) or 0)
@@ -380,7 +295,6 @@ def normalize_cell_tls_micro_params(cell: dict[str, str], args_template: Any, re
     if effective_cell_tls_mode(output, srv_caps, cli_caps) == "1.2":
         _clear_unset_tls13_orthogonal_dims(output, args_template)
     output["test_features"] = feats
-    _apply_cell_tls_version_coerce(output, server, client, repo)
     return output
 
 

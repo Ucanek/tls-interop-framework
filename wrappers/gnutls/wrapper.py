@@ -17,10 +17,10 @@ from core.identity import (
 from interop_proto import interop_pb2
 from wrappers.base import BaseTemplateWrapper, WrapperSetupError
 from wrappers.utils import (
-    alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
-    interop_staging_sidecar_path, is_server_role, popen_stdio_merged,
-    resumption_or_0rtt_enabled, serve_insecure, test_feature_enabled_in_config,
-    tls_mode_12_or_13, tls_session_state_paths, write_early_data_file)
+    alpn_cli_protocol_list, format_executed_command, interop_staging_sidecar_path,
+    is_server_role, popen_stdio_merged, resumption_or_0rtt_enabled, serve_insecure,
+    test_feature_enabled_in_config, tls_mode_12_or_13, tls_session_state_paths,
+    write_early_data_file)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _HOOK_SO = Path(__file__).resolve().parent / "gnutls_session_hook.so"
@@ -160,10 +160,6 @@ class GnuTLSWrapper(BaseTemplateWrapper):
     @property
     def _component_name(self) -> str:
         return "GnuTLS"
-
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return interop_staging_pem_paths("gnutls")
 
     def _version_command(self) -> list[str]:
         return ["gnutls-cli", "--version"]

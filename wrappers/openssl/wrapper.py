@@ -14,10 +14,9 @@ from core.identity import (
     server_trust_signature_schemes_tokens)
 from wrappers.base import BaseTemplateWrapper
 from wrappers.utils import (
-    alpn_cli_protocol_list, format_executed_command, interop_staging_pem_paths,
-    popen_stdio_merged, resumption_or_0rtt_enabled, serve_insecure,
-    test_feature_enabled_in_config, tls_mode_12_or_13, tls_session_state_paths,
-    write_early_data_file)
+    alpn_cli_protocol_list, format_executed_command, popen_stdio_merged,
+    resumption_or_0rtt_enabled, serve_insecure, test_feature_enabled_in_config,
+    tls_mode_12_or_13, tls_session_state_paths, write_early_data_file)
 
 CAPABILITIES = load_local_capabilities(__file__)
 _DNS_LABEL_OK = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
@@ -141,10 +140,6 @@ class OpenSSLWrapper(BaseTemplateWrapper):
     @property
     def _component_name(self) -> str:
         return "OpenSSL"
-
-    @property
-    def _ephemeral_pem_paths(self) -> tuple[str, str]:
-        return interop_staging_pem_paths("openssl")
 
     def _version_command(self) -> list[str]:
         return ["openssl", "version"]
