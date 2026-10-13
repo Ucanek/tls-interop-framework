@@ -9,7 +9,8 @@ import queue
 import subprocess
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextlib import nullcontext
 from dataclasses import dataclass
 from itertools import product
 from pathlib import Path
@@ -118,6 +119,10 @@ def cell_summary_label(cell: dict[str, str]) -> str:
     return f"{server} x {client} | {' / '.join(parts)}"
 
 
+def progress_prefix(completed: int, total: int) -> str:
+    return f"[{completed:>{len(str(total))}}/{total}]"
+
+
 @dataclass
 class WorkerContext:
     """Shared state for one matrix cell run (serial session or parallel worker slot)."""
@@ -125,6 +130,8 @@ class WorkerContext:
     axis_keys: list[str]
     args_template: argparse.Namespace
     repo: Path
+    total: int = 0
+    completed: int = 0
     session: WrapperSession | None = None
     debug_logs: DebugRunLogs | None = None
     slot_sessions: list[WrapperSession] | None = None
@@ -132,13 +139,23 @@ class WorkerContext:
     console_lock: threading.Lock | None = None
 
 
-def _print_pre_run_skip(label: str, skip_reason: Any, *, verbose: bool) -> None:
-    skip_str = skip_reason if isinstance(skip_reason, str) else " ".join(str(x) for x in skip_reason)
-    if verbose:
-        print(f"SKIP (pre-run): {skip_str}", file=sys.stderr)
-        return
-    short_skip = skip_str[:120].replace("\n", " ")
-    print(f"{label} | SKIP  ({short_skip})")
+def _print_live_result(
+    ctx: WorkerContext, label: str, rc: int, *, skip_reason: Any | None = None) -> None:
+    verbose = bool(ctx.args_template.verbose)
+    skip_str = ""
+    if skip_reason is not None:
+        skip_str = skip_reason if isinstance(skip_reason, str) else " ".join(str(x) for x in skip_reason)
+        if verbose:
+            print(f"SKIP (pre-run): {skip_str}", file=sys.stderr)
+    lock = ctx.console_lock or nullcontext()
+    with lock:
+        ctx.completed += 1
+        prefix = progress_prefix(ctx.completed, ctx.total)
+        line = f"{prefix} {label} | {status_for_rc(rc)}"
+        if skip_reason is not None and not verbose:
+            short_skip = skip_str[:120].replace("\n", " ")
+            line = f"{line}  ({short_skip})"
+        print(line)
 
 
 def _borrow_cell_session(ctx: WorkerContext) -> tuple[WrapperSession, int | None]:
@@ -157,7 +174,7 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
 
     skip_reason = cell_capability_skip_reason(cell, ctx.repo)
     if skip_reason:
-        _print_pre_run_skip(label, skip_reason, verbose=bool(ctx.args_template.verbose))
+        _print_live_result(ctx, label, EXIT_SKIP, skip_reason=skip_reason)
         return label, EXIT_SKIP
 
     slot_id: int | None = None
@@ -166,6 +183,7 @@ def run_matrix_cell(tup: tuple[Any, ...], ctx: WorkerContext) -> tuple[str, int]
         rc = execute_matrix_cell(
             cell, active_session, verbose=bool(ctx.args_template.verbose),
             debug_logs=ctx.debug_logs, console_lock=ctx.console_lock)
+        _print_live_result(ctx, label, rc)
         return label, rc
     finally:
         if ctx.slot_sessions is not None and ctx.slot_queue is not None and slot_id is not None:
@@ -191,8 +209,9 @@ def run_matrix_parallel(
 
     console_lock = threading.Lock()
     ctx = WorkerContext(
-        axis_keys=axis_keys, args_template=args, repo=repo, debug_logs=debug_logs,
-        slot_sessions=slot_sessions, slot_queue=slot_queue, console_lock=console_lock)
+        axis_keys=axis_keys, args_template=args, repo=repo, total=len(combos),
+        debug_logs=debug_logs, slot_sessions=slot_sessions, slot_queue=slot_queue,
+        console_lock=console_lock)
 
     for session in slot_sessions:
         session.start()
@@ -200,9 +219,13 @@ def run_matrix_parallel(
     if args.verbose:
         print(f"Parallel workers: {len(slot_sessions)} slot(s), port stride {WORKER_PORT_STRIDE}")
 
+    results: list[tuple[str, int]] = []
     try:
         with ThreadPoolExecutor(max_workers=effective_jobs) as executor:
-            return list(executor.map(lambda tup: run_matrix_cell(tup, ctx), combos))
+            futures = {executor.submit(run_matrix_cell, tup, ctx): tup for tup in combos}
+            for future in as_completed(futures):
+                results.append(future.result())
+        return results
     finally:
         for session in slot_sessions:
             session.stop()
@@ -213,17 +236,10 @@ def validate_cli_arguments(args: argparse.Namespace, parser: argparse.ArgumentPa
         parser.error("--jobs must be >= 1")
     max_jobs = max(1, (os.cpu_count() or 2) // 2)
     if int(args.jobs) > max_jobs:
-        print(
-            f"Warning: --jobs {args.jobs} exceeds recommended CPU limit {max_jobs} "
-            f"(half of os.cpu_count()); capping to {max_jobs} to avoid CPU starvation "
-            "and false-positive test failures (this is not a port collision)",
-            file=sys.stderr)
+        print(f"Warning: --jobs capped to {max_jobs} (half of CPU count)", file=sys.stderr)
         args.jobs = max_jobs
     if int(args.jobs) > MAX_PARALLEL_JOBS:
-        parser.error(
-            f"--jobs must be <= {MAX_PARALLEL_JOBS} "
-            f"(hard worker-slot / port-stride ceiling with stride {WORKER_PORT_STRIDE}; "
-            "not the same as the CPU soft cap above)")
+        parser.error(f"--jobs must be <= {MAX_PARALLEL_JOBS}")
     if int(args.jobs) > 1 and bool(args.attach):
         parser.error("--jobs > 1 cannot be used with --attach")
     if int(args.jobs) > 1 and int(args.tls_port) != 0:
@@ -271,7 +287,8 @@ def execute_matrix_execution(
 
     try:
         ctx = WorkerContext(
-            axis_keys=axis_keys, args_template=args, repo=repo, session=session, debug_logs=debug_logs)
+            axis_keys=axis_keys, args_template=args, repo=repo, total=len(combos),
+            session=session, debug_logs=debug_logs)
         return [run_matrix_cell(tup, ctx) for tup in combos]
     finally:
         if session is not None:
@@ -297,9 +314,10 @@ def _handle_list_modes(args: argparse.Namespace, repo: Path) -> int | None:
 
 def _print_matrix_results(
     results: list[tuple[str, int]], debug_logs: DebugRunLogs | None, repo: Path) -> int:
+    total = len(results)
     print("\n--- Results ---")
-    for label, rc in results:
-        print(f"{label} | {status_for_rc(rc)}")
+    for completed, (label, rc) in enumerate(results, start=1):
+        print(f"{progress_prefix(completed, total)} {label} | {status_for_rc(rc)}")
     if all(rc in (0, EXIT_SKIP) for _, rc in results):
         return 0
     run_dir = debug_logs.path if debug_logs is not None else None
