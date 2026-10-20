@@ -68,7 +68,7 @@ With `--suite`, do not pass `--server` / `--client` or other matrix flags — va
 
 Default cell limit: **45 s**. On expiry the driver sends gRPC CLOSE (kills wrapper CLI procs) and continues the matrix.
 
-Parallel runs: `--jobs N` (default = half of CPU count; soft-capped there) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). TLS bases sit far above gRPC so slots do not collide. Incompatible with `--attach`, `--tls-port`, and manual gRPC port overrides.
+Parallel runs: `--jobs N` (default = half of CPU count; soft-capped there) starts **N isolated wrapper sets** (gRPC/TLS port stride 100 per slot). TLS bases sit far above gRPC so slots do not collide. Incompatible with `--attach` and `--tls-port`.
 
 On **FAIL** or **TIMEOUT**, a short log appears under `debug_logs/run_<timestamp>/` (`fail_*.log` / `timeout_*.log`: cell, last failure, endpoints, operation traces). No folder if all cells pass.
 
@@ -79,11 +79,8 @@ Use `--attach` when wrappers are **already** listening on localhost and the driv
 Without `--attach`, the driver starts wrapper subprocesses, runs cells, then stops them.
 
 ```bash
-# Wrappers must already listen on capabilities.json gRPC ports (or overrides below).
+# Wrappers must already listen on capabilities.json gRPC ports.
 python3 main.py --server openssl --client gnutls --attach -v
-
-python3 main.py --server openssl --client gnutls --attach \
-  --server-grpc-port 15051 --client-grpc-port 15052 -v
 ```
 
 Notes:

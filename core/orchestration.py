@@ -73,22 +73,6 @@ def backend_grpc_addr(
     return addr
 
 
-def grpc_port_overrides_from_args(args: Any) -> dict[str, int]:
-    output: dict[str, int] = {}
-
-    def maybe_add_override(role: str, port: int) -> None:
-        if not port:
-            return
-        wrapper_id = (getattr(args, role, None) or "").strip().lower()
-        if not wrapper_id or wrapper_id == "all" or "," in wrapper_id or "\\" in wrapper_id:
-            return
-        output[wrapper_id] = port
-
-    maybe_add_override("server", int(getattr(args, "server_grpc_port", 0) or 0))
-    maybe_add_override("client", int(getattr(args, "client_grpc_port", 0) or 0))
-    return output
-
-
 def backend_tls_endpoint(backend_name: str, repo: Path | None = None) -> tuple[str, int]:
     runtime_info = load_backend_capabilities(backend_name).runtime()
     host = str(runtime_info.get("tls_host") or "127.0.0.1")
@@ -114,8 +98,3 @@ def validate_run_args(
     _ = (known_wrappers, repo)
     if not (0 <= int(args.tls_port) <= 65535):
         raise ValueError("--tls-port must be in range 0..65535")
-
-    for attr in ("server_grpc_port", "client_grpc_port"):
-        if not (0 <= int(getattr(args, attr, 0) or 0) <= 65535):
-            flag_name = attr.replace('_', '-')
-            raise ValueError(f"--{flag_name} must be in range 0..65535")

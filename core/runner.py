@@ -9,7 +9,6 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Mapping
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
@@ -53,14 +52,11 @@ def _grpc_host_port(addr: str) -> tuple[str, int]:
 
 
 def _worker_slot_grpc_overrides(
-    repo: Path, backends: frozenset[str] | set[str], slot_id: int,
-    base_overrides: Mapping[str, int] | None = None) -> dict[str, int]:
-    overrides = {k.strip().lower(): int(v) for k, v in (base_overrides or {}).items()}
+    repo: Path, backends: frozenset[str] | set[str], slot_id: int) -> dict[str, int]:
     offset = int(slot_id) * WORKER_PORT_STRIDE
+    overrides: dict[str, int] = {}
     for backend in backends:
         key = (backend or "").strip().lower()
-        if key in overrides:
-            continue
         _, base_grpc = _grpc_host_port(backend_grpc_addr(key, repo))
         overrides[key] = base_grpc + offset
     return overrides
@@ -87,7 +83,7 @@ class WrapperSession:
 
     def __init__(
         self, repo: Path, backends: frozenset[str], *, verbose: bool = False, attach: bool = False,
-        grpc_port_overrides: Mapping[str, int] | None = None, slot_id: int | None = None) -> None:
+        slot_id: int | None = None) -> None:
         known = frozenset(discover_wrapper_ids(repo))
         unknown = backends - known
         if unknown:
@@ -100,11 +96,9 @@ class WrapperSession:
         if self.slot_id is not None:
             if attach:
                 raise ValueError("attach mode is incompatible with parallel slot_id")
-            self._grpc_port_overrides = _worker_slot_grpc_overrides(
-                repo, backends, self.slot_id, grpc_port_overrides)
+            self._grpc_port_overrides = _worker_slot_grpc_overrides(repo, backends, self.slot_id)
         else:
-            self._grpc_port_overrides = {
-                k.strip().lower(): int(v) for k, v in (grpc_port_overrides or {}).items()}
+            self._grpc_port_overrides: dict[str, int] = {}
         self.metadata: dict[str, interop_pb2.LibraryMetadata] = {}
         self._procs: list[subprocess.Popen[bytes]] = []
 

@@ -19,7 +19,7 @@ from typing import Any
 from core.catalog import discover_wrapper_ids, print_catalog_options, repository_root
 from core.matrix import (
     matrix_axis_plan, normalize_cell_tls_micro_params, required_backends_from_matrix)
-from core.orchestration import grpc_port_overrides_from_args, validate_run_args
+from core.orchestration import validate_run_args
 from core.validation import cell_capability_skip_reason
 from core.runner import (
     EXIT_SKIP, EXIT_TIMEOUT, DebugRunLogs, MAX_PARALLEL_JOBS, WORKER_PORT_STRIDE,
@@ -69,12 +69,6 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     groups["basic"].add_argument(
         "--tls-port", type=int, default=0,
         help="Override TLS listen/connect port (0 = per-backend default from capabilities.json)")
-    groups["basic"].add_argument(
-        "--server-grpc-port", type=int, default=0,
-        help="Override gRPC port for --server wrapper (0 = capabilities.json; useful with --attach)")
-    groups["basic"].add_argument(
-        "--client-grpc-port", type=int, default=0,
-        help="Override gRPC port for --client wrapper (0 = capabilities.json; useful with --attach)")
     groups["basic"].add_argument("-v", "--verbose", action="store_true", help="Verbose output")
     groups["basic"].add_argument(
         "--attach", action="store_true",
@@ -198,9 +192,8 @@ def run_matrix_parallel(
     if effective_jobs < jobs:
         print(f"Note: --jobs {jobs} capped to {effective_jobs} for this matrix")
 
-    grpc_base = grpc_port_overrides_from_args(args)
     slot_sessions = [
-        WrapperSession(repo, backends, verbose=bool(args.verbose), grpc_port_overrides=grpc_base, slot_id=i)
+        WrapperSession(repo, backends, verbose=bool(args.verbose), slot_id=i)
         for i in range(effective_jobs)]
 
     slot_queue: queue.Queue[int] = queue.Queue()
@@ -245,10 +238,6 @@ def validate_cli_arguments(args: argparse.Namespace, parser: argparse.ArgumentPa
     if int(args.jobs) > 1 and int(args.tls_port) != 0:
         parser.error("--jobs > 1 cannot be used with --tls-port")
 
-    grpc_overrides = grpc_port_overrides_from_args(args)
-    if int(args.jobs) > 1 and grpc_overrides:
-        parser.error("--jobs > 1 cannot be used with --server-grpc-port / --client-grpc-port")
-
 
 def build_matrix_combos(
     args: argparse.Namespace, known: frozenset[str], repo: Path) -> tuple[list[str], list[tuple[Any, ...]]]:
@@ -279,10 +268,8 @@ def execute_matrix_execution(
 
     session: WrapperSession | None = None
     if backends:
-        grpc_overrides = grpc_port_overrides_from_args(args)
         session = WrapperSession(
-            repo, backends, verbose=bool(args.verbose), attach=bool(args.attach),
-            grpc_port_overrides=grpc_overrides)
+            repo, backends, verbose=bool(args.verbose), attach=bool(args.attach))
         session.start()
 
     try:
