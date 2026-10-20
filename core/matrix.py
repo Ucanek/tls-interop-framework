@@ -75,8 +75,8 @@ def _expand_csv_dimension_tokens(val: str, base_choices: list[str]) -> list[str]
         raise ValueError(f"Empty dimension value: {val!r}")
     invalid_parts = [p for p in parts if p not in base_choices]
     if invalid_parts:
-        known_str = ", ".join(sorted(set(base_choices)))
-        raise ValueError(f"Unknown value(s) {invalid_parts!r}; known: {known_str}")
+        known_lines = "\n".join(sorted(set(base_choices)))
+        raise ValueError(f"Unknown value(s) {invalid_parts!r}; known:\n{known_lines}")
     return parts
 
 

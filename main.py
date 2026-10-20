@@ -73,11 +73,10 @@ def build_parser(_repo: Path) -> argparse.ArgumentParser:
     groups["basic"].add_argument(
         "--attach", action="store_true",
         help="Connect to wrapper gRPC services already running on localhost (do not start subprocesses)")
-    default_jobs = max(1, (os.cpu_count() or 2) // 2)
     groups["basic"].add_argument(
-        "--jobs", type=int, default=default_jobs, metavar="N",
-        help=f"Max parallel matrix cells (isolated wrapper sets per worker slot; "
-        f"default: {default_jobs} = half of CPU count)")
+        "--jobs", type=int, default=1, metavar="N",
+        help="Max parallel matrix cells (isolated wrapper sets per worker slot; "
+        "default: 1 = serial; set N>1 to run in parallel)")
 
     groups["crypto"].add_argument(
         "--cipher-suite", default="",
