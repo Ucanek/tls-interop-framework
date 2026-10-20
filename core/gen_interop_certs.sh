@@ -4,8 +4,9 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 CERT_DIR="${ROOT}/certs"
 mkdir -p "${CERT_DIR}"
-SUBJ_BASE="/CN=server_node"
-SAN=(-addext "subjectAltName=DNS:server_node,DNS:localhost,IP:127.0.0.1")
+# DNS-valid CN/SAN (no underscore): GnuTLS rejects illegal SNI hostnames.
+SUBJ_BASE="/CN=server-node"
+SAN=(-addext "subjectAltName=DNS:server-node,DNS:localhost,IP:127.0.0.1")
 
 gen_rsa_default() {
   openssl req -x509 -newkey "rsa:3072" \
@@ -87,7 +88,7 @@ gen_dh2048() {
 
 gen_dh2048
 
-# Legacy symlinks for older paths / default server_node TLS tools.
+# Legacy symlinks for older paths / default server-node TLS tools.
 ln -sf rsa_default.crt "${CERT_DIR}/cert.pem"
 ln -sf rsa_default.key "${CERT_DIR}/key.pem"
 ln -sf rsa_default.crt "${CERT_DIR}/cert_rsa.pem"

@@ -103,12 +103,12 @@ def tls_argv_for_config(config, *, role=None, capabilities=None) -> TranslationR
 
 
 def nss_tstclnt_sni_name(hostname: str) -> str:
-    """SNI / tstclnt ``-a`` matching generated leaves (``CN=server_node``)."""
+    """SNI / tstclnt ``-a`` matching generated leaves (``CN=server-node``)."""
     h = (hostname or "").strip()
     if not h or h in ("127.0.0.1", "localhost", "::1"):
-        return "server_node"
+        return "server-node"
     if h.startswith("[") and h.endswith("]") and ":" in h[1:-1]:
-        return "server_node"
+        return "server-node"
     return h
 
 
